@@ -1,0 +1,378 @@
+//go:build linux
+// +build linux
+
+package sctp
+
+import (
+	"bufio"
+	"errors"
+	"net"
+	"os"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// Covers the EALREADY handling in SCTPConnect.
+//
+// This was the one residual failure in the suite that resisted measurement for a
+// long time: roughly two occurrences in ninety-five suite runs, unreproducible by
+// 1024 concurrent dials, by a C sctp_connectx loop, or by forty instrumented
+// runs. The errno appears nowhere in RFC 9260 or RFC 6458, so the specification
+// could not settle it either.
+//
+// net/sctp/socket.c did. __sctp_connect and sctp_connect_add_peer both have:
+//
+//	asoc = sctp_endpoint_lookup_assoc(ep, daddr, &transport);
+//	if (asoc)
+//	        return asoc->state >= SCTP_STATE_ESTABLISHED ? -EISCONN
+//	                                                     : -EALREADY;
+//
+// EISCONN and EALREADY are one branch at two association states. EISCONN means
+// usable; EALREADY means only that the endpoint holds an in-flight association.
+// A second goroutine can receive EALREADY on a blocking descriptor while the
+// first remains in the kernel wait, so descriptor flags cannot make it success.
+//
+// unreachableAddr is TEST-NET-1 from RFC 5737, reserved for documentation and
+// guaranteed not to answer. An unanswered INIT is what holds the association in
+// COOKIE_WAIT long enough for a second connect to find it.
+func unreachableAddr() *SCTPAddr {
+	return &SCTPAddr{
+		IPAddrs: []net.IPAddr{{IP: net.ParseIP("192.0.2.1")}},
+		Port:    9999,
+	}
+}
+
+// newRawSCTPSocket returns a bare SCTP socket, blocking or not, for driving
+// SCTPConnect directly.
+func newRawSCTPSocket(t *testing.T, nonblocking bool) int {
+	t.Helper()
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM,
+		syscall.IPPROTO_SCTP)
+	if err != nil {
+		t.Fatalf("socket: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Close(fd) })
+	if err := syscall.SetNonblock(fd, nonblocking); err != nil {
+		t.Fatalf("SetNonblock(%v): %v", nonblocking, err)
+	}
+	return fd
+}
+
+// assocExistsFor reports whether the kernel holds an association whose local
+// port is port.
+//
+// The column index is read from the header rather than hard-coded, because the
+// row is positional and a kernel that adds a column would otherwise silently
+// shift the field being compared — which reads as "no association yet" and
+// turns a wait into a timeout.
+func assocExistsFor(t *testing.T, port int) bool {
+	t.Helper()
+	f, err := os.Open("/proc/net/sctp/assocs")
+	if err != nil {
+		t.Skipf("cannot read /proc/net/sctp/assocs: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	lport := -1
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		fields := strings.Fields(s.Text())
+		if len(fields) == 0 {
+			continue
+		}
+		if fields[0] == "ASSOC" {
+			for i, name := range fields {
+				if name == "LPORT" {
+					lport = i
+				}
+			}
+			continue
+		}
+		if lport < 0 || len(fields) <= lport {
+			continue
+		}
+		if p, err := strconv.Atoi(fields[lport]); err == nil && p == port {
+			return true
+		}
+	}
+	if err := s.Err(); err != nil {
+		t.Fatalf("scanning assocs: %v", err)
+	}
+	return false
+}
+
+// waitAssocExists blocks until the kernel holds an association for fd.
+//
+// TestSCTPConnectEALREADYOnBlockingSocketMidHandshake needs a second connect to
+// find an association a goroutine is still creating, and closing a channel as
+// that goroutine starts says only that it was scheduled — not that its connect
+// reached the kernel. When the probing connect wins that race it becomes the
+// call that creates the association, and on a blocking socket to a silent
+// address it then waits out the entire INIT retransmission schedule: measured
+// at a flat 342s, ending in ETIMEDOUT, reported as a failure of a branch it
+// never reached. Under -race that happened in 3 of 12 runs; without it, in none
+// of more than twenty.
+//
+// The state is observable, contrary to what that test used to say. SCTP_STATUS
+// does answer EINVAL mid-handshake — measured across every pre-association
+// state — but /proc/net/sctp/assocs lists the association in COOKIE_WAIT within
+// 50ms of the connect beginning. Waiting on it removes the race without
+// changing what is covered: the probing connect still runs against a blocking
+// socket with a handshake genuinely in flight.
+//
+// The port comes from getsockname rather than being chosen, because the socket
+// is unbound until the connect autobinds it — a zero port is itself the signal
+// that the kernel has not started yet.
+func waitAssocExists(t *testing.T, fd int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if sa, err := syscall.Getsockname(fd); err == nil {
+			if in4, ok := sa.(*syscall.SockaddrInet4); ok && in4.Port != 0 {
+				if assocExistsFor(t, in4.Port) {
+					return
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no association appeared for the socket within 10s; the " +
+		"goroutine's connect never reached the kernel, so the second connect " +
+		"would be the one creating it")
+}
+
+// TestSCTPConnectEALREADYOnNonblockingSocket pins that a non-blocking caller
+// still sees EALREADY.
+//
+// This is the half that stops the fix from being a blanket "treat EALREADY as
+// success". On a non-blocking socket the kernel returns before the handshake, so
+// an association in COOKIE_WAIT is genuinely not connected and reporting success
+// would hand the caller a socket that cannot yet carry data.
+//
+// It doubles as the reproduction: the first connect gives EINPROGRESS, and a
+// second one on the same socket finds the in-flight association. That sequence is
+// deterministic, unlike the suite failure it explains.
+func TestSCTPConnectEALREADYOnNonblockingSocket(t *testing.T) {
+	fd := newRawSCTPSocket(t, true)
+	raddr := unreachableAddr()
+
+	// The first attempt starts the handshake and returns immediately.
+	if _, err := SCTPConnect(fd, raddr); !errors.Is(err, syscall.EINPROGRESS) {
+		t.Fatalf("first SCTPConnect gave %v, want EINPROGRESS on a "+
+			"non-blocking socket against an unreachable peer", err)
+	}
+
+	// A second attempt finds the association the first one created. The kernel
+	// alternates EALREADY and EINPROGRESS across retries, so accept either as
+	// evidence the handshake is still in flight — but EALREADY must not have
+	// been converted to success.
+	var sawAlready bool
+	for i := 0; i < 4; i++ {
+		_, err := SCTPConnect(fd, raddr)
+		if err == nil {
+			t.Fatalf("attempt %d reported success while the association was "+
+				"still handshaking; a non-blocking caller must keep EALREADY "+
+				"so it knows the socket is not yet usable", i+1)
+		}
+		if errors.Is(err, syscall.EALREADY) {
+			sawAlready = true
+		} else if !errors.Is(err, syscall.EINPROGRESS) {
+			t.Fatalf("attempt %d gave %v, want EALREADY or EINPROGRESS",
+				i+1, err)
+		}
+	}
+	if !sawAlready {
+		t.Skip("the kernel answered every retry with EINPROGRESS rather than " +
+			"EALREADY; the branch under test was not reached")
+	}
+}
+
+// TestSCTPConnectEISCONNOnBlockingSocket covers the established early-return
+// state: EISCONN is success because the requested association is usable.
+//
+// Reaching the branch needs a real association, which loopback provides — and on
+// loopback the handshake completes inside the call, so the second connect finds an
+// ESTABLISHED association and the kernel says EISCONN rather than EALREADY. Both
+// errnos take the same path in SCTPConnect, so this covers the blocking
+// conversion; the state that distinguishes them is the kernel's, not this
+// package's.
+func TestSCTPConnectEISCONNOnBlockingSocket(t *testing.T) {
+	ln, err := ListenSCTP("sctp", loopbackAddr())
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	fd := newRawSCTPSocket(t, false)
+	raddr := listenerAddr(t, ln)
+
+	if _, err := SCTPConnect(fd, raddr); err != nil {
+		t.Fatalf("first SCTPConnect: %v", err)
+	}
+	// The association now exists, so the kernel takes the lookup_assoc branch.
+	// A blocking caller must see success: the socket is connected, and returning
+	// an error here would discard a working association.
+	if _, err := SCTPConnect(fd, raddr); err != nil {
+		t.Fatalf("second SCTPConnect on a blocking socket gave %v, want "+
+			"success — the association the caller asked for already exists "+
+			"and the kernel has waited for its handshake", err)
+	}
+
+	// And it really is usable, which is the claim the conversion rests on.
+	if _, err := syscall.Write(fd, []byte("established")); err != nil {
+		t.Errorf("write after the second SCTPConnect reported success: %v — "+
+			"the conversion is only sound if the socket is genuinely "+
+			"connected", err)
+	}
+}
+
+// silentPeerAvailable reports whether an INIT to unreachableAddr is dropped rather
+// than refused.
+//
+// This distinction is what makes the blocking EALREADY branch reachable at all.
+// With a route to the address the gateway answers with an ICMP unreachable, SCTP
+// maps that to ECONNREFUSED, and the connect returns immediately — no association
+// is left mid-handshake. Only a dropped packet holds one in COOKIE_WAIT.
+//
+// Detection is by measurement rather than by inspecting firewall rules: a single
+// non-blocking connect either reports EINPROGRESS, meaning the INIT went
+// unanswered, or ECONNREFUSED, meaning something replied.
+//
+// The immediate return is not enough on its own. A gateway that answers with an
+// ICMP unreachable a few milliseconds later still lets the connect report
+// EINPROGRESS first, so that first result alone is not enough to identify a
+// silent peer. The reply is given a moment to arrive and SO_ERROR is consulted
+// before answering.
+func silentPeerAvailable(t *testing.T) bool {
+	t.Helper()
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM,
+		syscall.IPPROTO_SCTP)
+	if err != nil {
+		t.Fatalf("socket: %v", err)
+	}
+	defer func() { _ = syscall.Close(fd) }()
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		t.Fatalf("SetNonblock: %v", err)
+	}
+	if _, err = SCTPConnect(fd, unreachableAddr()); !errors.Is(err, syscall.EINPROGRESS) {
+		return false
+	}
+
+	// Poll SO_ERROR briefly. A silent address leaves it at zero for the
+	// whole retransmission window; a refusal lands within a few milliseconds.
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		soerr, gerr := syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_ERROR)
+		if gerr != nil {
+			return false
+		}
+		if soerr != 0 {
+			t.Logf("192.0.2.1 answered with errno %d (%v) rather than dropping "+
+				"the INIT", soerr, syscall.Errno(soerr))
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return true
+}
+
+// TestSCTPConnectEALREADYOnBlockingSocketMidHandshake proves that descriptor
+// mode cannot be used to infer association state.
+//
+// TestSCTPConnectEALREADYOnBlockingSocket above only ever reaches EISCONN, because
+// on loopback the handshake finishes inside the first call. Reverting the EALREADY
+// handling entirely still passed it — measured, not assumed — so it does not
+// demonstrate the fix does anything.
+//
+// The branch needs a blocking socket whose association is stuck mid-handshake,
+// which takes two goroutines and a silent peer: one blocks in SCTPConnect
+// holding the association in COOKIE_WAIT while the other issues a second connect
+// and finds it. That is the situation the suite hit roughly twice in ninety-five
+// runs, and it reproduces on demand here.
+func TestSCTPConnectEALREADYOnBlockingSocketMidHandshake(t *testing.T) {
+	if !silentPeerAvailable(t) {
+		t.Skip("SCTP to 192.0.2.1 is refused rather than dropped, so no " +
+			"association stays in COOKIE_WAIT")
+	}
+
+	fd := newRawSCTPSocket(t, false)
+	raddr := unreachableAddr()
+
+	// One goroutine blocks in SCTPConnect for the length of the INIT
+	// retransmissions. It is deliberately not waited on: the retransmit schedule
+	// runs for minutes, and closing the socket is what releases it. The test
+	// cleanup registered by newRawSCTPSocket does that.
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		_, _ = SCTPConnect(fd, raddr)
+	}()
+	<-started
+
+	// Wait for the association to exist before probing for it. The channel says
+	// the goroutine was scheduled, not that its connect reached the kernel, and
+	// a probing connect that arrives first creates the association itself and
+	// blocks for the whole retransmission schedule — see waitAssocExists.
+	waitAssocExists(t, fd)
+
+	var reachedBranch bool
+	for i := 0; i < 50; i++ {
+		if _, err := SCTPConnect(fd, raddr); errors.Is(err, syscall.EALREADY) {
+			// EALREADY is the safe answer: this call skipped the kernel's wait,
+			// while the first goroutine still owns the in-flight connect.
+			reachedBranch = true
+			break
+		} else if err == nil {
+			t.Fatal("SCTPConnect reported success for an association still in COOKIE_WAIT")
+		} else if !errors.Is(err, syscall.EINPROGRESS) {
+			t.Fatalf("second SCTPConnect gave %v, want EALREADY while the "+
+				"association is still handshaking", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !reachedBranch {
+		t.Fatal("a second SCTPConnect against a blocking socket with an " +
+			"in-flight association never reported EALREADY")
+	}
+}
+
+// TestIsNonblockingDetectsBothStates covers the helper the distinction rests on.
+//
+// If this misreported the flag, the EALREADY conversion would apply to the wrong
+// sockets, which no other test here would notice: each of the two tests above
+// only exercises one branch.
+func TestIsNonblockingDetectsBothStates(t *testing.T) {
+	blocking := newRawSCTPSocket(t, false)
+	if isNonblocking(blocking) {
+		t.Error("isNonblocking = true for a blocking socket")
+	}
+
+	nonblocking := newRawSCTPSocket(t, true)
+	if !isNonblocking(nonblocking) {
+		t.Error("isNonblocking = false for a non-blocking socket")
+	}
+
+	// Toggling has to be observed, not just the initial state — a helper that
+	// returned a constant would pass the two checks above if they happened to
+	// use different descriptors.
+	if err := syscall.SetNonblock(blocking, true); err != nil {
+		t.Fatalf("SetNonblock: %v", err)
+	}
+	if !isNonblocking(blocking) {
+		t.Error("isNonblocking = false after setting O_NONBLOCK on a socket " +
+			"that previously read as blocking")
+	}
+
+	// A descriptor that cannot be queried must fail safe: the conservative
+	// answer is non-blocking, which keeps EALREADY an error rather than
+	// reporting a possibly unconnected socket as ready. -1 is used rather than a
+	// closed socket so this does not depend on close ordering against the
+	// cleanup registered by newRawSCTPSocket.
+	if !isNonblocking(-1) {
+		t.Error("isNonblocking = false for an invalid descriptor; an " +
+			"unqueryable fd must fail safe")
+	}
+}
