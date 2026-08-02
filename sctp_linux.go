@@ -1942,6 +1942,10 @@ func abortSctpSocket(fd int) error {
 	return prepareErr
 }
 
+func abandonDialSocket(fd int, policy DialAbandonPolicy) error {
+	return abandonDialSocketUsing(fd, policy, abortSctpSocket, syscall.Close)
+}
+
 // Abort terminates the SCTP association immediately by sending an ABORT chunk.
 // Unlike Close(), this does not perform a graceful shutdown handshake.
 // Use this when you need immediate resource release without waiting for
@@ -2312,7 +2316,7 @@ func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, 
 // the smallest usable value still puts a second INIT on the wire at
 // net.sctp.rto_initial; MaxInitTimeout caps each RTO without bounding the total.
 // So the bound has to come from here.
-func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig) (*SCTPConn, error) {
+func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig, abandonPolicy DialAbandonPolicy) (*SCTPConn, error) {
 	if ctx == nil {
 		return nil, errNilContext
 	}
@@ -2335,6 +2339,9 @@ func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := validateDialAbandonPolicy(abandonPolicy); err != nil {
+		return nil, err
+	}
 	prepared, err := preparePreAssociationConfig(preAssociation, preAssociationOneToOne)
 	if err != nil {
 		return nil, err
@@ -2350,16 +2357,16 @@ func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr 
 		return nil, err
 	}
 
-	// Abort rather than close on every failure path. Nothing is established, so
-	// there is no shutdown to negotiate, and an abort releases the association
-	// at once instead of leaving the kernel retransmitting an INIT on a socket
-	// the caller has already given up on. That is the whole point of this
-	// variant, so it is a defer rather than a branch: no early return may skip
-	// it.
+	// The default is abort rather than close on every failure path. Nothing is
+	// established, so there is no shutdown to negotiate, and an abort releases
+	// the association at once instead of leaving the kernel retransmitting an
+	// INIT on a socket the caller has already given up on. Some protocols still
+	// require the caller's timeout to be a quiet local abandon, so the explicit
+	// policy can select a plain close for the same non-established socket.
 	established := false
 	defer func() {
 		if !established {
-			_ = abortSctpSocket(sock)
+			_ = abandonDialSocket(sock, abandonPolicy)
 		}
 	}()
 
@@ -2448,16 +2455,32 @@ func awaitEstablished(ctx context.Context, fd int) error {
 // DialSCTPContext is DialSCTPExt with a context. A nil context is rejected
 // with an error wrapping syscall.EINVAL.
 //
-// The attempt is abandoned as soon as ctx is done: the association is aborted
-// and the socket released before this returns, so nothing further goes on the
-// wire and no descriptor is left behind. A caller expresses a bounded attempt
-// with context.WithTimeout and retries on its own schedule.
+// The attempt is abandoned as soon as ctx is done: by default the association
+// setup is aborted and the socket released before this returns, so no
+// descriptor is left behind. Use DialSCTPContextWithAbandonPolicy with
+// DialAbandonQuiet when the caller needs cancellation or timeout to release the
+// local attempt without intentionally emitting a local ABORT for an association
+// that never reached ESTABLISHED.
 //
 // DialSCTP, DialSCTPExt and SocketConfig.Dial are unchanged and still block for
 // as long as the kernel's own retransmission budget.
 func DialSCTPContext(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg) (*SCTPConn, error) {
+	return DialSCTPContextWithAbandonPolicy(ctx, network, laddr, raddr, options,
+		DialAbandonAbort)
+}
+
+// DialSCTPContextWithAbandonPolicy is DialSCTPContext with explicit control
+// over how a non-established attempt is released when the context expires or
+// another pre-establishment error path returns.
+func DialSCTPContextWithAbandonPolicy(
+	ctx context.Context,
+	network string,
+	laddr, raddr *SCTPAddr,
+	options InitMsg,
+	policy DialAbandonPolicy,
+) (*SCTPConn, error) {
 	return dialSCTPExtConfigContext(ctx, network, laddr, raddr, options, nil, nil,
-		PreAssociationConfig{})
+		PreAssociationConfig{}, policy)
 }
 
 // readSomaxconn reports the kernel's net.core.somaxconn, which bounds the

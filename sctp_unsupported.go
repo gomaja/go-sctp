@@ -386,15 +386,29 @@ func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, 
 }
 
 func DialSCTPContext(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg) (*SCTPConn, error) {
+	return DialSCTPContextWithAbandonPolicy(ctx, network, laddr, raddr, options,
+		DialAbandonAbort)
+}
+
+// DialSCTPContextWithAbandonPolicy is DialSCTPContext with explicit control
+// over how a non-established attempt is released when the context expires or
+// another pre-establishment error path returns.
+func DialSCTPContextWithAbandonPolicy(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg, policy DialAbandonPolicy) (*SCTPConn, error) {
 	if ctx == nil {
 		return nil, errNilContext
+	}
+	if err := validateDialAbandonPolicy(policy); err != nil {
+		return nil, err
 	}
 	return nil, ErrUnsupported
 }
 
-func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network string, address string, c syscall.RawConn) error, handler NotificationHandler, preAssociation PreAssociationConfig) (*SCTPConn, error) {
+func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network string, address string, c syscall.RawConn) error, handler NotificationHandler, preAssociation PreAssociationConfig, policy DialAbandonPolicy) (*SCTPConn, error) {
 	if ctx == nil {
 		return nil, errNilContext
+	}
+	if err := validateDialAbandonPolicy(policy); err != nil {
+		return nil, err
 	}
 	if _, err := preparePreAssociationConfig(preAssociation, preAssociationOneToOne); err != nil {
 		return nil, err

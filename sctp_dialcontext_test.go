@@ -173,6 +173,113 @@ func TestDialContextCancelDuringDial(t *testing.T) {
 	}
 }
 
+// TestDialContextQuietAbandonPolicyReleasesAttempt covers the opt-in policy for
+// protocols where a context deadline is a local abandon, not a request to emit a
+// local ABORT for an association that never reached ESTABLISHED.
+func TestDialContextQuietAbandonPolicyReleasesAttempt(t *testing.T) {
+	if !silentPeerAvailable(t) {
+		t.Skip("needs a silent peer; see TestDialContextTimeoutAbandonsTheAttempt")
+	}
+
+	baseline := countAssocs(t)
+	fdsBefore := openFds(t)
+
+	const budget = 1500 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+
+	start := time.Now()
+	conn, err := new(SocketConfig).DialContextWithAbandonPolicy(ctx, "sctp4",
+		nil, unreachableAddr(), DialAbandonQuiet)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		_ = conn.CloseWithTimeout(200 * time.Millisecond)
+		t.Fatal("dial to a silent peer succeeded")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed < budget/2 {
+		t.Errorf("returned after %v, well before its %v budget", elapsed, budget)
+	}
+	if elapsed > budget*4 {
+		t.Errorf("returned after %v, far past its %v budget", elapsed, budget)
+	}
+	if got := countAssocs(t); got > baseline {
+		t.Errorf("%d associations remain against a baseline of %d; the quiet "+
+			"abandon did not release the in-kernel attempt", got, baseline)
+	}
+	if after := openFds(t); after > fdsBefore {
+		t.Errorf("descriptor count went %d -> %d; the socket was not released",
+			fdsBefore, after)
+	}
+}
+
+// TestDialContextQuietAbandonPolicyCancelDuringDial pins cancellation as well
+// as timeout for the explicit quiet policy.
+func TestDialContextQuietAbandonPolicyCancelDuringDial(t *testing.T) {
+	if !silentPeerAvailable(t) {
+		t.Skip("needs a silent peer; see TestDialContextTimeoutAbandonsTheAttempt")
+	}
+
+	baseline := countAssocs(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	conn, err := DialSCTPContextWithAbandonPolicy(ctx, "sctp4", nil,
+		unreachableAddr(), InitMsg{}, DialAbandonQuiet)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		_ = conn.CloseWithTimeout(200 * time.Millisecond)
+		t.Fatal("dial to a silent peer succeeded")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("returned after %v; the cancellation was ignored and the call "+
+			"ran on toward its 30s budget", elapsed)
+	}
+	if got := countAssocs(t); got > baseline {
+		t.Errorf("%d associations remain against a baseline of %d", got, baseline)
+	}
+}
+
+// TestDialContextInvalidAbandonPolicyOpensNoSocket makes the policy validation
+// fail before descriptor creation. A later validation would still return an
+// error, but it would run Control and briefly hand ownership of a raw socket to
+// caller code for an unusable request.
+func TestDialContextInvalidAbandonPolicyOpensNoSocket(t *testing.T) {
+	before := openFds(t)
+
+	sawControl := false
+	cfg := SocketConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			sawControl = true
+			return nil
+		},
+	}
+	_, err := cfg.DialContextWithAbandonPolicy(context.Background(), "sctp4",
+		nil, unreachableAddr(), DialAbandonPolicy(99))
+	if !errors.Is(err, syscall.EINVAL) {
+		t.Fatalf("err = %v, want syscall.EINVAL", err)
+	}
+	if sawControl {
+		t.Error("Control ran for an invalid abandon policy")
+	}
+	if after := openFds(t); after != before {
+		t.Errorf("descriptor count went %d -> %d", before, after)
+	}
+}
+
 // TestDialContextAbandonedAttemptsLeakNothing runs the abandoned path enough
 // times that a per-attempt leak would be unmistakable.
 func TestDialContextAbandonedAttemptsLeakNothing(t *testing.T) {

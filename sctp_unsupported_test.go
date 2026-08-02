@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -171,9 +172,14 @@ func unsupportedStubCases() []unsupportedStubCase {
 			_, err := DialSCTPContext(context.Background(), "sctp", nil, nil, InitMsg{})
 			return err
 		}},
+		{"DialSCTPContextWithAbandonPolicy", func() error {
+			_, err := DialSCTPContextWithAbandonPolicy(context.Background(), "sctp",
+				nil, nil, InitMsg{}, DialAbandonQuiet)
+			return err
+		}},
 		{"dialSCTPExtConfigContext", func() error {
 			_, err := dialSCTPExtConfigContext(context.Background(), "sctp", nil, nil,
-				InitMsg{}, nil, nil, PreAssociationConfig{})
+				InitMsg{}, nil, nil, PreAssociationConfig{}, DialAbandonAbort)
 			return err
 		}},
 
@@ -213,6 +219,20 @@ func TestNewSCTPConnClosesOwnedDescriptorOnUnsupportedPlatform(t *testing.T) {
 	}
 	if err := file.Close(); err == nil {
 		t.Error("closing the original file succeeded; NewSCTPConn did not close its descriptor")
+	}
+}
+
+func TestDialContextWithAbandonPolicyValidatesPolicyOnUnsupportedPlatform(t *testing.T) {
+	_, err := DialSCTPContextWithAbandonPolicy(context.Background(), "sctp",
+		nil, nil, InitMsg{}, DialAbandonPolicy(99))
+	if !errors.Is(err, syscall.EINVAL) {
+		t.Fatalf("DialSCTPContextWithAbandonPolicy err = %v, want syscall.EINVAL", err)
+	}
+
+	_, err = dialSCTPExtConfigContext(context.Background(), "sctp", nil, nil,
+		InitMsg{}, nil, nil, PreAssociationConfig{}, DialAbandonPolicy(99))
+	if !errors.Is(err, syscall.EINVAL) {
+		t.Fatalf("dialSCTPExtConfigContext err = %v, want syscall.EINVAL", err)
 	}
 }
 

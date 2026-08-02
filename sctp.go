@@ -722,6 +722,49 @@ const SCTP_AUTHENTICATION_EVENT = SCTP_AUTHENTICATION_INDICATION
 // that retains a notification must copy it.
 type NotificationHandler func([]byte) error
 
+// DialAbandonPolicy controls how a context-aware dial releases a socket after
+// the SCTP association setup has started but before it has completed.
+type DialAbandonPolicy uint8
+
+const (
+	// DialAbandonAbort preserves DialContext's historical behavior: if the
+	// context-aware dial returns before an association is established, the
+	// socket is released through the abortive close path. On an existing
+	// association, RFC 9260 §9.1 defines abort as sending an ABORT chunk.
+	DialAbandonAbort DialAbandonPolicy = iota
+	// DialAbandonQuiet releases a non-established context dial by closing the
+	// descriptor without arming abortive linger. It is for callers that need
+	// cancellation or timeout to stop the local attempt without intentionally
+	// emitting a local ABORT for an association that never reached ESTABLISHED.
+	DialAbandonQuiet
+)
+
+func validateDialAbandonPolicy(policy DialAbandonPolicy) error {
+	switch policy {
+	case DialAbandonAbort, DialAbandonQuiet:
+		return nil
+	default:
+		return fmt.Errorf("sctp: invalid dial abandon policy %d: %w",
+			policy, syscall.EINVAL)
+	}
+}
+
+func abandonDialSocketUsing(
+	fd int,
+	policy DialAbandonPolicy,
+	abort func(int) error,
+	quietClose func(int) error,
+) error {
+	switch policy {
+	case DialAbandonAbort:
+		return abort(fd)
+	case DialAbandonQuiet:
+		return quietClose(fd)
+	default:
+		return validateDialAbandonPolicy(policy)
+	}
+}
+
 // EventSubscribe mirrors struct sctp_event_subscribe, the bulk subscription
 // used by SCTP_EVENTS.
 //
@@ -4489,8 +4532,24 @@ func (cfg *SocketConfig) DialContext(ctx context.Context, net string, laddr, rad
 	if cfg == nil {
 		cfg = &SocketConfig{}
 	}
+	return cfg.DialContextWithAbandonPolicy(ctx, net, laddr, raddr,
+		DialAbandonAbort)
+}
+
+// DialContextWithAbandonPolicy is DialContext with explicit control over how a
+// non-established attempt is released when the context expires or another
+// pre-establishment error path returns.
+func (cfg *SocketConfig) DialContextWithAbandonPolicy(
+	ctx context.Context,
+	net string,
+	laddr, raddr *SCTPAddr,
+	policy DialAbandonPolicy,
+) (*SCTPConn, error) {
+	if cfg == nil {
+		cfg = &SocketConfig{}
+	}
 	return dialSCTPExtConfigContext(ctx, net, laddr, raddr, cfg.InitMsg,
-		cfg.Control, cfg.NotificationHandler, PreAssociationConfig{})
+		cfg.Control, cfg.NotificationHandler, PreAssociationConfig{}, policy)
 }
 
 // Listen is SocketConfig.Listen with the snapshotted pre-association plan.
@@ -4512,7 +4571,20 @@ func (cfg *PreconfiguredSocket) Dial(network string, laddr, raddr *SCTPAddr) (*S
 func (cfg *PreconfiguredSocket) DialContext(
 	ctx context.Context, network string, laddr, raddr *SCTPAddr,
 ) (*SCTPConn, error) {
+	return cfg.DialContextWithAbandonPolicy(ctx, network, laddr, raddr,
+		DialAbandonAbort)
+}
+
+// DialContextWithAbandonPolicy is DialContext with explicit control over how a
+// non-established attempt is released when the context expires or another
+// pre-establishment error path returns.
+func (cfg *PreconfiguredSocket) DialContextWithAbandonPolicy(
+	ctx context.Context,
+	network string,
+	laddr, raddr *SCTPAddr,
+	policy DialAbandonPolicy,
+) (*SCTPConn, error) {
 	socket, pre := cfg.snapshot()
 	return dialSCTPExtConfigContext(ctx, network, laddr, raddr, socket.InitMsg,
-		socket.Control, socket.NotificationHandler, pre)
+		socket.Control, socket.NotificationHandler, pre, policy)
 }

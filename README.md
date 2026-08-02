@@ -149,6 +149,21 @@ Multiple goroutines may invoke its methods concurrently. Ordinary `Read` and
 `SCTPListener.SetDeadline` provides the corresponding deadline for pending and
 future `Accept` calls, and listener `Close` interrupts a blocked `Accept`.
 
+`DialContext` releases a non-established attempt promptly when the context is
+done. Its default release path is abortive for compatibility. Protocols that
+must treat timeout or cancellation as a quiet local abandon can opt in
+explicitly:
+
+```go
+conn, err := socketConfig.DialContextWithAbandonPolicy(
+        ctx,
+        "sctp4",
+        nil,
+        peer,
+        sctp.DialAbandonQuiet,
+)
+```
+
 Pre-association socket configuration
 ----
 

@@ -284,12 +284,38 @@ func TestSocketConfigPreAssociationListenerReadback(t *testing.T) {
 }
 
 func TestSocketConfigPreAssociationRTOInfoOnDialPaths(t *testing.T) {
-	for _, useContext := range []bool{false, true} {
-		name := "Dial"
-		if useContext {
-			name = "DialContext"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dial func(*testing.T, *PreconfiguredSocket, *SCTPListener) (*SCTPConn, error)
+	}{
+		{
+			name: "Dial",
+			dial: func(t *testing.T, cfg *PreconfiguredSocket, listener *SCTPListener) (*SCTPConn, error) {
+				t.Helper()
+				return cfg.Dial("sctp4", nil, listenerAddr(t, listener))
+			},
+		},
+		{
+			name: "DialContext",
+			dial: func(t *testing.T, cfg *PreconfiguredSocket, listener *SCTPListener) (*SCTPConn, error) {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				t.Cleanup(cancel)
+				return cfg.DialContext(ctx, "sctp4", nil, listenerAddr(t, listener))
+			},
+		},
+		{
+			name: "DialContextWithQuietAbandonPolicy",
+			dial: func(t *testing.T, cfg *PreconfiguredSocket, listener *SCTPListener) (*SCTPConn, error) {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				t.Cleanup(cancel)
+				return cfg.DialContextWithAbandonPolicy(ctx, "sctp4", nil,
+					listenerAddr(t, listener), DialAbandonQuiet)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			const rtoInitial = 500
 			const rtoMax = 2000
 			const rtoMin = 200
@@ -318,17 +344,9 @@ func TestSocketConfigPreAssociationRTOInfoOnDialPaths(t *testing.T) {
 			}()
 
 			cfg := new(SocketConfig).WithPreAssociation(pre)
-			var client *SCTPConn
-			if useContext {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				client, err = cfg.DialContext(ctx, "sctp4", nil,
-					listenerAddr(t, listener))
-			} else {
-				client, err = cfg.Dial("sctp4", nil, listenerAddr(t, listener))
-			}
+			client, err := tc.dial(t, cfg, listener)
 			if err != nil {
-				t.Fatalf("%s: %v", name, err)
+				t.Fatalf("%s: %v", tc.name, err)
 			}
 			t.Cleanup(func() { _ = client.Close() })
 
