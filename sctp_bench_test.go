@@ -4,8 +4,11 @@
 package sctp
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"runtime"
 	"strconv"
@@ -90,6 +93,44 @@ func benchPair(b *testing.B) (client, server *SCTPConn) {
 	for _, c := range []*SCTPConn{client, server} {
 		raiseBuffers(b, c)
 	}
+	return client, server
+}
+
+// benchTCPPair provides the control transport for BenchmarkTransportEcho. It
+// uses the kernel TCP stack over the same loopback path as benchPair, with all
+// setup kept outside the timed section.
+func benchTCPPair(b *testing.B) (client, server net.Conn) {
+	b.Helper()
+
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		b.Fatalf("TCP listen: %v", err)
+	}
+	b.Cleanup(func() { _ = ln.Close() })
+
+	type acceptResult struct {
+		conn net.Conn
+		err  error
+	}
+	accepted := make(chan acceptResult, 1)
+	go func() {
+		conn, acceptErr := ln.Accept()
+		accepted <- acceptResult{conn: conn, err: acceptErr}
+	}()
+
+	client, err = net.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		b.Fatalf("TCP dial: %v", err)
+	}
+	b.Cleanup(func() { _ = client.Close() })
+
+	result := <-accepted
+	if result.err != nil {
+		b.Fatalf("TCP accept: %v", result.err)
+	}
+	server = result.conn
+	b.Cleanup(func() { _ = server.Close() })
+
 	return client, server
 }
 
@@ -625,6 +666,108 @@ func BenchmarkDial(b *testing.B) {
 		}
 		_ = c.Close()
 	}
+}
+
+// BenchmarkTransportEcho provides a reproducible SCTP-to-TCP reference under
+// one process, kernel, payload, and request/response workload. Absolute numbers
+// vary with host tuning; the paired sub-benchmarks are intended for repeated
+// benchstat comparisons, not a pass/fail performance threshold.
+func BenchmarkTransportEcho(b *testing.B) {
+	transports := []struct {
+		name string
+		pair func(*testing.B) (net.Conn, net.Conn)
+	}{
+		{"SCTP", func(b *testing.B) (net.Conn, net.Conn) {
+			client, server := benchPair(b)
+			return client, server
+		}},
+		{"TCP", benchTCPPair},
+	}
+
+	for _, transport := range transports {
+		b.Run(transport.name, func(b *testing.B) {
+			for _, size := range []int{64, 512, 4096} {
+				b.Run(fmt.Sprintf("bytes=%d", size), func(b *testing.B) {
+					client, server := transport.pair(b)
+					benchmarkEchoRoundTrip(b, client, server, size)
+				})
+			}
+		})
+	}
+}
+
+func benchmarkEchoRoundTrip(b *testing.B, client, server net.Conn, size int) {
+	b.Helper()
+
+	deadline := time.Now().Add(10 * time.Minute)
+	if err := client.SetDeadline(deadline); err != nil {
+		b.Fatalf("client deadline: %v", err)
+	}
+	if err := server.SetDeadline(deadline); err != nil {
+		b.Fatalf("server deadline: %v", err)
+	}
+
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		buf := make([]byte, size)
+		for {
+			if _, err := io.ReadFull(server, buf); err != nil {
+				return
+			}
+			if err := benchWriteConn(server, buf); err != nil {
+				return
+			}
+		}
+	}()
+	b.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+		<-finished
+	})
+
+	payload := make([]byte, size)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	reply := make([]byte, size)
+	if err := benchWriteConn(client, payload); err != nil {
+		b.Fatalf("warm-up write: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		b.Fatalf("warm-up read: %v", err)
+	}
+	if !bytes.Equal(reply, payload) {
+		b.Fatal("warm-up echo changed the payload")
+	}
+
+	b.SetBytes(int64(2 * size))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := benchWriteConn(client, payload); err != nil {
+			b.Fatalf("write: %v", err)
+		}
+		if _, err := io.ReadFull(client, reply); err != nil {
+			b.Fatalf("read: %v", err)
+		}
+	}
+}
+
+func benchWriteConn(conn net.Conn, payload []byte) error {
+	for len(payload) > 0 {
+		n, err := conn.Write(payload)
+		if n > 0 {
+			payload = payload[n:]
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrNoProgress
+		}
+	}
+	return nil
 }
 
 // BenchmarkConcurrentEcho measures request/response throughput with several

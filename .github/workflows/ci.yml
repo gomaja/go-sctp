@@ -109,7 +109,7 @@ jobs:
           cache: true
       - uses: dominikh/staticcheck-action@v1.4.1
         with:
-          version: latest
+          version: v0.8.0-rc.1
           install-go: false
       - uses: golangci/golangci-lint-action@v9.3.0
         with:

@@ -4,6 +4,7 @@
 package sctp
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sort"
@@ -197,6 +198,113 @@ func TestMultihomedAssociationExchangesAddresses(t *testing.T) {
 	}
 	if got := string(buf[:n]); got != msg {
 		t.Errorf("got %q, want %q", got, msg)
+	}
+}
+
+// TestMultihomedListenerAcceptsEveryBoundAddress guards the endpoint property
+// from RFC 9260 §1.2 and §6.4: an association spans every transport address
+// the endpoint advertises. A listener that accepts only on the first address
+// can pass the full-list dial above, because the kernel is free to choose that
+// working path without ever exercising the other one.
+func TestMultihomedListenerAcceptsEveryBoundAddress(t *testing.T) {
+	serverIPs := requireLoopbacks(t, 2)[:2]
+
+	for _, targetIP := range serverIPs {
+		t.Run(targetIP, func(t *testing.T) {
+			ln, err := ListenSCTP("sctp4", sctpAddr(serverIPs, 0))
+			if err != nil {
+				t.Fatalf("multihomed listen on %v: %v", serverIPs, err)
+			}
+			defer func() { _ = ln.Close() }()
+
+			bound, ok := ln.Addr().(*SCTPAddr)
+			if !ok {
+				t.Fatal("listener has no address")
+			}
+			if got, want := ipStrings(bound), sortedCopy(serverIPs); !equalStrings(got, want) {
+				t.Fatalf("listener bound %v, want %v", got, want)
+			}
+
+			target := sctpAddr([]string{targetIP}, bound.Port)
+			if err := ln.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+				t.Fatalf("accept deadline: %v", err)
+			}
+
+			type acceptResult struct {
+				conn *SCTPConn
+				err  error
+			}
+			accepted := make(chan acceptResult, 1)
+			go func() {
+				conn, acceptErr := ln.AcceptSCTP()
+				accepted <- acceptResult{conn: conn, err: acceptErr}
+			}()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			client, err := DialSCTPContext(ctx, "sctp4", nil, target,
+				InitMsg{NumOstreams: SCTP_MAX_STREAM})
+			if err != nil {
+				t.Fatalf("dial bound address %s: %v", targetIP, err)
+			}
+			defer func() { _ = client.Close() }()
+
+			result := <-accepted
+			if result.err != nil {
+				t.Fatalf("accept connection to %s: %v", targetIP, result.err)
+			}
+			server := result.conn
+			defer func() { _ = server.Close() }()
+
+			for _, check := range []struct {
+				what string
+				got  func() (*SCTPAddr, error)
+			}{
+				{"client peer", func() (*SCTPAddr, error) { return client.SCTPRemoteAddr(0) }},
+				{"server local", func() (*SCTPAddr, error) { return server.SCTPLocalAddr(0) }},
+			} {
+				addr, addrErr := check.got()
+				if addrErr != nil {
+					t.Errorf("%s addresses after dialing %s: %v", check.what, targetIP, addrErr)
+					continue
+				}
+				if got, want := ipStrings(addr), sortedCopy(serverIPs); !equalStrings(got, want) {
+					t.Errorf("%s addresses after dialing %s = %v, want %v",
+						check.what, targetIP, got, want)
+				}
+			}
+
+			if err := client.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+				t.Fatalf("client deadline: %v", err)
+			}
+			if err := server.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+				t.Fatalf("server deadline: %v", err)
+			}
+
+			want := []byte("dial-" + targetIP)
+			if err := writeAll(client, want, nil); err != nil {
+				t.Fatalf("write to %s: %v", targetIP, err)
+			}
+			buf := make([]byte, len(want))
+			n, _, err := server.SCTPRead(buf)
+			if err != nil {
+				t.Fatalf("read from %s: %v", targetIP, err)
+			}
+			if got := string(buf[:n]); got != string(want) {
+				t.Fatalf("server read from %s = %q, want %q", targetIP, got, want)
+			}
+
+			if err := writeAll(server, want, nil); err != nil {
+				t.Fatalf("reply after dialing %s: %v", targetIP, err)
+			}
+			n, _, err = client.SCTPRead(buf)
+			if err != nil {
+				t.Fatalf("read reply after dialing %s: %v", targetIP, err)
+			}
+			if got := string(buf[:n]); got != string(want) {
+				t.Fatalf("client read after dialing %s = %q, want %q", targetIP, got, want)
+			}
+		})
 	}
 }
 
