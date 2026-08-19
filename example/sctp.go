@@ -116,9 +116,7 @@ func main() {
 
 			go func(client net.Conn) {
 				defer func() { _ = client.Close() }()
-				if err := serveClient(client, *bufsize); err != nil {
-					log.Printf("serveClient: %v", err)
-				}
+				log.Printf("serveClient: %v", serveClient(client, *bufsize))
 			}(wconn)
 		}
 
