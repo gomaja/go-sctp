@@ -9,6 +9,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +18,40 @@ import (
 	"testing"
 	"time"
 )
+
+func TestUnsupportedHighLevelErrorsCarryOperationContext(t *testing.T) {
+	local := &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}}, Port: 0}
+	remote := &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.IPv4(127, 0, 0, 2)}}, Port: 2905}
+
+	_, err := ListenSCTP("sctp4", local)
+	_ = requireSCTPOpError(t, err, "listen", "sctp4", nil, local, ErrUnsupported)
+
+	_, err = DialSCTP("sctp4", local, remote)
+	_ = requireSCTPOpError(t, err, "dial", "sctp4", local, remote, ErrUnsupported)
+
+	_, err = DialSCTPContext(context.Background(), "sctp4", local, remote, InitMsg{})
+	_ = requireSCTPOpError(t, err, "dial", "sctp4", local, remote, ErrUnsupported)
+
+	_, err = (&SCTPListener{}).AcceptSCTP()
+	_ = requireSCTPOpError(t, err, "accept", "sctp", nil, nil, ErrUnsupported)
+
+	conn := &SCTPConn{}
+	_, err = conn.Read(make([]byte, 1))
+	_ = requireSCTPOpError(t, err, "read", "sctp", nil, nil, ErrUnsupported)
+	_, err = conn.Write([]byte{1})
+	_ = requireSCTPOpError(t, err, "write", "sctp", nil, nil, ErrUnsupported)
+}
+
+func TestUnsupportedRawConnectErrorRemainsUnwrapped(t *testing.T) {
+	_, err := SCTPConnect(-1, &SCTPAddr{})
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("SCTPConnect error = %v, want ErrUnsupported", err)
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		t.Fatalf("SCTPConnect error = %#v, raw descriptor helper must not return *net.OpError", opErr)
+	}
+}
 
 type unsupportedStubCase struct {
 	name string
@@ -29,7 +64,7 @@ func unsupportedStubCases() []unsupportedStubCase {
 
 	return []unsupportedStubCase{
 		// Constructors and shared socket helpers.
-		{"newSCTPConn", func() error { _, err := newSCTPConn(-1, nil); return err }},
+		{"newSCTPConn", func() error { _, err := newSCTPConn(-1, nil, "sctp"); return err }},
 		{"openSCTPEndpointConfig", func() error {
 			_, err := openSCTPEndpointConfig("sctp", nil, false, InitMsg{}, nil, nil,
 				PreAssociationConfig{})
@@ -123,6 +158,7 @@ func unsupportedStubCases() []unsupportedStubCase {
 		{"SCTPConn.SCTPWriteInfo", func() error { _, err := c.SCTPWriteInfo(nil, nil, nil, nil); return err }},
 		{"SCTPConn.SCTPRead", func() error { _, _, err := c.SCTPRead(nil); return err }},
 		{"SCTPConn.SCTPReadFlags", func() error { _, _, _, err := c.SCTPReadFlags(nil); return err }},
+		{"SCTPConn.netConnReadFlags", func() error { _, _, _, err, _ := c.netConnReadFlags(nil); return err }},
 		{"SCTPConn.SCTPReadMsg", func() error { _, _, _, err := c.SCTPReadMsg(nil, nil); return err }},
 		{"SCTPConn.SCTPReadNextInfo", func() error { _, _, _, _, err := c.SCTPReadNextInfo(nil); return err }},
 		{"SCTPConn.ReadMsg", func() error { _, _, err := c.ReadMsg(1); return err }},

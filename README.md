@@ -387,5 +387,6 @@ Testing
 
 The package includes Go tests for the public API, Linux socket behavior that is
 reachable from ordinary Go code, parser boundaries and portable build behavior.
-Socket-backed tests need a Linux SCTP stack and skip when the required operating
-system support is unavailable.
+Socket-backed tests require a Linux SCTP stack, which the project CI provisions
+before running the Linux suite. Tests for optional kernel capabilities skip when
+the specific capability they exercise is unavailable.

@@ -335,11 +335,11 @@ func TestManyClientsDistinctAssociationIDs(t *testing.T) {
 // TestManyClientsPerConnectionDeadlineIsolation pins deadlines as
 // per-connection state.
 //
-// The deadline lives in the SCTPConn and is programmed onto the socket as
-// SO_RCVTIMEO before each read. If it were ever stored somewhere shared — a
-// package-level variable, or state hung off the listener — one client's short
-// deadline would expire another client's read. This sets an immediate deadline
-// on one connection and requires the others to keep working.
+// Each SCTPConn owns an independent runtime-poller descriptor and deadline
+// state. If the deadline were ever stored somewhere shared — a package-level
+// variable, or state hung off the listener — one client's short deadline would
+// expire another client's read. This sets an immediate deadline on one
+// connection and requires the others to keep working.
 func TestManyClientsPerConnectionDeadlineIsolation(t *testing.T) {
 	const clients = 8
 
@@ -510,7 +510,7 @@ func TestManyClientsCloseDoesNotDisturbPeers(t *testing.T) {
 	// Prime every association so the server has a goroutine on each.
 	buf := make([]byte, 4096)
 	for i, c := range conns {
-		if err := writeAll(c, []byte(fmt.Sprintf("prime-%d", i)), nil); err != nil {
+		if err := writeAll(c, fmt.Appendf(nil, "prime-%d", i), nil); err != nil {
 			t.Fatalf("client %d prime write: %v", i, err)
 		}
 		if _, _, err := c.SCTPRead(buf); err != nil {
@@ -628,7 +628,7 @@ func TestManyClientsNotificationsCarryAssociationID(t *testing.T) {
 		if derr != nil {
 			t.Fatalf("client %d dial: %v", i, derr)
 		}
-		if werr := writeAll(c, []byte(fmt.Sprintf("peer-%d", i)), nil); werr != nil {
+		if werr := writeAll(c, fmt.Appendf(nil, "peer-%d", i), nil); werr != nil {
 			t.Fatalf("client %d write: %v", i, werr)
 		}
 

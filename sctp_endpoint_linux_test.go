@@ -367,6 +367,14 @@ func TestSCTPEndpointRoundTripAndPeelOffOwnership(t *testing.T) {
 	if !bytes.Equal(buf[:n], stillPeeled) {
 		t.Fatalf("peeled payload = %q, want %q", buf[:n], stillPeeled)
 	}
+
+	local := peeled.LocalAddr().(*SCTPAddr)
+	remote := peeled.RemoteAddr().(*SCTPAddr)
+	if err := peeled.Abort(); err != nil {
+		t.Fatalf("peeled Abort: %v", err)
+	}
+	_, err = peeled.Read(make([]byte, 1))
+	_ = requireSCTPOpError(t, err, "read", "sctp4", local, remote, net.ErrClosed)
 }
 
 func TestSCTPEndpointCreatesAndRoutesMultipleAssociations(t *testing.T) {

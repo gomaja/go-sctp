@@ -1986,6 +1986,7 @@ type SCTPConn struct {
 	file                *os.File
 	raw                 syscall.RawConn
 	initErr             error
+	network             string
 
 	// bindMu serializes dynamic address changes so that an older readback can
 	// never overwrite the cache produced by a newer operation.
@@ -2008,18 +2009,36 @@ func (c *SCTPConn) fd() int {
 // them from subsequent operations because this compatibility signature cannot
 // return an error directly.
 func NewSCTPConn(fd int, handler NotificationHandler) *SCTPConn {
-	conn, err := newSCTPConn(fd, handler)
+	conn, err := newSCTPConn(fd, handler, "sctp")
 	if err != nil {
 		return &SCTPConn{
 			_fd:                 -1,
 			notificationHandler: handler,
 			initErr:             err,
+			network:             "sctp",
 		}
 	}
 	return conn
 }
 
-func (c *SCTPConn) Write(b []byte) (int, error) {
+func (c *SCTPConn) operationNetwork() string {
+	if c != nil && c.network != "" {
+		return c.network
+	}
+	return "sctp"
+}
+
+func (c *SCTPConn) Write(b []byte) (n int, err error) {
+	defer func() {
+		if err != nil {
+			cause := err
+			if isPackageClosedOperationError(err, "write") {
+				cause = net.ErrClosed
+			}
+			err = wrapSCTPOpError("write", c.operationNetwork(), c.LocalAddr(), c.RemoteAddr(), cause)
+		}
+	}()
+
 	// net.Conn's Write reports (0, nil) for an empty buffer. The kernel refuses
 	// a zero-length SCTP message with EINVAL — confirmed against it directly,
 	// so it is not an artefact of this binding — which is a fine answer for
@@ -2034,9 +2053,21 @@ func (c *SCTPConn) Write(b []byte) (int, error) {
 	return c.write(b)
 }
 
-func (c *SCTPConn) Read(b []byte) (int, error) {
+func (c *SCTPConn) Read(b []byte) (n int, err error) {
+	var packageClosed bool
+	defer func() {
+		if err != nil && err != io.EOF {
+			cause := err
+			if packageClosed {
+				cause = net.ErrClosed
+			}
+			err = wrapSCTPOpError("read", c.operationNetwork(), c.LocalAddr(), c.RemoteAddr(), cause)
+		}
+	}()
+
 	for {
-		n, _, flags, err := c.SCTPReadFlags(b)
+		var flags int
+		n, _, flags, err, packageClosed = c.netConnReadFlags(b)
 		if n < 0 {
 			n = 0
 		}
@@ -4126,6 +4157,58 @@ func errClosed(op string) error {
 	return &net.OpError{Op: op, Net: "sctp", Err: net.ErrClosed}
 }
 
+func isPackageClosedOperationError(err error, op string) bool {
+	opErr, ok := err.(*net.OpError)
+	return ok && opErr.Op == op && opErr.Net == "sctp" && opErr.Source == nil &&
+		opErr.Addr == nil && opErr.Err == net.ErrClosed
+}
+
+// wrapSCTPOpError gives the net.Conn-style API operation and address context
+// while preserving the original cause for errors.Is and errors.As. The raw
+// SCTP message and descriptor helpers deliberately do not call it: callers at
+// that layer continue to receive the kernel or validation error directly.
+func wrapSCTPOpError(op, network string, source, addr net.Addr, err error) error {
+	if err == nil {
+		return nil
+	}
+	if network == "" {
+		network = "sctp"
+	}
+	if opErr, ok := err.(*net.OpError); ok && opErr.Op == op && opErr.Net == network {
+		if source == nil {
+			source = opErr.Source
+		}
+		if addr == nil {
+			addr = opErr.Addr
+		}
+		return &net.OpError{
+			Op:     opErr.Op,
+			Net:    opErr.Net,
+			Source: cloneOperationAddr(source),
+			Addr:   cloneOperationAddr(addr),
+			Err:    opErr,
+		}
+	}
+	return &net.OpError{
+		Op:     op,
+		Net:    network,
+		Source: cloneOperationAddr(source),
+		Addr:   cloneOperationAddr(addr),
+		Err:    err,
+	}
+}
+
+func cloneOperationAddr(addr net.Addr) net.Addr {
+	sctpAddr, ok := addr.(*SCTPAddr)
+	if !ok {
+		return addr
+	}
+	if sctpAddr == nil {
+		return nil
+	}
+	return cloneSCTPAddr(sctpAddr)
+}
+
 func normalizePollError(op string, err error) error {
 	if err == nil {
 		return nil
@@ -4144,9 +4227,10 @@ type SCTPListener struct {
 	// _fd is accessed atomically and set to -1 by Close, so a second Close
 	// cannot release a descriptor number the kernel has since handed to
 	// another socket. Use fd() to read it.
-	_fd  int32
-	file *os.File
-	raw  syscall.RawConn
+	_fd     int32
+	file    *os.File
+	raw     syscall.RawConn
+	network string
 
 	// bindMu serializes BindAdd and BindRemove with their cache refresh.
 	bindMu    sync.Mutex
@@ -4154,6 +4238,13 @@ type SCTPListener struct {
 	localAddr *SCTPAddr
 
 	notificationHandler NotificationHandler
+}
+
+func (ln *SCTPListener) operationNetwork() string {
+	if ln != nil && ln.network != "" {
+		return ln.network
+	}
+	return "sctp"
 }
 
 // SetDeadline sets the absolute time after which Accept fails.

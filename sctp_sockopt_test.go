@@ -271,7 +271,7 @@ func TestReusePortBeforeBind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("socket: %v", err)
 	}
-	raw, err := newSCTPConn(sock, nil)
+	raw, err := newSCTPConn(sock, nil, "sctp")
 	if err != nil {
 		t.Fatalf("wrap socket: %v", err)
 	}

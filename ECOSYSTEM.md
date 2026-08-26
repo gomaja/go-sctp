@@ -10,6 +10,47 @@ standards baseline is maintained in [STANDARDS.md](STANDARDS.md), and the RFC
 Editor, the IETF Datatracker, applicable updates, and errata remain the
 authorities. No peer implementation is treated as proof of conformance.
 
+## Focused direct-comparator refresh
+
+The direct kernel-wrapper comparators were rechecked on **2026-08-26**. This
+focused refresh does not rewrite the complete 2026-08-01 survey or its aggregate
+counts; it records only changes that can affect this repository's release
+contract.
+
+| Repository | Default branch revision | Issues | Pull requests |
+| --- | --- | ---: | ---: |
+| [gomaja/go-sctp](https://github.com/gomaja/go-sctp) | `main` at [`5a28aca1fcd0`](https://github.com/gomaja/go-sctp/commit/5a28aca1fcd039e7b7d41283c238bd12994cce67) | 0 | 3, 1 open |
+| Legacy kernel-wrapper corpus | `master` at `19ddcbc6aae2` | 37, 23 open | 55, 6 open |
+| [free5gc/sctp](https://github.com/free5gc/sctp) | `main` at [`e86160f55c75`](https://github.com/free5gc/sctp/commit/e86160f55c756c02d7bdd1ab7c852fc3676c6dbd) | 0 | 8, 1 open |
+| [georgeyanev/go-sctp](https://github.com/georgeyanev/go-sctp) | `master` at [`5ffbc5b0c8e7`](https://github.com/georgeyanev/go-sctp/commit/5ffbc5b0c8e75d28da356f4c725af18d285ccf32) | 0 | 6 |
+
+The legacy default branch and georgeyanev revision are unchanged. Two new
+legacy pull requests, #91 and #92, propose listener and connection deadlines
+through `SO_RCVTIMEO` and `SO_SNDTIMEO`. They confirm that deadline support and
+close wakeups remain active ecosystem defects, but their relative per-syscall
+timeouts do not satisfy Go's absolute deadline contract: changing a deadline
+does not reliably interrupt an operation already blocked in the syscall. This
+repository retains its runtime-poller implementation, where deadlines apply to
+pending and future operations, can be moved or cleared, remain per descriptor,
+and do not leak from a listener into an accepted connection.
+
+[free5gc/sctp PR #8](https://github.com/free5gc/sctp/pull/8) merged as the
+mutable lightweight `v1.2.0` tag. Its close-versus-I/O locking, nil-address
+validation, and additional error context reinforce relevant defect classes.
+The implementation is not transplanted: it wraps raw descriptor helpers as
+well as high-level calls and uses a non-standard error package. The local
+contract instead uses `net.OpError` for `Dial`, `Listen`, `Accept`, and ordinary
+`net.Conn` I/O, preserving the original cause through `errors.Is` and
+`errors.As`; SCTP-specific message operations and raw descriptor helpers keep
+their direct errno or validation error.
+
+The release also fails current Darwin and Windows builds because shared calls
+no longer match its platform-specific stubs; open PR #3 remains the portability
+follow-up. This repository's unsupported-platform API parity and cross-builds
+remain release gates. Its [`setInitOpts` comment](https://github.com/free5gc/sctp/blob/e86160f55c756c02d7bdd1ab7c852fc3676c6dbd/sctp.go#L255-L257)
+still cites obsolete RFC 4960. The current base is RFC 9260; the local socket
+option contract continues to use RFC 6458 section 8.1.2 and current errata.
+
 ## Scope and method
 
 The survey searched for importable Go libraries, Linux SCTP socket wrappers,
@@ -313,6 +354,7 @@ the implemented behavior remains mandatory before a release is published.
 | Message framing, notifications, and control truncation | Implemented; release gate | Drain oversized messages, preserve the next boundary, hide notifications from ordinary reads, and expose truncation/raw OOB safely. |
 | PPID byte-order contract | Implemented; release gate | One host-order public convention across legacy and modern send/receive APIs, with mutation and round-trip coverage. |
 | `SocketConfig.Control` address | Implemented; release gate | Dial passes the remote address, listen passes the local address, and callback errors never leak a descriptor. |
+| High-level network errors | Implemented; release gate | Dial, listen, accept, and ordinary `net.Conn` I/O return `net.OpError` with stable operation and address context while preserving causes; raw SCTP and descriptor helpers remain unwrapped. |
 | `EALREADY` during connect | Covered; retain regression suite | Blocking connect must confirm establishment; a nonblocking raw caller still observes an in-progress error. |
 | One-to-many public API, dynamic bind/unbind, and typed pre-association options | Implemented and validated | `SCTPEndpoint` has an explicit concurrency and ownership model, per-association lifecycle and peeloff, typed bindx, portable prevalidation, Linux option/readback tests, and fail-closed unsupported handling. |
 | `linux/386` | Implemented and cross-validated | Linux socket operations use the `socketcall` ABI where Go exposes no separate syscall; 386 builds, ABI tests, and cross-compilation remain release gates. |

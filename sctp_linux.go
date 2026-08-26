@@ -213,16 +213,20 @@ func wrapSocketFile(fd int, name string) (*os.File, syscall.RawConn, error) {
 	return f, raw, nil
 }
 
-func newSCTPConn(fd int, handler NotificationHandler) (*SCTPConn, error) {
+func newSCTPConn(fd int, handler NotificationHandler, network string) (*SCTPConn, error) {
 	f, raw, err := wrapSocketFile(fd, "sctp-connection")
 	if err != nil {
 		return nil, err
+	}
+	if network == "" {
+		network = "sctp"
 	}
 	c := &SCTPConn{
 		_fd:                 int32(fd),
 		notificationHandler: handler,
 		file:                f,
 		raw:                 raw,
+		network:             network,
 	}
 	_ = raw.Control(func(rawfd uintptr) {
 		c.localAddr, _ = sctpGetAddrs(int(rawfd), 0, SCTP_GET_LOCAL_ADDRS)
@@ -231,15 +235,19 @@ func newSCTPConn(fd int, handler NotificationHandler) (*SCTPConn, error) {
 	return c, nil
 }
 
-func newSCTPListener(fd int, handler NotificationHandler) (*SCTPListener, error) {
+func newSCTPListener(fd int, handler NotificationHandler, network string) (*SCTPListener, error) {
 	f, raw, err := wrapSocketFile(fd, "sctp-listener")
 	if err != nil {
 		return nil, err
+	}
+	if network == "" {
+		network = "sctp"
 	}
 	ln := &SCTPListener{
 		_fd:                 int32(fd),
 		file:                f,
 		raw:                 raw,
+		network:             network,
 		notificationHandler: handler,
 	}
 	_ = raw.Control(func(rawfd uintptr) {
@@ -759,7 +767,7 @@ func parseNxtInfo(b []byte) (*NxtInfo, error) {
 // into a guess and reassembling.
 func (c *SCTPConn) SCTPReadNextInfo(b []byte) (int, *SndRcvInfo, *NxtInfo, int, error) {
 	var nxt *NxtInfo
-	n, info, flags, err := c.readFlags(b, &nxt)
+	n, info, flags, err, _ := c.readFlags(b, &nxt)
 	return n, info, nxt, flags, err
 }
 
@@ -784,6 +792,13 @@ func (c *SCTPConn) SCTPRead(b []byte) (int, *SndRcvInfo, error) {
 // checking it, an oversized message is silently split and the remainder is
 // delivered as what looks like a fresh message.
 func (c *SCTPConn) SCTPReadFlags(b []byte) (int, *SndRcvInfo, int, error) {
+	n, info, flags, err, _ := c.readFlags(b, nil)
+	return n, info, flags, err
+}
+
+func (c *SCTPConn) netConnReadFlags(b []byte) (
+	int, *SndRcvInfo, int, error, bool,
+) {
 	return c.readFlags(b, nil)
 }
 
@@ -817,12 +832,14 @@ func (c *SCTPConn) SCTPReadMsg(b, oob []byte) (n, oobn, flags int, err error) {
 // afterwards would mean either a second read or stashing the result on the
 // connection, and the second is a race as soon as two goroutines read.
 // Passing nil keeps the ordinary path from walking the control buffer twice.
-func (c *SCTPConn) readFlags(b []byte, nxt **NxtInfo) (int, *SndRcvInfo, int, error) {
+func (c *SCTPConn) readFlags(b []byte, nxt **NxtInfo) (
+	int, *SndRcvInfo, int, error, bool,
+) {
 	if c == nil || c.fd() < 0 || c.raw == nil {
-		return 0, nil, 0, errClosed("read")
+		return 0, nil, 0, errClosed("read"), true
 	}
 	if c.initErr != nil {
-		return 0, nil, 0, c.initErr
+		return 0, nil, 0, c.initErr, false
 	}
 
 	// An empty buffer must not touch the stream. recvmsg substitutes a
@@ -838,7 +855,7 @@ func (c *SCTPConn) readFlags(b []byte, nxt **NxtInfo) (int, *SndRcvInfo, int, er
 	// into b[total:], which is empty the moment the buffer fills, so the next
 	// line — b[:total] — panicked on a slice grown past its own capacity.
 	if len(b) == 0 {
-		return 0, nil, 0, nil
+		return 0, nil, 0, nil, false
 	}
 
 	// The control buffer is pooled rather than allocated per call. This is only
@@ -852,22 +869,22 @@ func (c *SCTPConn) readFlags(b []byte, nxt **NxtInfo) (int, *SndRcvInfo, int, er
 	for {
 		n, oobn, recvflags, notification, err := c.recvmsgWithNotification(b, oob)
 		if err != nil {
-			return n, nil, recvflags, err
+			return n, nil, recvflags, err, isPackageClosedOperationError(err, "read")
 		}
 
 		if notification != nil {
 			if err := c.notificationHandler(notification); err != nil {
-				return 0, nil, recvflags, err
+				return 0, nil, recvflags, err, false
 			}
 			continue
 		}
 
 		if n == 0 && oobn == 0 {
-			return 0, nil, recvflags, io.EOF
+			return 0, nil, recvflags, io.EOF, false
 		}
 
 		if recvflags&syscall.MSG_CTRUNC != 0 {
-			return n, nil, recvflags, ErrControlTruncated
+			return n, nil, recvflags, ErrControlTruncated, false
 		}
 		var info *SndRcvInfo
 		if oobn > 0 {
@@ -879,7 +896,7 @@ func (c *SCTPConn) readFlags(b []byte, nxt **NxtInfo) (int, *SndRcvInfo, int, er
 				*nxt, _ = parseNxtInfo(oob[:oobn])
 			}
 		}
-		return n, info, recvflags, err
+		return n, info, recvflags, err, false
 	}
 }
 
@@ -2020,11 +2037,17 @@ func ListenSCTPExt(network string, laddr *SCTPAddr, options InitMsg) (*SCTPListe
 }
 
 // listenSCTPExtConfig - start listener on specified address/port with given SCTP options and socket configuration
-func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig) (*SCTPListener, error) {
-	network, _, err := canonicalNetwork(network)
+func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig) (_ *SCTPListener, err error) {
+	opNetwork := network
+	defer func() {
+		err = wrapSCTPOpError("listen", opNetwork, nil, laddr, err)
+	}()
+
+	network, _, err = canonicalNetwork(network)
 	if err != nil {
 		return nil, err
 	}
+	opNetwork = network
 	if laddr != nil {
 		if err := laddr.validateNetworkFamily(network); err != nil {
 			return nil, err
@@ -2094,7 +2117,7 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, contr
 	if err != nil {
 		return nil, err
 	}
-	ln, wrapErr := newSCTPListener(sock, notificationHandler)
+	ln, wrapErr := newSCTPListener(sock, notificationHandler, network)
 	sock = -1 // newSCTPListener owns the descriptor on both success and error.
 	if wrapErr != nil {
 		err = wrapErr
@@ -2114,18 +2137,28 @@ func FileListener(file *os.File) (*SCTPListener, error) {
 		return nil, os.NewSyscallError("fcntl", err)
 	}
 
-	return newSCTPListener(int(r1), nil)
+	return newSCTPListener(int(r1), nil, "sctp")
 }
 
 // AcceptSCTP waits for and returns the next SCTP connection to the listener.
-func (ln *SCTPListener) AcceptSCTP() (*SCTPConn, error) {
+func (ln *SCTPListener) AcceptSCTP() (_ *SCTPConn, err error) {
+	defer func() {
+		if err != nil {
+			var localAddr net.Addr
+			if ln != nil {
+				localAddr = ln.Addr()
+			}
+			err = wrapSCTPOpError("accept", ln.operationNetwork(), nil, localAddr, err)
+		}
+	}()
+
 	if ln == nil || ln.fd() < 0 || ln.raw == nil {
 		return nil, errClosed("accept")
 	}
 
 	acceptedFD := -1
 	var acceptErr error
-	err := ln.raw.Read(func(fd uintptr) bool {
+	err = ln.raw.Read(func(fd uintptr) bool {
 		for {
 			acceptedFD, _, acceptErr = syscall.Accept4(int(fd),
 				syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC)
@@ -2151,7 +2184,7 @@ func (ln *SCTPListener) AcceptSCTP() (*SCTPConn, error) {
 		}
 		return nil, acceptErr
 	}
-	conn, err := newSCTPConn(acceptedFD, ln.notificationHandler)
+	conn, err := newSCTPConn(acceptedFD, ln.notificationHandler, ln.operationNetwork())
 	if err != nil {
 		// newSCTPConn owns acceptedFD on both success and error.
 		return nil, err
@@ -2214,11 +2247,17 @@ func DialSCTPExt(network string, laddr, raddr *SCTPAddr, options InitMsg) (*SCTP
 }
 
 // dialSCTPExtConfig - same as DialSCTP but with given SCTP options and socket configuration
-func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig) (*SCTPConn, error) {
-	network, _, err := canonicalNetwork(network)
+func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig) (_ *SCTPConn, err error) {
+	opNetwork := network
+	defer func() {
+		err = wrapSCTPOpError("dial", opNetwork, laddr, raddr, err)
+	}()
+
+	network, _, err = canonicalNetwork(network)
 	if err != nil {
 		return nil, err
 	}
+	opNetwork = network
 	if raddr == nil {
 		return nil, &net.AddrError{Err: "missing remote SCTP address", Addr: "<nil>"}
 	}
@@ -2291,7 +2330,7 @@ func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, 
 		err = syscall.ETIMEDOUT
 		return nil, err
 	}
-	conn, wrapErr := newSCTPConn(sock, notificationHandler)
+	conn, wrapErr := newSCTPConn(sock, notificationHandler, network)
 	sock = -1 // newSCTPConn owns the descriptor on both success and error.
 	if wrapErr != nil {
 		err = wrapErr
@@ -2316,14 +2355,20 @@ func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, 
 // the smallest usable value still puts a second INIT on the wire at
 // net.sctp.rto_initial; MaxInitTimeout caps each RTO without bounding the total.
 // So the bound has to come from here.
-func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig, abandonPolicy DialAbandonPolicy) (*SCTPConn, error) {
+func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig, abandonPolicy DialAbandonPolicy) (_ *SCTPConn, err error) {
+	opNetwork := network
+	defer func() {
+		err = wrapSCTPOpError("dial", opNetwork, laddr, raddr, err)
+	}()
+
 	if ctx == nil {
 		return nil, errNilContext
 	}
-	network, _, err := canonicalNetwork(network)
+	network, _, err = canonicalNetwork(network)
 	if err != nil {
 		return nil, err
 	}
+	opNetwork = network
 	if raddr == nil {
 		return nil, &net.AddrError{Err: "missing remote SCTP address", Addr: "<nil>"}
 	}
@@ -2414,7 +2459,7 @@ func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr 
 	}
 
 	established = true
-	conn, err := newSCTPConn(sock, notificationHandler)
+	conn, err := newSCTPConn(sock, notificationHandler, network)
 	if err != nil {
 		// newSCTPConn owns and closes sock on failure.
 		return nil, err
@@ -2597,7 +2642,7 @@ func (c *SCTPConn) PeelOff(id int) (*SCTPConn, error) {
 		if flagged.arg.sd < 0 {
 			return nil, syscall.EINVAL
 		}
-		return newSCTPConn(int(flagged.arg.sd), c.notificationHandler)
+		return newSCTPConn(int(flagged.arg.sd), c.notificationHandler, c.operationNetwork())
 	}
 	if !errors.Is(err, syscall.ENOPROTOOPT) {
 		return nil, err
@@ -2613,5 +2658,5 @@ func (c *SCTPConn) PeelOff(id int) (*SCTPConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newSCTPConn(fd, c.notificationHandler)
+	return newSCTPConn(fd, c.notificationHandler, c.operationNetwork())
 }
