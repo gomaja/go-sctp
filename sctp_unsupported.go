@@ -41,7 +41,7 @@ func sctpGetAddrs(fd, id, optname int) (*SCTPAddr, error) {
 	return nil, ErrUnsupported
 }
 
-func newSCTPConn(fd int, handler NotificationHandler) (*SCTPConn, error) {
+func newSCTPConn(fd int, handler NotificationHandler, network string) (*SCTPConn, error) {
 	if fd >= 0 {
 		if file := os.NewFile(uintptr(fd), "sctp"); file != nil {
 			_ = file.Close()
@@ -296,6 +296,11 @@ func (ln *SCTPListener) SyscallConn() (syscall.RawConn, error) {
 
 func (c *SCTPConn) SCTPReadFlags(b []byte) (int, *SndRcvInfo, int, error) {
 	return 0, nil, 0, ErrUnsupported
+}
+
+func (c *SCTPConn) netConnReadFlags(b []byte) (int, *SndRcvInfo, int, error, bool) {
+	n, info, flags, err := c.SCTPReadFlags(b)
+	return n, info, flags, err, false
 }
 
 func (c *SCTPConn) SCTPReadMsg(b, oob []byte) (n, oobn, flags int, err error) {

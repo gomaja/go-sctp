@@ -49,3 +49,17 @@ func requireSCTPOpError(
 	}
 	return opErr
 }
+
+func TestClosedOperationErrorRetainsNetErrorContract(t *testing.T) {
+	err := errClosed("read")
+	opErr, ok := err.(*net.OpError)
+	if !ok {
+		t.Fatalf("closed error type = %T, want *net.OpError", err)
+	}
+	if _, ok := err.(net.Error); !ok {
+		t.Fatalf("closed error type = %T, want net.Error", err)
+	}
+	if opErr.Op != "read" || opErr.Net != "sctp" || opErr.Err != net.ErrClosed {
+		t.Fatalf("closed error = %#v, want read sctp wrapping net.ErrClosed", opErr)
+	}
+}

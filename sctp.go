@@ -1986,6 +1986,7 @@ type SCTPConn struct {
 	file                *os.File
 	raw                 syscall.RawConn
 	initErr             error
+	network             string
 
 	// bindMu serializes dynamic address changes so that an older readback can
 	// never overwrite the cache produced by a newer operation.
@@ -2008,21 +2009,33 @@ func (c *SCTPConn) fd() int {
 // them from subsequent operations because this compatibility signature cannot
 // return an error directly.
 func NewSCTPConn(fd int, handler NotificationHandler) *SCTPConn {
-	conn, err := newSCTPConn(fd, handler)
+	conn, err := newSCTPConn(fd, handler, "sctp")
 	if err != nil {
 		return &SCTPConn{
 			_fd:                 -1,
 			notificationHandler: handler,
 			initErr:             err,
+			network:             "sctp",
 		}
 	}
 	return conn
 }
 
+func (c *SCTPConn) operationNetwork() string {
+	if c != nil && c.network != "" {
+		return c.network
+	}
+	return "sctp"
+}
+
 func (c *SCTPConn) Write(b []byte) (n int, err error) {
 	defer func() {
 		if err != nil {
-			err = wrapSCTPOpError("write", "sctp", c.LocalAddr(), c.RemoteAddr(), err)
+			cause := err
+			if isPackageClosedOperationError(err, "write") {
+				cause = net.ErrClosed
+			}
+			err = wrapSCTPOpError("write", c.operationNetwork(), c.LocalAddr(), c.RemoteAddr(), cause)
 		}
 	}()
 
@@ -2041,15 +2054,20 @@ func (c *SCTPConn) Write(b []byte) (n int, err error) {
 }
 
 func (c *SCTPConn) Read(b []byte) (n int, err error) {
+	var packageClosed bool
 	defer func() {
 		if err != nil && err != io.EOF {
-			err = wrapSCTPOpError("read", "sctp", c.LocalAddr(), c.RemoteAddr(), err)
+			cause := err
+			if packageClosed {
+				cause = net.ErrClosed
+			}
+			err = wrapSCTPOpError("read", c.operationNetwork(), c.LocalAddr(), c.RemoteAddr(), cause)
 		}
 	}()
 
 	for {
 		var flags int
-		n, _, flags, err = c.SCTPReadFlags(b)
+		n, _, flags, err, packageClosed = c.netConnReadFlags(b)
 		if n < 0 {
 			n = 0
 		}
@@ -4137,6 +4155,12 @@ func timeToUnixNano(t time.Time) int64 {
 // has closed. Callers can recognize it with errors.Is(err, net.ErrClosed).
 func errClosed(op string) error {
 	return &net.OpError{Op: op, Net: "sctp", Err: net.ErrClosed}
+}
+
+func isPackageClosedOperationError(err error, op string) bool {
+	opErr, ok := err.(*net.OpError)
+	return ok && opErr.Op == op && opErr.Net == "sctp" && opErr.Source == nil &&
+		opErr.Addr == nil && opErr.Err == net.ErrClosed
 }
 
 // wrapSCTPOpError gives the net.Conn-style API operation and address context

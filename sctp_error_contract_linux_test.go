@@ -144,6 +144,43 @@ func TestNetConnIOErrorsCarryConnectionContext(t *testing.T) {
 	_ = requireSCTPOpError(t, err, "write", "sctp", local, remote, os.ErrDeadlineExceeded)
 }
 
+func TestNetConnIOErrorsPreserveExplicitNetwork(t *testing.T) {
+	ln, err := ListenSCTP("sctp4", loopbackAddr())
+	if err != nil {
+		t.Fatalf("ListenSCTP: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	client, err := DialSCTP("sctp4", nil, listenerAddr(t, ln))
+	if err != nil {
+		t.Fatalf("DialSCTP: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Abort() })
+	server, err := ln.AcceptSCTP()
+	if err != nil {
+		t.Fatalf("AcceptSCTP: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Abort() })
+
+	serverLocal := server.LocalAddr().(*SCTPAddr)
+	serverRemote := server.RemoteAddr().(*SCTPAddr)
+	if err := server.SetReadDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	_, err = server.Read(make([]byte, 1))
+	_ = requireSCTPOpError(t, err, "read", "sctp4", serverLocal, serverRemote,
+		os.ErrDeadlineExceeded)
+
+	clientLocal := client.LocalAddr().(*SCTPAddr)
+	clientRemote := client.RemoteAddr().(*SCTPAddr)
+	if err := client.SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("SetWriteDeadline: %v", err)
+	}
+	_, err = client.Write([]byte{1})
+	_ = requireSCTPOpError(t, err, "write", "sctp4", clientLocal, clientRemote,
+		os.ErrDeadlineExceeded)
+}
+
 func TestClosedNetConnErrorsRetainConnectionContext(t *testing.T) {
 	_, conn := eorPair(t)
 	local := conn.LocalAddr().(*SCTPAddr)
@@ -153,9 +190,15 @@ func TestClosedNetConnErrorsRetainConnectionContext(t *testing.T) {
 	}
 
 	_, err := conn.Read(make([]byte, 1))
-	_ = requireSCTPOpError(t, err, "read", "sctp", local, remote, net.ErrClosed)
+	readErr := requireSCTPOpError(t, err, "read", "sctp", local, remote, net.ErrClosed)
+	if nested, ok := readErr.Err.(*net.OpError); ok {
+		t.Errorf("read error contains a duplicate operation error: %#v", nested)
+	}
 	_, err = conn.Write([]byte{1})
-	_ = requireSCTPOpError(t, err, "write", "sctp", local, remote, net.ErrClosed)
+	writeErr := requireSCTPOpError(t, err, "write", "sctp", local, remote, net.ErrClosed)
+	if nested, ok := writeErr.Err.(*net.OpError); ok {
+		t.Errorf("write error contains a duplicate operation error: %#v", nested)
+	}
 }
 
 func TestNetConnGracefulCloseReturnsDirectEOF(t *testing.T) {

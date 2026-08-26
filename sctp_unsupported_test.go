@@ -64,7 +64,7 @@ func unsupportedStubCases() []unsupportedStubCase {
 
 	return []unsupportedStubCase{
 		// Constructors and shared socket helpers.
-		{"newSCTPConn", func() error { _, err := newSCTPConn(-1, nil); return err }},
+		{"newSCTPConn", func() error { _, err := newSCTPConn(-1, nil, "sctp"); return err }},
 		{"openSCTPEndpointConfig", func() error {
 			_, err := openSCTPEndpointConfig("sctp", nil, false, InitMsg{}, nil, nil,
 				PreAssociationConfig{})
@@ -158,6 +158,7 @@ func unsupportedStubCases() []unsupportedStubCase {
 		{"SCTPConn.SCTPWriteInfo", func() error { _, err := c.SCTPWriteInfo(nil, nil, nil, nil); return err }},
 		{"SCTPConn.SCTPRead", func() error { _, _, err := c.SCTPRead(nil); return err }},
 		{"SCTPConn.SCTPReadFlags", func() error { _, _, _, err := c.SCTPReadFlags(nil); return err }},
+		{"SCTPConn.netConnReadFlags", func() error { _, _, _, err, _ := c.netConnReadFlags(nil); return err }},
 		{"SCTPConn.SCTPReadMsg", func() error { _, _, _, err := c.SCTPReadMsg(nil, nil); return err }},
 		{"SCTPConn.SCTPReadNextInfo", func() error { _, _, _, _, err := c.SCTPReadNextInfo(nil); return err }},
 		{"SCTPConn.ReadMsg", func() error { _, _, err := c.ReadMsg(1); return err }},

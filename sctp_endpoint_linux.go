@@ -105,7 +105,7 @@ func openSCTPEndpointConfig(
 		}
 	}
 
-	conn, wrapErr := newSCTPConn(sock, handler)
+	conn, wrapErr := newSCTPConn(sock, handler, network)
 	sock = -1 // newSCTPConn owns and closes it on both success and failure.
 	if wrapErr != nil {
 		err = wrapErr
