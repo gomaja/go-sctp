@@ -20,7 +20,7 @@ contract.
 | Repository | Default branch revision | Issues | Pull requests |
 | --- | --- | ---: | ---: |
 | [gomaja/go-sctp](https://github.com/gomaja/go-sctp) | `main` at [`5a28aca1fcd0`](https://github.com/gomaja/go-sctp/commit/5a28aca1fcd039e7b7d41283c238bd12994cce67) | 0 | 3, 1 open |
-| Legacy kernel-wrapper corpus | `master` at `19ddcbc6aae2` | 37, 23 open | 53, 6 open |
+| Legacy kernel-wrapper corpus | `master` at `19ddcbc6aae2` | 37, 23 open | 55, 6 open |
 | [free5gc/sctp](https://github.com/free5gc/sctp) | `main` at [`e86160f55c75`](https://github.com/free5gc/sctp/commit/e86160f55c756c02d7bdd1ab7c852fc3676c6dbd) | 0 | 8, 1 open |
 | [georgeyanev/go-sctp](https://github.com/georgeyanev/go-sctp) | `master` at [`5ffbc5b0c8e7`](https://github.com/georgeyanev/go-sctp/commit/5ffbc5b0c8e75d28da356f4c725af18d285ccf32) | 0 | 6 |
 

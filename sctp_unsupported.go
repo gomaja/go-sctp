@@ -367,7 +367,7 @@ func (ln *SCTPListener) Accept() (net.Conn, error) {
 
 func (ln *SCTPListener) AcceptSCTP() (_ *SCTPConn, err error) {
 	defer func() {
-		err = wrapSCTPOpError("accept", "sctp", nil, nil, err)
+		err = wrapSCTPOpError("accept", ln.operationNetwork(), nil, nil, err)
 	}()
 	// Retain the configured callback in the portable representation even
 	// though this platform can never receive an SCTP notification.

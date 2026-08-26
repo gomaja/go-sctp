@@ -121,7 +121,7 @@ func TestAcceptErrorCarriesListenerContext(t *testing.T) {
 		_ = conn.Abort()
 		t.Fatal("AcceptSCTP returned a connection after its deadline")
 	}
-	_ = requireSCTPOpError(t, err, "accept", "sctp", nil, local, os.ErrDeadlineExceeded)
+	_ = requireSCTPOpError(t, err, "accept", "sctp4", nil, local, os.ErrDeadlineExceeded)
 }
 
 func TestNetConnIOErrorsCarryConnectionContext(t *testing.T) {
@@ -187,7 +187,7 @@ func TestClosedListenerAcceptErrorRetainsListenerContext(t *testing.T) {
 	}
 
 	_, err = ln.AcceptSCTP()
-	_ = requireSCTPOpError(t, err, "accept", "sctp", nil, local, net.ErrClosed)
+	_ = requireSCTPOpError(t, err, "accept", "sctp4", nil, local, net.ErrClosed)
 }
 
 func TestRawConnectErrorRemainsUnwrapped(t *testing.T) {

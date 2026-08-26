@@ -231,15 +231,19 @@ func newSCTPConn(fd int, handler NotificationHandler) (*SCTPConn, error) {
 	return c, nil
 }
 
-func newSCTPListener(fd int, handler NotificationHandler) (*SCTPListener, error) {
+func newSCTPListener(fd int, handler NotificationHandler, network string) (*SCTPListener, error) {
 	f, raw, err := wrapSocketFile(fd, "sctp-listener")
 	if err != nil {
 		return nil, err
+	}
+	if network == "" {
+		network = "sctp"
 	}
 	ln := &SCTPListener{
 		_fd:                 int32(fd),
 		file:                f,
 		raw:                 raw,
+		network:             network,
 		notificationHandler: handler,
 	}
 	_ = raw.Control(func(rawfd uintptr) {
@@ -2100,7 +2104,7 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, contr
 	if err != nil {
 		return nil, err
 	}
-	ln, wrapErr := newSCTPListener(sock, notificationHandler)
+	ln, wrapErr := newSCTPListener(sock, notificationHandler, network)
 	sock = -1 // newSCTPListener owns the descriptor on both success and error.
 	if wrapErr != nil {
 		err = wrapErr
@@ -2120,7 +2124,7 @@ func FileListener(file *os.File) (*SCTPListener, error) {
 		return nil, os.NewSyscallError("fcntl", err)
 	}
 
-	return newSCTPListener(int(r1), nil)
+	return newSCTPListener(int(r1), nil, "sctp")
 }
 
 // AcceptSCTP waits for and returns the next SCTP connection to the listener.
@@ -2131,7 +2135,7 @@ func (ln *SCTPListener) AcceptSCTP() (_ *SCTPConn, err error) {
 			if ln != nil {
 				localAddr = ln.Addr()
 			}
-			err = wrapSCTPOpError("accept", "sctp", nil, localAddr, err)
+			err = wrapSCTPOpError("accept", ln.operationNetwork(), nil, localAddr, err)
 		}
 	}()
 

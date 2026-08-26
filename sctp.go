@@ -4203,9 +4203,10 @@ type SCTPListener struct {
 	// _fd is accessed atomically and set to -1 by Close, so a second Close
 	// cannot release a descriptor number the kernel has since handed to
 	// another socket. Use fd() to read it.
-	_fd  int32
-	file *os.File
-	raw  syscall.RawConn
+	_fd     int32
+	file    *os.File
+	raw     syscall.RawConn
+	network string
 
 	// bindMu serializes BindAdd and BindRemove with their cache refresh.
 	bindMu    sync.Mutex
@@ -4213,6 +4214,13 @@ type SCTPListener struct {
 	localAddr *SCTPAddr
 
 	notificationHandler NotificationHandler
+}
+
+func (ln *SCTPListener) operationNetwork() string {
+	if ln != nil && ln.network != "" {
+		return ln.network
+	}
+	return "sctp"
 }
 
 // SetDeadline sets the absolute time after which Accept fails.

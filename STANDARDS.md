@@ -1,9 +1,9 @@
 # SCTP standards and conformance baseline
 
-This document records the standards baseline for this repository. It was last
-verified on **2026-08-01** against both the RFC Editor and the IETF
-Datatracker. It is a point-in-time record, not a substitute for rechecking the
-authorities before changing a standards-governed subsystem.
+This document records the standards baseline for this repository. The full
+inventory below was verified on **2026-08-01** against both the RFC Editor and
+the IETF Datatracker. It is a point-in-time record, not a substitute for
+rechecking the authorities before changing a standards-governed subsystem.
 
 A focused relationship and errata refresh on **2026-08-26** confirmed that
 [RFC 9260](https://www.rfc-editor.org/rfc/rfc9260.json) remains the current
