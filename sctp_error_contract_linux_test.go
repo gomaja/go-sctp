@@ -57,6 +57,18 @@ func TestDialWrapsForeignOperationError(t *testing.T) {
 	_ = requireSCTPOpError(t, err, "dial", "sctp4", nil, remote, root)
 }
 
+func TestDialPreservesMatchingOperationError(t *testing.T) {
+	root := errors.New("control failed")
+	callbackErr := &net.OpError{Op: "dial", Net: "sctp4", Err: root}
+	remote := &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.IPv4(127, 0, 0, 2)}}, Port: 2905}
+	cfg := SocketConfig{Control: func(string, string, syscall.RawConn) error {
+		return callbackErr
+	}}
+
+	_, err := cfg.Dial("sctp4", nil, remote)
+	_ = requireSCTPOpError(t, err, "dial", "sctp4", nil, remote, callbackErr)
+}
+
 func TestListenErrorCarriesOperationAndAddress(t *testing.T) {
 	cause := errors.New("control failed")
 	local := &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}}, Port: 0}

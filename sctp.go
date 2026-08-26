@@ -4162,7 +4162,7 @@ func wrapSCTPOpError(op, network string, source, addr net.Addr, err error) error
 			Net:    opErr.Net,
 			Source: cloneOperationAddr(source),
 			Addr:   cloneOperationAddr(addr),
-			Err:    opErr.Err,
+			Err:    opErr,
 		}
 	}
 	return &net.OpError{
