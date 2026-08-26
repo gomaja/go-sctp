@@ -5,6 +5,25 @@ verified on **2026-08-01** against both the RFC Editor and the IETF
 Datatracker. It is a point-in-time record, not a substitute for rechecking the
 authorities before changing a standards-governed subsystem.
 
+A focused relationship and errata refresh on **2026-08-26** confirmed that
+[RFC 9260](https://www.rfc-editor.org/rfc/rfc9260.json) remains the current
+Proposed Standard SCTP base and
+[RFC 6458](https://www.rfc-editor.org/rfc/rfc6458.json) remains the current
+Informational sockets API reference. The RFC Editor reports no `Updated by` or
+`Obsoleted by` documents for either RFC, and the corresponding IETF Datatracker
+relationship queries return no incoming update or obsoletion relationship. The
+RFC 9260 inventory remains five Verified, one Held for Document Update, and
+three Rejected errata; the RFC 6458 inventory remains six Verified, four Held,
+and four Rejected errata. The statuses and IDs below are unchanged.
+
+The active TSVWG documents include
+[`draft-ietf-tsvwg-sctp-dtls-chunk-04`](https://datatracker.ietf.org/doc/draft-ietf-tsvwg-sctp-dtls-chunk/)
+and
+[`draft-ietf-tsvwg-dtls-chunk-key-management-01`](https://datatracker.ietf.org/doc/draft-ietf-tsvwg-dtls-chunk-key-management/).
+They define an optional security-chunk facility and its key management; they do
+not replace RFC 9260, update RFC 6458, or change this package's native SCTP over
+IP socket boundary.
+
 ## Conformance boundary
 
 This repository is a Go binding to the SCTP implementation in the operating

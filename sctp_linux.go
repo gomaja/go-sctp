@@ -2020,11 +2020,17 @@ func ListenSCTPExt(network string, laddr *SCTPAddr, options InitMsg) (*SCTPListe
 }
 
 // listenSCTPExtConfig - start listener on specified address/port with given SCTP options and socket configuration
-func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig) (*SCTPListener, error) {
-	network, _, err := canonicalNetwork(network)
+func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig) (_ *SCTPListener, err error) {
+	opNetwork := network
+	defer func() {
+		err = wrapSCTPOpError("listen", opNetwork, nil, laddr, err)
+	}()
+
+	network, _, err = canonicalNetwork(network)
 	if err != nil {
 		return nil, err
 	}
+	opNetwork = network
 	if laddr != nil {
 		if err := laddr.validateNetworkFamily(network); err != nil {
 			return nil, err
@@ -2118,14 +2124,24 @@ func FileListener(file *os.File) (*SCTPListener, error) {
 }
 
 // AcceptSCTP waits for and returns the next SCTP connection to the listener.
-func (ln *SCTPListener) AcceptSCTP() (*SCTPConn, error) {
+func (ln *SCTPListener) AcceptSCTP() (_ *SCTPConn, err error) {
+	defer func() {
+		if err != nil {
+			var localAddr net.Addr
+			if ln != nil {
+				localAddr = ln.Addr()
+			}
+			err = wrapSCTPOpError("accept", "sctp", nil, localAddr, err)
+		}
+	}()
+
 	if ln == nil || ln.fd() < 0 || ln.raw == nil {
 		return nil, errClosed("accept")
 	}
 
 	acceptedFD := -1
 	var acceptErr error
-	err := ln.raw.Read(func(fd uintptr) bool {
+	err = ln.raw.Read(func(fd uintptr) bool {
 		for {
 			acceptedFD, _, acceptErr = syscall.Accept4(int(fd),
 				syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC)
@@ -2214,11 +2230,17 @@ func DialSCTPExt(network string, laddr, raddr *SCTPAddr, options InitMsg) (*SCTP
 }
 
 // dialSCTPExtConfig - same as DialSCTP but with given SCTP options and socket configuration
-func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig) (*SCTPConn, error) {
-	network, _, err := canonicalNetwork(network)
+func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig) (_ *SCTPConn, err error) {
+	opNetwork := network
+	defer func() {
+		err = wrapSCTPOpError("dial", opNetwork, laddr, raddr, err)
+	}()
+
+	network, _, err = canonicalNetwork(network)
 	if err != nil {
 		return nil, err
 	}
+	opNetwork = network
 	if raddr == nil {
 		return nil, &net.AddrError{Err: "missing remote SCTP address", Addr: "<nil>"}
 	}
@@ -2316,14 +2338,20 @@ func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, 
 // the smallest usable value still puts a second INIT on the wire at
 // net.sctp.rto_initial; MaxInitTimeout caps each RTO without bounding the total.
 // So the bound has to come from here.
-func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig, abandonPolicy DialAbandonPolicy) (*SCTPConn, error) {
+func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error, notificationHandler NotificationHandler, preAssociation PreAssociationConfig, abandonPolicy DialAbandonPolicy) (_ *SCTPConn, err error) {
+	opNetwork := network
+	defer func() {
+		err = wrapSCTPOpError("dial", opNetwork, laddr, raddr, err)
+	}()
+
 	if ctx == nil {
 		return nil, errNilContext
 	}
-	network, _, err := canonicalNetwork(network)
+	network, _, err = canonicalNetwork(network)
 	if err != nil {
 		return nil, err
 	}
+	opNetwork = network
 	if raddr == nil {
 		return nil, &net.AddrError{Err: "missing remote SCTP address", Addr: "<nil>"}
 	}

@@ -335,14 +335,18 @@ func (c *SCTPConn) GetReadBuffer() (int, error) {
 }
 
 func ListenSCTP(net string, laddr *SCTPAddr) (*SCTPListener, error) {
-	return nil, ErrUnsupported
+	return ListenSCTPExt(net, laddr, InitMsg{NumOstreams: SCTP_MAX_STREAM})
 }
 
 func ListenSCTPExt(network string, laddr *SCTPAddr, options InitMsg) (*SCTPListener, error) {
-	return nil, ErrUnsupported
+	return listenSCTPExtConfig(network, laddr, options, nil, nil,
+		PreAssociationConfig{})
 }
 
-func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, control func(network string, address string, c syscall.RawConn) error, handler NotificationHandler, preAssociation PreAssociationConfig) (*SCTPListener, error) {
+func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, control func(network string, address string, c syscall.RawConn) error, handler NotificationHandler, preAssociation PreAssociationConfig) (_ *SCTPListener, err error) {
+	defer func() {
+		err = wrapSCTPOpError("listen", network, nil, laddr, err)
+	}()
 	if _, err := preparePreAssociationConfig(preAssociation, preAssociationOneToOne); err != nil {
 		return nil, err
 	}
@@ -354,10 +358,17 @@ func FileListener(file *os.File) (*SCTPListener, error) {
 }
 
 func (ln *SCTPListener) Accept() (net.Conn, error) {
-	return nil, ErrUnsupported
+	conn, err := ln.AcceptSCTP()
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
 }
 
-func (ln *SCTPListener) AcceptSCTP() (*SCTPConn, error) {
+func (ln *SCTPListener) AcceptSCTP() (_ *SCTPConn, err error) {
+	defer func() {
+		err = wrapSCTPOpError("accept", "sctp", nil, nil, err)
+	}()
 	// Retain the configured callback in the portable representation even
 	// though this platform can never receive an SCTP notification.
 	if ln != nil {
@@ -371,14 +382,18 @@ func (ln *SCTPListener) Close() error {
 }
 
 func DialSCTP(net string, laddr, raddr *SCTPAddr) (*SCTPConn, error) {
-	return nil, ErrUnsupported
+	return DialSCTPExt(net, laddr, raddr, InitMsg{NumOstreams: SCTP_MAX_STREAM})
 }
 
 func DialSCTPExt(network string, laddr, raddr *SCTPAddr, options InitMsg) (*SCTPConn, error) {
-	return nil, ErrUnsupported
+	return dialSCTPExtConfig(network, laddr, raddr, options, nil, nil,
+		PreAssociationConfig{})
 }
 
-func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network string, address string, c syscall.RawConn) error, handler NotificationHandler, preAssociation PreAssociationConfig) (*SCTPConn, error) {
+func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network string, address string, c syscall.RawConn) error, handler NotificationHandler, preAssociation PreAssociationConfig) (_ *SCTPConn, err error) {
+	defer func() {
+		err = wrapSCTPOpError("dial", network, laddr, raddr, err)
+	}()
 	if _, err := preparePreAssociationConfig(preAssociation, preAssociationOneToOne); err != nil {
 		return nil, err
 	}
@@ -394,16 +409,14 @@ func DialSCTPContext(ctx context.Context, network string, laddr, raddr *SCTPAddr
 // over how a non-established attempt is released when the context expires or
 // another pre-establishment error path returns.
 func DialSCTPContextWithAbandonPolicy(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg, policy DialAbandonPolicy) (*SCTPConn, error) {
-	if ctx == nil {
-		return nil, errNilContext
-	}
-	if err := validateDialAbandonPolicy(policy); err != nil {
-		return nil, err
-	}
-	return nil, ErrUnsupported
+	return dialSCTPExtConfigContext(ctx, network, laddr, raddr, options, nil, nil,
+		PreAssociationConfig{}, policy)
 }
 
-func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network string, address string, c syscall.RawConn) error, handler NotificationHandler, preAssociation PreAssociationConfig, policy DialAbandonPolicy) (*SCTPConn, error) {
+func dialSCTPExtConfigContext(ctx context.Context, network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network string, address string, c syscall.RawConn) error, handler NotificationHandler, preAssociation PreAssociationConfig, policy DialAbandonPolicy) (_ *SCTPConn, err error) {
+	defer func() {
+		err = wrapSCTPOpError("dial", network, laddr, raddr, err)
+	}()
 	if ctx == nil {
 		return nil, errNilContext
 	}

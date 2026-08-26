@@ -249,8 +249,10 @@ func TestCloseReleasesPortAfterUnresponsivePeer(t *testing.T) {
 // TestListenerAcceptDeadline covers the deadline SCTPListener did not have.
 //
 // Accept could previously only be unblocked by closing the listener, which
-// destroys it. sctp_accept takes its wait budget from SO_RCVTIMEO, so a
-// deadline costs one setsockopt and leaves the listener usable afterwards.
+// destroys it. The listener now delegates its absolute deadline to the Go
+// runtime poller, so changing or clearing it affects a pending Accept and leaves
+// the listener usable afterwards. SO_RCVTIMEO remains independent, as the raw
+// socket timeout test below verifies.
 func TestListenerAcceptDeadline(t *testing.T) {
 	addr, err := ResolveSCTPAddr("sctp", "127.0.0.1:0")
 	if err != nil {
