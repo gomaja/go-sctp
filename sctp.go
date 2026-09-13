@@ -3715,10 +3715,22 @@ func (c *SCTPConn) GetStatus() (*Status, error) { // Status
 	return sctpStatus, err
 }
 
+// Getsockopt reads an SCTP socket option on the connection.
+// optval points to the output buffer; optlen points to a uint32 socket length.
+// Convert Go pointers to uintptr directly in the call's argument list, not in
+// earlier assignments, so the compiler keeps the storage alive and immovable
+// until the call returns (see unsafe.Pointer's syscall conversion rules).
+//
+//go:uintptrescapes
 func (c *SCTPConn) Getsockopt(optname, optval, optlen uintptr) (uintptr, uintptr, error) {
 	return c.getsockoptRaw(optname, optval, optlen)
 }
 
+// Setsockopt sets an SCTP socket option on the connection.
+// optval points to the input buffer; optlen is its length in bytes. Convert Go
+// pointers to uintptr directly in the call's argument list, as for Getsockopt.
+//
+//go:uintptrescapes
 func (c *SCTPConn) Setsockopt(optname, optval, optlen uintptr) (uintptr, uintptr, error) {
 	return c.setsockopt(optname, optval, optlen)
 }

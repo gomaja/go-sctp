@@ -1099,6 +1099,12 @@ func (c *SCTPConn) control(op string, f func(fd int) error) error {
 	return callErr
 }
 
+// These syscall adapters preserve pointer-valued uintptr arguments across
+// Control's callback and possible stack growth. The raw syscall's directive
+// alone cannot protect a caller's pointer through an unannotated Go wrapper.
+// See cmd/compile's Compiler Directives documentation for go:uintptrescapes.
+//
+//go:uintptrescapes
 func (c *SCTPConn) setsockopt(optname, optval, optlen uintptr) (uintptr, uintptr, error) {
 	var r0, r1 uintptr
 	err := c.control("setsockopt", func(fd int) error {
@@ -1109,6 +1115,7 @@ func (c *SCTPConn) setsockopt(optname, optval, optlen uintptr) (uintptr, uintptr
 	return r0, r1, err
 }
 
+//go:uintptrescapes
 func (c *SCTPConn) getsockopt(optname, optval uintptr, optlen *uint32) (uintptr, uintptr, error) {
 	var r0, r1 uintptr
 	err := c.control("getsockopt", func(fd int) error {
@@ -1119,6 +1126,7 @@ func (c *SCTPConn) getsockopt(optname, optval uintptr, optlen *uint32) (uintptr,
 	return r0, r1, err
 }
 
+//go:uintptrescapes
 func (c *SCTPConn) getsockoptRaw(optname, optval, optlen uintptr) (uintptr, uintptr, error) {
 	var r0, r1 uintptr
 	err := c.control("getsockopt", func(fd int) error {
