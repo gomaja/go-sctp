@@ -1289,6 +1289,8 @@ func recvmsg(fd int, b, oob []byte, flags int) (n, oobn, recvflags int, err erro
 // message. Notifications are likewise header-validated and bounded by
 // NotificationReassemblyLimit before being consumed or passed to a handler.
 // The returned SndRcvInfo is from the first application-data fragment.
+// The caller owns the returned payload and metadata; later reads do not
+// overwrite either result.
 func (c *SCTPConn) ReadMsg(max int) ([]byte, *SndRcvInfo, error) {
 	return c.readMsgUsing(max, recvmsg)
 }
@@ -1304,15 +1306,19 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 		return nil, nil, c.initErr
 	}
 
-	// Start well under max so a small message costs a small allocation.
+	// Keep small records inexpensive without changing the accepted maximum.
+	// RFC 6458 §3.1.4: MSG_EOR, not buffer size, marks a complete message.
 	const chunk = 2048
-	size := chunk
+	size := 256
 	if max < size {
 		size = max
 	}
-	buf := make([]byte, size)
-	drainBuf := make([]byte, chunk)
-	var (
+	// The poller callback can escape. Keep its mutable state in one allocation
+	// instead of separately allocating each captured variable. This state is
+	// private to the call, including during notification-handler re-entry.
+	state := struct {
+		buf                     []byte
+		drainBuf                []byte
 		total                   int
 		first                   *SndRcvInfo
 		haveFirstFragment       bool
@@ -1324,16 +1330,20 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 		noteAccumulator         notificationAccumulator
 		notificationStarted     bool
 		notificationQueueFull   bool
-	)
+		immediateNotification   []byte
+		completedReceive        bool
+		partialNotificationErr  error
+		partialApplicationErr   error
+	}{buf: make([]byte, size)}
 	addResultErr := func(err error) {
 		if err == nil {
 			return
 		}
-		if resultErr == nil {
-			resultErr = err
+		if state.resultErr == nil {
+			state.resultErr = err
 			return
 		}
-		resultErr = errors.Join(resultErr, err)
+		state.resultErr = errors.Join(state.resultErr, err)
 	}
 
 	oobp := oobPool.Get().(*[]byte)
@@ -1341,24 +1351,34 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 	defer oobPool.Put(oobp)
 
 	for {
-		var immediateNotification []byte
-		completedReceive := false
-		var partialNotificationErr error
-		var partialApplicationErr error
+		state.immediateNotification = nil
+		state.completedReceive = false
+		state.partialNotificationErr = nil
+		state.partialApplicationErr = nil
 		c.readMu.Lock()
 		pollErr := c.raw.Read(func(fd uintptr) bool {
 			for {
-				if !tooLong && total == len(buf) && total < max {
-					grow := len(buf)
-					if room := max - total; room < grow {
+				if !state.tooLong && state.total == len(state.buf) && state.total < max {
+					grow := len(state.buf)
+					if len(state.buf) < chunk {
+						grow = chunk - len(state.buf)
+					}
+					if room := max - state.total; room < grow {
 						grow = room
 					}
-					buf = append(buf, make([]byte, grow)...)
+					grown := make([]byte, len(state.buf)+grow)
+					copy(grown, state.buf)
+					state.buf = grown
 				}
 
-				dst := drainBuf
-				if !tooLong && !notificationStarted {
-					dst = buf[total:]
+				var dst []byte
+				if !state.tooLong && !state.notificationStarted {
+					dst = state.buf[state.total:]
+				} else {
+					if state.drainBuf == nil {
+						state.drainBuf = make([]byte, chunk)
+					}
+					dst = state.drainBuf
 				}
 
 				n, oobn, flags, recvErr := receive(int(fd), dst, oob, syscall.MSG_DONTWAIT)
@@ -1370,20 +1390,20 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 					return false
 				}
 				if recvErr != nil {
-					if notificationStarted {
-						partialNotificationErr = recvErr
-					} else if haveFirstFragment && !applicationComplete {
-						partialApplicationErr = recvErr
+					if state.notificationStarted {
+						state.partialNotificationErr = recvErr
+					} else if state.haveFirstFragment && !state.applicationComplete {
+						state.partialApplicationErr = recvErr
 					} else {
 						addResultErr(recvErr)
 					}
 					return true
 				}
 				if n == 0 && oobn == 0 {
-					if notificationStarted {
-						partialNotificationErr = io.EOF
-					} else if haveFirstFragment && !applicationComplete {
-						partialApplicationErr = io.EOF
+					if state.notificationStarted {
+						state.partialNotificationErr = io.EOF
+					} else if state.haveFirstFragment && !state.applicationComplete {
+						state.partialApplicationErr = io.EOF
 					} else {
 						addResultErr(io.EOF)
 					}
@@ -1391,65 +1411,65 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 				}
 
 				if flags&MSG_NOTIFICATION != 0 {
-					if !notificationStarted {
-						notificationStarted = true
-						noteAccumulator = notificationAccumulator{
+					if !state.notificationStarted {
+						state.notificationStarted = true
+						state.noteAccumulator = notificationAccumulator{
 							retain: c.notificationHandler != nil &&
-								(!haveFirstFragment || !notificationQueueFull),
+								(!state.haveFirstFragment || !state.notificationQueueFull),
 						}
 					}
-					noteAccumulator.add(dst[:n])
+					state.noteAccumulator.add(dst[:n])
 					if flags&syscall.MSG_EOR == 0 {
 						continue
 					}
 
-					completedReceive = true
-					note, notificationErr := noteAccumulator.finish()
-					notificationStarted = false
+					state.completedReceive = true
+					note, notificationErr := state.noteAccumulator.finish()
+					state.notificationStarted = false
 					if notificationErr != nil {
 						addResultErr(notificationErr)
 						if errors.Is(notificationErr, ErrNotificationTooLong) {
-							notificationQueueFull = true
+							state.notificationQueueFull = true
 						}
-						if !haveFirstFragment {
+						if !state.haveFirstFragment {
 							return true
 						}
 						continue
 					}
 					if c.notificationHandler != nil {
-						if !haveFirstFragment {
-							immediateNotification = note
+						if !state.haveFirstFragment {
+							state.immediateNotification = note
 							return true
 						}
-						if notificationQueueFull {
+						if state.notificationQueueFull {
 							continue
 						}
-						if len(note) > NotificationReassemblyLimit-queuedNotificationBytes {
+						if len(note) > NotificationReassemblyLimit-state.queuedNotificationBytes {
 							addResultErr(ErrNotificationTooLong)
-							notificationQueueFull = true
+							state.notificationQueueFull = true
 							continue
 						}
-						queuedNotifications = append(queuedNotifications, note)
-						queuedNotificationBytes += len(note)
+						state.queuedNotifications = append(state.queuedNotifications, note)
+						state.queuedNotificationBytes += len(note)
 					}
 					// ReadMsg is an application-message API. Notifications are
 					// consumed, whether or not a handler was installed.
 					continue
 				}
-				if notificationStarted {
-					partialNotificationErr = syscall.EPROTO
+				if state.notificationStarted {
+					state.partialNotificationErr = syscall.EPROTO
 					return true
 				}
 
-				if !tooLong {
-					total += n
-					if !haveFirstFragment {
-						haveFirstFragment = true
+				if !state.tooLong {
+					state.total += n
+					if !state.haveFirstFragment {
+						state.haveFirstFragment = true
 						if flags&syscall.MSG_CTRUNC != 0 {
 							addResultErr(ErrControlTruncated)
 						} else if oobn > 0 {
 							var err error
-							first, err = parseSndRcvInfo(oob[:oobn])
+							state.first, err = parseSndRcvInfo(oob[:oobn])
 							if err != nil {
 								addResultErr(err)
 							}
@@ -1457,15 +1477,15 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 					} else if flags&syscall.MSG_CTRUNC != 0 {
 						addResultErr(ErrControlTruncated)
 					}
-					if total == max && flags&syscall.MSG_EOR == 0 {
-						tooLong = true
+					if state.total == max && flags&syscall.MSG_EOR == 0 {
+						state.tooLong = true
 					}
 				}
 
 				if flags&syscall.MSG_EOR != 0 {
-					completedReceive = true
-					applicationComplete = true
-					if tooLong {
+					state.completedReceive = true
+					state.applicationComplete = true
+					if state.tooLong {
 						addResultErr(ErrMsgTooLong)
 					}
 					return true
@@ -1484,23 +1504,23 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 		// If the poller failed with a notification still partial, abort before
 		// invoking any queued handler: handlers may re-enter a read, and must not
 		// get a chance to consume the orphaned tail as a fresh event.
-		recordInterrupted := haveFirstFragment && !applicationComplete
-		if notificationStarted {
-			cause := partialNotificationErr
+		recordInterrupted := state.haveFirstFragment && !state.applicationComplete
+		if state.notificationStarted {
+			cause := state.partialNotificationErr
 			if pollErr != nil {
 				cause = pollErr
 			}
 			if c.fd() < 0 {
-				addResultErr(noteAccumulator.interrupted())
+				addResultErr(state.noteAccumulator.interrupted())
 				addResultErr(errClosed("read"))
 			} else {
-				addResultErr(c.abortInterruptedNotification(&noteAccumulator, cause))
+				addResultErr(c.abortInterruptedNotification(&state.noteAccumulator, cause))
 			}
 			if recordInterrupted {
 				addResultErr(ErrMessageInterrupted)
 			}
 		} else if recordInterrupted {
-			cause := partialApplicationErr
+			cause := state.partialApplicationErr
 			if pollErr != nil {
 				cause = pollErr
 			}
@@ -1519,36 +1539,36 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 		}
 		c.readMu.Unlock()
 
-		if immediateNotification != nil {
-			if err := c.notificationHandler(immediateNotification); err != nil {
+		if state.immediateNotification != nil {
+			if err := c.notificationHandler(state.immediateNotification); err != nil {
 				addResultErr(err)
-				return buf[:total], first, resultErr
+				return state.buf[:state.total], state.first, state.resultErr
 			}
 			if pollErr != nil {
-				return buf[:total], first, resultErr
+				return state.buf[:state.total], state.first, state.resultErr
 			}
 			continue
 		}
 
-		for _, note := range queuedNotifications {
+		for _, note := range state.queuedNotifications {
 			if err := c.notificationHandler(note); err != nil {
 				addResultErr(err)
 				break
 			}
 		}
-		queuedNotifications = nil
-		queuedNotificationBytes = 0
+		state.queuedNotifications = nil
+		state.queuedNotificationBytes = 0
 
 		if pollErr != nil {
-			return buf[:total], first, resultErr
+			return state.buf[:state.total], state.first, state.resultErr
 		}
-		if c.fd() < 0 && !completedReceive && total == 0 {
-			if resultErr != nil {
-				return buf[:total], first, resultErr
+		if c.fd() < 0 && !state.completedReceive && state.total == 0 {
+			if state.resultErr != nil {
+				return state.buf[:state.total], state.first, state.resultErr
 			}
-			return buf[:total], first, errClosed("read")
+			return state.buf[:state.total], state.first, errClosed("read")
 		}
-		return buf[:total], first, resultErr
+		return state.buf[:state.total], state.first, state.resultErr
 	}
 }
 

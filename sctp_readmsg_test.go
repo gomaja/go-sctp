@@ -38,18 +38,17 @@ func fill(n int) []byte {
 
 // TestReadMsgSizeMaxMatrix walks message sizes against ReadMsg limits, with
 // particular attention to the points where the internal buffer growth
-// switches behaviour: the initial 2048-byte chunk, and max itself.
+// switches behaviour: the initial buffer, subsequent growth, and max itself.
 func TestReadMsgSizeMaxMatrix(t *testing.T) {
 	client, server := eorPair(t)
 
-	// These straddle ReadMsg's initial 2048-byte allocation and its doubling
-	// points, where the growth arithmetic changes behaviour.
+	// Exercise both small-record and larger-record growth boundaries.
 	sizes := []int{
-		1, 2047, 2048, 2049,
+		1, 168, 255, 256, 257, 2047, 2048, 2049,
 		4095, 4096, 4097,
 		8192, 20000,
 	}
-	maxes := []int{2048, 4096, 65536}
+	maxes := []int{255, 256, 257, 2048, 4096, 65536}
 
 	for _, max := range maxes {
 		for _, size := range sizes {
@@ -95,7 +94,7 @@ func TestReadMsgSizeMaxMatrix(t *testing.T) {
 func TestReadMsgExactMaxIsComplete(t *testing.T) {
 	client, server := eorPair(t)
 
-	for _, size := range []int{64, 2048, 4096, 9000} {
+	for _, size := range []int{64, 255, 256, 257, 2048, 4096, 9000} {
 		msg := fill(size)
 		if _, err := client.SCTPWrite(msg, nil); err != nil {
 			t.Fatalf("write %d: %v", size, err)
@@ -117,7 +116,7 @@ func TestReadMsgExactMaxIsComplete(t *testing.T) {
 func TestReadMsgOneOverMax(t *testing.T) {
 	client, server := eorPair(t)
 
-	for _, max := range []int{64, 2048, 4096} {
+	for _, max := range []int{64, 255, 256, 257, 2048, 4096} {
 		msg := fill(max + 1)
 		if _, err := client.SCTPWrite(msg, nil); err != nil {
 			t.Fatalf("write: %v", err)
@@ -280,6 +279,9 @@ func TestZeroLengthSendIsRefusedByTheKernel(t *testing.T) {
 // full message comes back, or ErrMsgTooLong with a correct, bounded prefix.
 func FuzzReadMsg(f *testing.F) {
 	f.Add(1, 4096)
+	f.Add(255, 256)
+	f.Add(256, 256)
+	f.Add(257, 256)
 	f.Add(2048, 2048)
 	f.Add(2049, 2048)
 	f.Add(4096, 4096)
@@ -294,6 +296,9 @@ func FuzzReadMsg(f *testing.F) {
 		// Convert through uint before reducing so MinInt cannot overflow when
 		// normalized. Every input maps to a bounded, deterministic case.
 		size = int(uint(size) % 70000)
+		if size == 0 {
+			size = 1
+		}
 		max = int(uint(max) % 70000)
 		if max == 0 {
 			max = 1
@@ -301,7 +306,7 @@ func FuzzReadMsg(f *testing.F) {
 
 		msg := fill(size)
 		if _, err := client.SCTPWrite(msg, nil); err != nil {
-			t.Skipf("write %d: %v", size, err)
+			t.Fatalf("write %d: %v", size, err)
 		}
 
 		got, _, err := server.ReadMsg(max)
