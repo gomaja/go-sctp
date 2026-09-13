@@ -41,7 +41,10 @@ type retainedLargeRead struct {
 func TestReadMsgLargeMixedResultsRemainOwned(t *testing.T) {
 	sizes := []int{
 		4095, 168, 4096, 255, 4097, 256, 4136, 257,
-		2047, 2048, 2049, 8191, 8192, 8193, 65535, 65536, 70000,
+		2047, 2048, 2049, 8191, 8192, 8193,
+		// Repeat each boundary with both exact and larger maximums below.
+		32767, 32767, 32768, 32768, 32769, 32769,
+		65535, 65536, 70000,
 		4136, 168, 4096,
 	}
 	conn := newScriptedReadConn(t, nil)
@@ -94,7 +97,7 @@ func TestReadMsgLargeMixedResultsRemainOwned(t *testing.T) {
 // The rejected prefix is caller-owned too, and draining must leave the next
 // large record intact even when its allocation uses the same size class.
 func TestReadMsgLargeRejectedPrefixSurvivesNextRecord(t *testing.T) {
-	for _, max := range []int{257, 4095, 4096, 4097, 4136, 65535} {
+	for _, max := range []int{257, 2048, 4095, 4096, 4097, 4136, 8192, 32767, 32768, 32769, 65535} {
 		t.Run(fmt.Sprint(max), func(t *testing.T) {
 			oversized := fill(max + 8193)
 			next := bytes.Repeat([]byte{0xd3, 0x19, 0x6e}, (max+2)/3)[:max]
@@ -117,6 +120,72 @@ func TestReadMsgLargeRejectedPrefixSurvivesNextRecord(t *testing.T) {
 			requireOwnedReadResult(t, "next record", later, next, laterInfo, nextInfo)
 			requireOwnedReadResult(t, "retained rejected prefix", got, oversized[:max], info, first)
 		})
+	}
+}
+
+// Nested handlers can hold more active records than a cache class can retain.
+// A cache miss must not wait for an outer handler or alias its active storage.
+func TestReadMsgLargeNestedCacheExhaustion(t *testing.T) {
+	const records = 6
+	receiver := &scriptedRecvmsg{}
+	wants := make([]retainedLargeRead, records)
+	for i := range wants {
+		payload := bytes.Repeat([]byte{byte(i + 1)}, 4136)
+		first := SndRcvInfo{Stream: uint16(i + 1), PPID: uint32(0x11223300 + i), AssocID: int32(i + 1)}
+		wants[i] = retainedLargeRead{want: payload, meta: first}
+		receiver.steps = append(receiver.steps, scriptedRecvmsgStep{
+			data: payload[:4096], oob: buildSndRcvCmsg(&first),
+		})
+		if i < records-1 {
+			receiver.steps = append(receiver.steps, scriptedRecvmsgStep{
+				data: ownershipNotification(byte(i)), flags: MSG_NOTIFICATION | syscall.MSG_EOR,
+			})
+		}
+		receiver.steps = append(receiver.steps, scriptedRecvmsgStep{
+			data: payload[4096:], flags: syscall.MSG_EOR,
+		})
+	}
+
+	conn := newScriptedReadConn(t, nil)
+	var read func() error
+	started, active, peak := 0, 0, 0
+	read = func() error {
+		i := started
+		if i >= records {
+			return errors.New("unexpected nested read")
+		}
+		started++
+		active++
+		if active > peak {
+			peak = active
+		}
+		defer func() { active-- }()
+		data, info, err := conn.readMsgUsing(65535, receiver.receive)
+		if err != nil {
+			return err
+		}
+		wants[i].payload, wants[i].info = data, info
+		for j := i; j < records; j++ {
+			previous := wants[j]
+			requireOwnedReadResult(t, fmt.Sprintf("nested record %d after return %d", j, i),
+				previous.payload, previous.want, previous.info, previous.meta)
+		}
+		return nil
+	}
+	conn.notificationHandler = func([]byte) error { return read() }
+	if err := read(); err != nil {
+		t.Fatal(err)
+	}
+	if started != records || peak != records || active != 0 {
+		t.Fatalf("nested reads: started=%d peak=%d active=%d", started, peak, active)
+	}
+	// Returned results must also survive subsequent same-class reuse.
+	if _, _, err := conn.readMsgUsing(65535, readMsgFixture(fill(4136), nil)); err != nil {
+		t.Fatal(err)
+	}
+	for i, previous := range wants {
+		requireOwnedReadResult(t, fmt.Sprintf("retained nested record %d", i),
+			previous.payload, previous.want, previous.info, previous.meta)
 	}
 }
 
