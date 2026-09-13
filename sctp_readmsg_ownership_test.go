@@ -298,16 +298,20 @@ func TestReadMsgMalformedFirstControlDoesNotLosePayload(t *testing.T) {
 // merely one oversized event. A notification exactly at the per-event limit is
 // deliverable; another valid event between the same application's fragments
 // must be drained but not retained or delivered once the queue would exceed the
-// bound. The next application record must remain framed correctly.
+// bound. The next application record must remain framed correctly, and its
+// interleaved notifications must be retained and delivered normally again.
 func TestReadMsgBoundsQueuedNotificationRetention(t *testing.T) {
 	atLimit := notifSized(SCTP_ASSOC_CHANGE, NotificationReassemblyLimit,
 		NotificationReassemblyLimit, 0x66)
 	nativeEndian.PutUint16(atLimit[8:10], uint16(SCTP_COMM_UP))
 	overAggregate := ownershipNotification(0x77)
+	afterOverflow := ownershipNotification(0x88)
 
 	var handledLengths []int
+	var lastHandled []byte
 	conn := newScriptedReadConn(t, func(note []byte) error {
 		handledLengths = append(handledLengths, len(note))
+		lastHandled = note
 		return nil
 	})
 	receiver := &scriptedRecvmsg{steps: []scriptedRecvmsgStep{
@@ -315,7 +319,9 @@ func TestReadMsgBoundsQueuedNotificationRetention(t *testing.T) {
 		{data: atLimit, flags: MSG_NOTIFICATION | syscall.MSG_EOR},
 		{data: overAggregate, flags: MSG_NOTIFICATION | syscall.MSG_EOR},
 		{data: []byte("after"), flags: syscall.MSG_EOR},
-		{data: []byte("next-record"), flags: syscall.MSG_EOR},
+		{data: []byte("next-")},
+		{data: afterOverflow, flags: MSG_NOTIFICATION | syscall.MSG_EOR},
+		{data: []byte("record"), flags: syscall.MSG_EOR},
 	}}
 
 	got, info, err := conn.readMsgUsing(64, receiver.receive)
@@ -339,6 +345,10 @@ func TestReadMsgBoundsQueuedNotificationRetention(t *testing.T) {
 	}
 	if !bytes.Equal(next, []byte("next-record")) {
 		t.Fatalf("next payload = %q, want next-record", next)
+	}
+	if len(handledLengths) != 2 || !bytes.Equal(lastHandled, afterOverflow) {
+		t.Fatalf("notification after overflow not delivered intact: handler lengths = %v, last length = %d",
+			handledLengths, len(lastHandled))
 	}
 }
 

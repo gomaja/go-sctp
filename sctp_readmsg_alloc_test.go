@@ -5,6 +5,7 @@ package sctp
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"runtime"
 	"syscall"
@@ -50,13 +51,24 @@ func TestReadMsgAllocationBudget(t *testing.T) {
 		{2048, 65535, 4096, 9},
 		{2049, 65535, 8192, 10},
 		{65535, 65535, 200000, 16},
+		// A long rejected tail must reuse bounded scratch, not allocate for
+		// each drain fragment. These limits cover the entire rejected read.
+		{169, 168, 4096, 10},
+		{4097, 168, 4096, 10},
+		{65535, 168, 4096, 10},
 	} {
 		t.Run(fmt.Sprintf("size=%d/max=%d", tc.size, tc.max), func(t *testing.T) {
 			payload := fill(tc.size)
+			want := payload
+			var wantErr error
+			if tc.size > tc.max {
+				want = payload[:tc.max]
+				wantErr = ErrMsgTooLong
+			}
 			receive := readMsgFixture(payload, control)
 			read := func() {
 				got, info, err := conn.readMsgUsing(tc.max, receive)
-				if err != nil || !bytes.Equal(got, payload) || info == nil || *info != wantInfo {
+				if !errors.Is(err, wantErr) || !bytes.Equal(got, want) || info == nil || *info != wantInfo {
 					t.Fatalf("ReadMsg returned invalid payload or metadata: len=%d info=%+v err=%v", len(got), info, err)
 				}
 			}
