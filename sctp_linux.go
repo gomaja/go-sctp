@@ -1295,7 +1295,7 @@ func (c *SCTPConn) ReadMsg(max int) ([]byte, *SndRcvInfo, error) {
 	return c.readMsgUsing(max, recvmsg)
 }
 
-func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvInfo, error) {
+func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) (data []byte, info *SndRcvInfo, err error) {
 	if max <= 0 {
 		return nil, nil, syscall.EINVAL
 	}
@@ -1313,38 +1313,17 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 	if max < size {
 		size = max
 	}
-	// The poller callback can escape. Keep its mutable state in one allocation
-	// instead of separately allocating each captured variable. This state is
-	// private to the call, including during notification-handler re-entry.
-	state := struct {
-		buf                     []byte
-		drainBuf                []byte
-		total                   int
-		first                   *SndRcvInfo
-		haveFirstFragment       bool
-		applicationComplete     bool
-		tooLong                 bool
-		resultErr               error
-		queuedNotifications     [][]byte
-		queuedNotificationBytes int
-		noteAccumulator         notificationAccumulator
-		notificationStarted     bool
-		notificationQueueFull   bool
-		immediateNotification   []byte
-		completedReceive        bool
-		partialNotificationErr  error
-		partialApplicationErr   error
-	}{buf: make([]byte, size)}
-	addResultErr := func(err error) {
-		if err == nil {
-			return
+	state := readMsgState{buf: make([]byte, size), bufferClass: -1}
+	defer func() {
+		if state.bufferClass >= 0 {
+			// Copy on every return, including partial-data errors. The buffer
+			// remains exclusively borrowed through any re-entrant handler.
+			owned := make([]byte, len(data))
+			copy(owned, data)
+			data = owned
+			readMsgBuffers[state.bufferClass].put(state.buf)
 		}
-		if state.resultErr == nil {
-			state.resultErr = err
-			return
-		}
-		state.resultErr = errors.Join(state.resultErr, err)
-	}
+	}()
 
 	oobp := oobPool.Get().(*[]byte)
 	oob := *oobp
@@ -1366,9 +1345,16 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 					if room := max - state.total; room < grow {
 						grow = room
 					}
-					grown := make([]byte, len(state.buf)+grow)
+					grown, class := getReadMsgBuffer(len(state.buf) + grow)
+					if len(grown) > max {
+						grown = grown[:max]
+					}
 					copy(grown, state.buf)
+					if state.bufferClass >= 0 {
+						readMsgBuffers[state.bufferClass].put(state.buf)
+					}
 					state.buf = grown
+					state.bufferClass = class
 				}
 
 				var dst []byte
@@ -1395,7 +1381,7 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 					} else if state.haveFirstFragment && !state.applicationComplete {
 						state.partialApplicationErr = recvErr
 					} else {
-						addResultErr(recvErr)
+						state.addError(recvErr)
 					}
 					return true
 				}
@@ -1405,7 +1391,7 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 					} else if state.haveFirstFragment && !state.applicationComplete {
 						state.partialApplicationErr = io.EOF
 					} else {
-						addResultErr(io.EOF)
+						state.addError(io.EOF)
 					}
 					return true
 				}
@@ -1427,7 +1413,7 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 					note, notificationErr := state.noteAccumulator.finish()
 					state.notificationStarted = false
 					if notificationErr != nil {
-						addResultErr(notificationErr)
+						state.addError(notificationErr)
 						if errors.Is(notificationErr, ErrNotificationTooLong) {
 							state.notificationQueueFull = true
 						}
@@ -1445,7 +1431,7 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 							continue
 						}
 						if len(note) > NotificationReassemblyLimit-state.queuedNotificationBytes {
-							addResultErr(ErrNotificationTooLong)
+							state.addError(ErrNotificationTooLong)
 							state.notificationQueueFull = true
 							continue
 						}
@@ -1466,16 +1452,16 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 					if !state.haveFirstFragment {
 						state.haveFirstFragment = true
 						if flags&syscall.MSG_CTRUNC != 0 {
-							addResultErr(ErrControlTruncated)
+							state.addError(ErrControlTruncated)
 						} else if oobn > 0 {
 							var err error
 							state.first, err = parseSndRcvInfo(oob[:oobn])
 							if err != nil {
-								addResultErr(err)
+								state.addError(err)
 							}
 						}
 					} else if flags&syscall.MSG_CTRUNC != 0 {
-						addResultErr(ErrControlTruncated)
+						state.addError(ErrControlTruncated)
 					}
 					if state.total == max && flags&syscall.MSG_EOR == 0 {
 						state.tooLong = true
@@ -1486,7 +1472,7 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 					state.completedReceive = true
 					state.applicationComplete = true
 					if state.tooLong {
-						addResultErr(ErrMsgTooLong)
+						state.addError(ErrMsgTooLong)
 					}
 					return true
 				}
@@ -1511,13 +1497,13 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 				cause = pollErr
 			}
 			if c.fd() < 0 {
-				addResultErr(state.noteAccumulator.interrupted())
-				addResultErr(errClosed("read"))
+				state.addError(state.noteAccumulator.interrupted())
+				state.addError(errClosed("read"))
 			} else {
-				addResultErr(c.abortInterruptedNotification(&state.noteAccumulator, cause))
+				state.addError(c.abortInterruptedNotification(&state.noteAccumulator, cause))
 			}
 			if recordInterrupted {
-				addResultErr(ErrMessageInterrupted)
+				state.addError(ErrMessageInterrupted)
 			}
 		} else if recordInterrupted {
 			cause := state.partialApplicationErr
@@ -1525,23 +1511,23 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 				cause = pollErr
 			}
 			if c.fd() < 0 {
-				addResultErr(ErrMessageInterrupted)
-				addResultErr(errClosed("read"))
+				state.addError(ErrMessageInterrupted)
+				state.addError(errClosed("read"))
 			} else {
-				addResultErr(c.abortInterruptedMessage(cause))
+				state.addError(c.abortInterruptedMessage(cause))
 			}
 		} else if pollErr != nil {
 			if c.fd() < 0 {
-				addResultErr(errClosed("read"))
+				state.addError(errClosed("read"))
 			} else {
-				addResultErr(normalizePollError("read", pollErr))
+				state.addError(normalizePollError("read", pollErr))
 			}
 		}
 		c.readMu.Unlock()
 
 		if state.immediateNotification != nil {
 			if err := c.notificationHandler(state.immediateNotification); err != nil {
-				addResultErr(err)
+				state.addError(err)
 				return state.buf[:state.total], state.first, state.resultErr
 			}
 			if pollErr != nil {
@@ -1552,7 +1538,7 @@ func (c *SCTPConn) readMsgUsing(max int, receive recvmsgFunc) ([]byte, *SndRcvIn
 
 		for _, note := range state.queuedNotifications {
 			if err := c.notificationHandler(note); err != nil {
-				addResultErr(err)
+				state.addError(err)
 				break
 			}
 		}

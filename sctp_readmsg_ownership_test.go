@@ -470,6 +470,9 @@ func FuzzReadMsgScriptedOwnership(f *testing.F) {
 	f.Add(fill(2048), uint16(2048), uint16(2047), uint8(1))
 	f.Add(fill(2049), uint16(2048), uint16(2048), uint8(19))
 	f.Add(fill(4097), uint16(4096), uint16(2049), uint8(8))
+	f.Add(fill(4134), uint16(65534), uint16(2049), uint8(8))
+	f.Add(fill(65533), uint16(65534), uint16(32767), uint8(8))
+	f.Add(fill(65534), uint16(65534), uint16(32768), uint8(8))
 
 	handlerCalls := 0
 	conn := newScriptedReadConn(f, func(note []byte) error {
@@ -481,14 +484,14 @@ func FuzzReadMsgScriptedOwnership(f *testing.F) {
 	})
 
 	f.Fuzz(func(t *testing.T, input []byte, rawMax, rawCut uint16, rawNoteCut uint8) {
-		if len(input) > 16*1024-2 {
-			input = input[:16*1024-2]
+		if len(input) > 65536-2 {
+			input = input[:65536-2]
 		}
 		payload := make([]byte, 0, len(input)+2)
 		payload = append(payload, 0x91)
 		payload = append(payload, input...)
 		payload = append(payload, 0x6e)
-		max := int(rawMax)%(16*1024) + 1
+		max := int(rawMax) + 1
 		cut := int(rawCut)%(len(payload)-1) + 1
 
 		firstInfo := SndRcvInfo{
