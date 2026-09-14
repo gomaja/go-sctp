@@ -128,15 +128,29 @@ func TestCloseChurnUnderLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer func() { _ = ln.Close() }()
 
+	var peerMu sync.Mutex
+	peers := make(map[*SCTPConn]struct{})
+	var serverWG sync.WaitGroup
+	acceptDone := make(chan struct{})
 	go func() {
+		defer close(acceptDone)
 		for {
 			c, err := ln.AcceptSCTP()
 			if err != nil {
 				return
 			}
+			peerMu.Lock()
+			peers[c] = struct{}{}
+			peerMu.Unlock()
+			serverWG.Add(1)
 			go func(c *SCTPConn) {
+				defer serverWG.Done()
+				defer func() {
+					peerMu.Lock()
+					delete(peers, c)
+					peerMu.Unlock()
+				}()
 				buf := make([]byte, 512)
 				for {
 					if _, _, err := c.SCTPRead(buf); err != nil {
@@ -150,6 +164,43 @@ func TestCloseChurnUnderLoad(t *testing.T) {
 			}(c)
 		}
 	}()
+	var cleanupOnce sync.Once
+	cleanupServer := func() {
+		cleanupOnce.Do(func() {
+			_ = ln.Close()
+			select {
+			case <-acceptDone:
+			case <-time.After(10 * time.Second):
+				t.Error("timed out waiting for the churn accept loop to exit")
+				return
+			}
+
+			// Accepted descriptors are test-owned too. Linux can remove the
+			// association while leaving a peer descriptor blocked in recvmsg,
+			// so close each one explicitly before waiting for its reader.
+			peerMu.Lock()
+			remaining := make([]*SCTPConn, 0, len(peers))
+			for peer := range peers {
+				remaining = append(remaining, peer)
+			}
+			peerMu.Unlock()
+			for _, peer := range remaining {
+				_ = peer.Abort()
+			}
+
+			serverDone := make(chan struct{})
+			go func() {
+				serverWG.Wait()
+				close(serverDone)
+			}()
+			select {
+			case <-serverDone:
+			case <-time.After(10 * time.Second):
+				t.Error("timed out waiting for churn peer readers to exit")
+			}
+		})
+	}
+	t.Cleanup(cleanupServer)
 
 	before := countOpenFds(t)
 
@@ -201,6 +252,7 @@ func TestCloseChurnUnderLoad(t *testing.T) {
 	if failures > 0 {
 		t.Errorf("%d of %d cycles failed", failures, workers*perWorker)
 	}
+	cleanupServer()
 
 	// Wait for the accept goroutines to reap their side. The descriptor count
 	// is process-global, so other tests running concurrently in the same

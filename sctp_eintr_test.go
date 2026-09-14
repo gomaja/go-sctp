@@ -315,6 +315,17 @@ func TestDialNeverReturnsAnUnestablishedAssociation(t *testing.T) {
 	if testing.Short() {
 		rounds, dialsPerRound = 1, 200
 	}
+	// Keep this stress test's failure path bounded. RFC 6458 §8.1.3 makes
+	// MaxAttempts override Max.Init.Retransmits and MaxInitTimeout cap the INIT
+	// RTO. Leaving both at zero selects the endpoint defaults; RFC 9260 §16
+	// recommends eight INIT retransmissions and RTO.Max=60 seconds, so one
+	// overloaded local attempt can otherwise hold the entire suite for roughly
+	// six minutes. The production DialSCTP defaults remain unchanged.
+	dialOptions := InitMsg{
+		NumOstreams:    SCTP_MAX_STREAM,
+		MaxAttempts:    2,
+		MaxInitTimeout: 1000,
+	}
 	var dead, failed, torndown int64
 	for r := 0; r < rounds; r++ {
 		var wg sync.WaitGroup
@@ -322,7 +333,7 @@ func TestDialNeverReturnsAnUnestablishedAssociation(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				c, derr := DialSCTP("sctp", nil, ln.Addr().(*SCTPAddr))
+				c, derr := DialSCTPExt("sctp", nil, ln.Addr().(*SCTPAddr), dialOptions)
 				if derr != nil {
 					// A reported failure is acceptable: the contract is that a
 					// dial either works or says so.

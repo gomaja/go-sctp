@@ -287,6 +287,12 @@ func FuzzReadMsg(f *testing.F) {
 	f.Add(4096, 4096)
 	f.Add(8192, 2048)
 	f.Add(65535, 65536)
+	f.Add(4095, 65535)
+	f.Add(4097, 65535)
+	f.Add(4136, 65535)
+	f.Add(65535, 65535)
+	f.Add(65536, 69999)
+	f.Add(65536, 65535)
 
 	client, server := eorPair(f)
 
