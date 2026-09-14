@@ -54,7 +54,7 @@ func getsockopt(fd int, optname, optval uintptr, optlen *uint32) (uintptr, uintp
 }
 
 // setInitOpts sets the association initialisation parameters carried in INIT
-// and INIT ACK chunks (RFC 9260 §5.1; RFC 6458 §8.1.2).
+// and INIT ACK chunks (RFC 9260 §5.1; RFC 6458 §8.1.3).
 func setInitOpts(fd int, options InitMsg) error {
 	optlen := uint32(unsafe.Sizeof(options))
 	_, _, err := setsockopt(fd, SCTP_INITMSG,
