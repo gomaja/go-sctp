@@ -87,6 +87,21 @@ apply to address resolution.
 `TestCrossCompileSmoke` samples the relevant syscall, word-size, byte-order and
 Linux-build-tag axes during the ordinary suite.
 
+### What each target is actually tested on
+
+Compiling is not running, and this package does fixed-offset reads over kernel
+structures and marshals addresses by hand, so the distinction is worth stating
+rather than leaving to inference.
+
+| Target | What CI exercises |
+| --- | --- |
+| `linux/amd64` | The whole suite against a real SCTP stack, with and without `-race`. |
+| `linux/386` | The whole suite against a real SCTP stack. The runner is x86_64, so a static 32-bit binary executes natively and the `socketcall` wrappers actually run. |
+| `linux/s390x` | 64-bit big-endian, under emulation: byte order, struct layout, cmsg building and parsing, and address marshalling. The socket-backed paths are **not** covered — qemu-user translates `setsockopt` per level, has no case for SOL_SCTP, and answers `EPROTONOSUPPORT` before the kernel sees the call. Covering them needs a full-system emulator running its own kernel. |
+| `linux/arm`, `linux/mips` | Compilation and `go vet` only. `mips` is 32-bit big-endian, so it carries both axes and is the least exercised of the set. |
+
+Android is covered by the `linux` build tag and is not separately tested.
+
 Examples
 ----
 
