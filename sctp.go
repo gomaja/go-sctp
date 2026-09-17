@@ -33,6 +33,16 @@
 // the kernel, so it works normally everywhere rather than reporting
 // ErrUnsupported.
 //
+// Compiling is not running, and this package reads kernel structures at fixed
+// offsets. Continuous integration runs the whole suite against a real SCTP
+// stack on linux/amd64 and, natively on the same x86_64 runner, on linux/386,
+// so the socketcall wrappers that only 386 uses are exercised rather than only
+// compiled. Big-endian linux/s390x runs under emulation and covers byte order,
+// struct layout, cmsg building and parsing, and address marshalling, but not
+// the socket-backed paths: qemu-user has no setsockopt case for SOL_SCTP and
+// fails those before the kernel sees them. linux/arm and linux/mips are
+// compiled and vetted only. See README.md for the table.
+//
 // # Reading
 //
 // SCTP is message-oriented, so a read returns either a whole message or part of
