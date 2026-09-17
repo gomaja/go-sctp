@@ -1313,13 +1313,17 @@ func recvmsg(fd int, b, oob []byte, flags int) (n, oobn, recvflags int, err erro
 // ReadMsg assembles into bounded intermediate storage shared across the process
 // and copies the finished record into caller-owned storage before releasing
 // that storage, so its allocation cost has a warm and a cold case and neither
-// is a per-call guarantee. Warm, with the shared storage populated, one call
-// allocates 3 times for a record that fits the initial 256-byte buffer and 4
-// times for a larger one, plus 2 more when metadata is requested. A call that
-// finds no buffer free — the first calls in a process, or more concurrent
-// readers in one size class than it holds — adds one allocation of the entire
-// size class, which for a small record exceeds the record itself. Budget
-// against the cold case; the warm figures are not a floor this package holds.
+// is a per-call guarantee. The initial receive buffer holds 256 bytes, or max
+// when that is smaller, and a record fitting it neither grows nor borrows.
+//
+// Warm, with the shared storage populated, one call allocates 3 times for a
+// record of 256 bytes or fewer and 4 times for a larger one, plus 2 more when
+// metadata is requested. A call that finds no buffer free — the first calls in
+// a process, or more concurrent readers in one size class than it holds — adds
+// one allocation of the entire size class, which for a small record exceeds the
+// record itself: cold, a 257-byte record allocates 2048 bytes it did not need.
+// Budget against the cold case; the warm figures are not a floor this package
+// holds. TestReadMsgDocumentedAllocationContract pins every figure here.
 func (c *SCTPConn) ReadMsg(max int) ([]byte, *SndRcvInfo, error) {
 	return c.readMsgUsing(max, recvmsg)
 }
