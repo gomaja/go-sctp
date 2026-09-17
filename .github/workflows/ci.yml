@@ -140,6 +140,66 @@ jobs:
       - name: go test
         run: ${{ matrix.command }}
 
+  arch-32bit:
+    name: portability / kernel linux-386
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+          cache: true
+      - name: Prepare SCTP support
+        run: |
+          sudo modprobe sctp
+          test -e /proc/net/sctp/snmp
+          sudo sysctl -w net.sctp.auth_enable=1 >/dev/null 2>&1 || true
+          sudo sysctl -w net.sctp.intl_enable=1 >/dev/null 2>&1 || true
+          for ip in 127.0.0.2 127.0.0.3 127.0.0.4; do
+            sudo ip addr add "$ip/8" dev lo 2>/dev/null || true
+          done
+      - name: Build the 32-bit test binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=386 go test -c -o sctp-386.test .
+      - name: Run it against the host kernel
+        # The runner is x86_64, so a static i686 binary executes natively. This
+        # runs the socketcall path in sctp_syscall_linux_386.go against a real
+        # SCTP stack rather than only compiling it. It is the one architecture
+        # besides the host's own that can run the socket-backed suite at all;
+        # the big-endian job below records why emulation cannot.
+        run: ./sctp-386.test -test.count=1 -test.timeout=900s
+
+  arch-big-endian:
+    name: portability / big-endian s390x
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+          cache: true
+      - uses: docker/setup-qemu-action@v4.4.0
+        with:
+          platforms: s390x
+      - name: Build the s390x test binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=s390x go test -c -o sctp-s390x.test .
+      - name: Run the byte-order and layout surface
+        # qemu-user translates setsockopt per level and has no case for
+        # SOL_SCTP (132), so every socket-backed test here fails with
+        # EPROTONOSUPPORT no matter what the library does. Only a full-system
+        # emulator running its own s390x kernel could exercise those. What this
+        # job does cover is where a byte-order or width assumption would
+        # actually hide: fixed-offset reads over kernel structures, the cmsg
+        # builders and parsers, and address marshalling.
+        #
+        # The four skipped tests match the selection but need a socket. They
+        # are named rather than dropped silently, so the exclusion stays
+        # visible if one of them later stops needing one.
+        run: |
+          docker run --rm --platform linux/s390x -v "$PWD":/w -w /w alpine \
+            ./sctp-s390x.test -test.count=1 -test.timeout=900s \
+            -test.run 'Layout|MatchesKernel|MatchesStruct|Cmsg|Marshal|Resolve|Decode|NetworkOrder|WidthAliasing|Padding|Alignment|ConstantsMatch|AncillaryParsers|ParseNotification|ParseRcvInfo|NotificationAccumulator' \
+            -test.skip 'TestParseNotificationAgainstKernel|TestPooledOobHoldsEveryInfoCmsgAtOnce|TestSackTimerLayoutAndRoundTrip|TestResetStreamsWireLayout'
+
   vuln:
     name: vuln
     runs-on: ubuntu-latest
