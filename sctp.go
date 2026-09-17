@@ -65,10 +65,10 @@
 //
 // Sizing and pacing are therefore the application's responsibility, and no
 // library-level change addresses them. Bursting 41 MB as 4136-byte records at a
-// receiver holding 8 MiB cost 673 discarded packets and a fast retransmit in
-// every one of 30 bursts. Sizing the receive buffer to hold the whole burst
-// removed both: zero discards and zero retransmissions over 30 bursts, with the
-// mean falling from 74 to 67 ms.
+// receiver holding 8 MiB cost 673 discarded packets and 30 fast retransmits
+// over 30 bursts, 22 of which saw at least one. Sizing the receive buffer to
+// hold the whole burst removed both: zero discards and zero retransmissions
+// over 30 bursts, with the mean falling from 74 to 67 ms.
 //
 // How far recovery escalates depends on the host, so treat the frequency as a
 // property of the deployment and measure it there. On the machine above, loss
