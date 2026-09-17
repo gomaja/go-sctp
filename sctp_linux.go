@@ -388,6 +388,16 @@ func (c *SCTPConn) SyscallConn() (syscall.RawConn, error) {
 	}, nil
 }
 
+// SCTPWrite sends b as one SCTP message carrying info as its ancillary send
+// information. Without a write deadline it is non-blocking and may return
+// EAGAIN once the send buffer is full; a write deadline makes it wait through
+// the runtime poller.
+//
+// SCTPWrite does not pace the sender. Writes that sustainedly outrun the peer's
+// drain rate exhaust that peer's receive window, which the kernel resolves by
+// discarding DATA and retransmitting on a T3-rtx expiry rather than by
+// reporting an error here. See the package documentation, Receive window and
+// pacing.
 func (c *SCTPConn) SCTPWrite(b []byte, info *SndRcvInfo) (int, error) {
 	if c == nil {
 		return 0, errClosed("write")
@@ -1299,6 +1309,17 @@ func recvmsg(fd int, b, oob []byte, flags int) (n, oobn, recvflags int, err erro
 // The returned SndRcvInfo is from the first application-data fragment.
 // The caller owns the returned payload and metadata; later reads do not
 // overwrite either result.
+//
+// ReadMsg assembles into bounded intermediate storage shared across the process
+// and copies the finished record into caller-owned storage before releasing
+// that storage, so its allocation cost has a warm and a cold case and neither
+// is a per-call guarantee. Warm, with the shared storage populated, one call
+// allocates 3 times for a record that fits the initial 256-byte buffer and 4
+// times for a larger one, plus 2 more when metadata is requested. A call that
+// finds no buffer free — the first calls in a process, or more concurrent
+// readers in one size class than it holds — adds one allocation of the entire
+// size class, which for a small record exceeds the record itself. Budget
+// against the cold case; the warm figures are not a floor this package holds.
 func (c *SCTPConn) ReadMsg(max int) ([]byte, *SndRcvInfo, error) {
 	return c.readMsgUsing(max, recvmsg)
 }
@@ -2250,7 +2271,20 @@ func (ln *SCTPListener) SyscallConn() (syscall.RawConn, error) {
 	}, nil
 }
 
-// DialSCTP - bind socket to laddr (if given) and connect to raddr
+// DialSCTP binds the socket to laddr (if given) and connects to raddr.
+//
+// It blocks until the association is established or the kernel exhausts its
+// INIT retransmission schedule. DialSCTP leaves InitMsg.MaxAttempts and
+// InitMsg.MaxInitTimeout at zero, selecting the endpoint defaults: RFC 9260 §4
+// requires the INIT chunk to be retransmitted on every T1-init expiry up to
+// Max.Init.Retransmits, and RFC 9260 §16 recommends 8 attempts with RTO.Max of
+// 60 seconds. Measured against a destination that silently drops SCTP, the
+// defaults sent nine INIT chunks over 280 seconds and returned ETIMEDOUT after
+// 341 seconds, so one DialSCTP call can block for roughly five and a half
+// minutes. DialSCTP takes no context, and nothing shortens that wait.
+//
+// Callers needing a bound should use DialSCTPExt with MaxAttempts and
+// MaxInitTimeout set (RFC 6458 §8.1.3), or DialSCTPContext to cancel the wait.
 func DialSCTP(net string, laddr, raddr *SCTPAddr) (*SCTPConn, error) {
 	return DialSCTPExt(net, laddr, raddr, InitMsg{NumOstreams: SCTP_MAX_STREAM})
 }

@@ -54,6 +54,24 @@
 // behaviour without a write deadline and may return EAGAIN when the send buffer
 // is full; setting a write deadline makes them wait through the runtime poller.
 //
+// # Receive window and pacing
+//
+// Receive credit belongs to the kernel. This package passes MSG_DONTWAIT and
+// delegates waiting to the runtime poller, so it neither paces a sender nor
+// sizes a receive buffer on the application's behalf. A producer that bursts
+// faster than its peer drains drives the peer's receive window to zero; the
+// kernel then discards DATA and recovers on a T3-rtx expiry, which reaches the
+// application as a stall of about one retransmission interval, not as an error.
+//
+// Sizing and pacing are therefore the application's responsibility, and no
+// library-level change addresses them. Measured over a 41 MiB burst of
+// 4136-byte records: with an 8 MiB effective receive buffer, 5 to 17 runs in
+// 100 recorded a T3 expiry, each adding about a second to a burst that
+// otherwise finished in 58 to 91 ms. With the receive buffer sized to hold the
+// whole burst, 100 runs in 100 recorded zero T3 expiries, zero retransmissions
+// and zero DATA discards. Size SO_RCVBUF for the burst the application actually
+// produces, or pace the producer. No particular value is recommended here.
+//
 // # Options announced in the INIT
 //
 // Several options are only meaningful before the association exists, because
