@@ -64,13 +64,19 @@
 // application as a stall of about one retransmission interval, not as an error.
 //
 // Sizing and pacing are therefore the application's responsibility, and no
-// library-level change addresses them. Measured over a 41 MiB burst of
-// 4136-byte records: with an 8 MiB effective receive buffer, 5 to 17 runs in
-// 100 recorded a T3 expiry, each adding about a second to a burst that
-// otherwise finished in 58 to 91 ms. With the receive buffer sized to hold the
-// whole burst, 100 runs in 100 recorded zero T3 expiries, zero retransmissions
-// and zero DATA discards. Size SO_RCVBUF for the burst the application actually
-// produces, or pace the producer. No particular value is recommended here.
+// library-level change addresses them. Bursting 41 MB as 4136-byte records at a
+// receiver holding 8 MiB cost 673 discarded packets and a fast retransmit in
+// every one of 30 bursts. Sizing the receive buffer to hold the whole burst
+// removed both: zero discards and zero retransmissions over 30 bursts, with the
+// mean falling from 74 to 67 ms.
+//
+// How far recovery escalates depends on the host, so treat the frequency as a
+// property of the deployment and measure it there. On the machine above, loss
+// was always recovered by fast retransmit. On a different kernel the same
+// workload instead reached a T3-rtx expiry in 5 to 17 bursts in 100, each
+// costing about a second against bursts that otherwise finished in 58 to 91 ms.
+// Size SO_RCVBUF for the burst the application actually produces, or pace the
+// producer. No particular value is recommended here.
 //
 // # Options announced in the INIT
 //
