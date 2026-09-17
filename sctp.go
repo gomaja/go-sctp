@@ -60,8 +60,8 @@
 // delegates waiting to the runtime poller, so it neither paces a sender nor
 // sizes a receive buffer on the application's behalf. A producer that bursts
 // faster than its peer drains drives the peer's receive window to zero; the
-// kernel then discards DATA and recovers on a T3-rtx expiry, which reaches the
-// application as a stall of about one retransmission interval, not as an error.
+// kernel then discards DATA and recovers by retransmitting it, which reaches
+// the application as delay rather than as an error.
 //
 // Sizing and pacing are therefore the application's responsibility, and no
 // library-level change addresses them. Bursting 41 MB as 4136-byte records at a
