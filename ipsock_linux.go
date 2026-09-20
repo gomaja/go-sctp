@@ -1,6 +1,10 @@
 //go:build linux
 // +build linux
 
+// Copyright 2026 gomaja. All rights reserved.
+// SPDX-License-Identifier: BSD-3-Clause
+// This file includes modifications by gomaja.
+
 // Copyright 2009 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the GO_LICENSE file.

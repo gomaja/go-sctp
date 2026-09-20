@@ -1,3 +1,12 @@
-This source code includes following third party code
+go-sctp
 
-- ipsock_linux.go : licensed by the Go authors, see GO_LICENSE file for the license which applies to the code
+Copyright 2026 gomaja.
+
+Copyright in upstream-derived portions remains with the respective copyright
+holders. Modified files retain those notices and identify gomaja's changes.
+
+This distribution includes third-party source code:
+
+- ipsock_linux.go is derived from the Go standard library. Copyright 2009
+  The Go Authors. It is licensed under the BSD 3-Clause License; see
+  GO_LICENSE for the applicable license text.
