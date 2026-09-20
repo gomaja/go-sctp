@@ -1,3 +1,8 @@
+// Copyright 2019 Wataru Ishida. All rights reserved.
+// Copyright 2026 gomaja. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+// This file includes modifications by gomaja.
+
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -69,9 +74,11 @@
 // Receive credit belongs to the kernel. This package passes MSG_DONTWAIT and
 // delegates waiting to the runtime poller, so it neither paces a sender nor
 // sizes a receive buffer on the application's behalf. A producer that bursts
-// faster than its peer drains drives the peer's receive window to zero; the
-// kernel then discards DATA and recovers by retransmitting it, which reaches
-// the application as delay rather than as an error.
+// faster than its peer drains can exhaust the peer's receive window. RFC 9260
+// §6.1 then forbids new DATA except zero-window probes; §6.2 requires a
+// zero-window receiver to drop new DATA beyond its largest received TSN and
+// immediately send a SACK. Any retransmission follows the sender's
+// loss-recovery rules rather than being a direct zero-window action.
 //
 // Sizing and pacing are therefore the application's responsibility, and no
 // library-level change addresses them. Bursting 41 MB as 4136-byte records at a

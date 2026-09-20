@@ -1,6 +1,11 @@
 //go:build linux
 // +build linux
 
+// Copyright 2019 Wataru Ishida. All rights reserved.
+// Copyright 2026 gomaja. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+// This file includes modifications by gomaja.
+
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -393,11 +398,11 @@ func (c *SCTPConn) SyscallConn() (syscall.RawConn, error) {
 // EAGAIN once the send buffer is full; a write deadline makes it wait through
 // the runtime poller.
 //
-// SCTPWrite does not pace the sender. Writes that sustainedly outrun the peer's
-// drain rate exhaust that peer's receive window, which the kernel resolves by
-// discarding DATA and retransmitting on a T3-rtx expiry rather than by
-// reporting an error here. See the package documentation, Receive window and
-// pacing.
+// SCTPWrite does not pace the sender. Writes that continuously outrun the peer's
+// drain rate can exhaust that peer's receive window. RFC 9260 §§6.1 and 6.2
+// define zero-window sender and receiver behavior; any retransmission follows
+// the loss-recovery rules rather than being a direct zero-window action. See
+// the package documentation, Receive window and pacing.
 func (c *SCTPConn) SCTPWrite(b []byte, info *SndRcvInfo) (int, error) {
 	if c == nil {
 		return 0, errClosed("write")
@@ -2281,11 +2286,12 @@ func (ln *SCTPListener) SyscallConn() (syscall.RawConn, error) {
 // INIT retransmission schedule. DialSCTP leaves InitMsg.MaxAttempts and
 // InitMsg.MaxInitTimeout at zero, selecting the endpoint defaults: RFC 9260 §4
 // requires the INIT chunk to be retransmitted on every T1-init expiry up to
-// Max.Init.Retransmits, and RFC 9260 §16 recommends 8 attempts with RTO.Max of
-// 60 seconds. Measured against a destination that silently drops SCTP, the
-// defaults sent nine INIT chunks over 280 seconds and returned ETIMEDOUT after
-// 341 seconds, so one DialSCTP call can block for roughly five and a half
-// minutes. DialSCTP takes no context, and nothing shortens that wait.
+// Max.Init.Retransmits. RFC 9260 §16 suggests 8 retransmissions, so the initial
+// INIT plus those retransmissions can produce nine INIT chunks; it also
+// suggests RTO.Max of 60 seconds. Measured against a destination that silently
+// drops SCTP, the defaults sent nine INIT chunks over 280 seconds and returned
+// ETIMEDOUT after 341 seconds, so one DialSCTP call can block for roughly five
+// and a half minutes. DialSCTP takes no context, and nothing shortens that wait.
 //
 // Callers needing a bound should use DialSCTPExt with MaxAttempts and
 // MaxInitTimeout set (RFC 6458 §8.1.3), or DialSCTPContext to cancel the wait.

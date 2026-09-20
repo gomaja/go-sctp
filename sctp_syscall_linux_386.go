@@ -2,6 +2,8 @@
 // +build linux,386
 
 // Copyright 2026 gomaja. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+// This file includes modifications by gomaja.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,6 +35,11 @@ const (
 	socketcallRecvmsg    = 17
 )
 
+// Pointer-valued arguments must remain immovable across this Go frame before
+// entering the kernel. KeepAlive alone cannot prevent stack relocation; see
+// cmd/compile's Compiler Directives documentation for go:uintptrescapes.
+//
+//go:uintptrescapes
 func socketcall(call, a0, a1, a2, a3, a4, a5 uintptr) (uintptr, uintptr, syscall.Errno) {
 	args := [...]uintptr{a0, a1, a2, a3, a4, a5}
 	r0, r1, errno := syscall.Syscall(syscall.SYS_SOCKETCALL, call,

@@ -1,6 +1,11 @@
 //go:build !linux
 // +build !linux
 
+// Copyright 2019 Wataru Ishida. All rights reserved.
+// Copyright 2026 gomaja. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+// This file includes modifications by gomaja.
+
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.

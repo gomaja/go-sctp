@@ -2,6 +2,8 @@
 // +build linux
 
 // Copyright 2026 gomaja. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+// This file includes modifications by gomaja.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -93,5 +95,29 @@ func TestRawMessageSyscalls(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("recvmsg payload = %q, want %q", got, want)
+	}
+}
+
+// Both the payload and the kernel-updated header must survive a stack move
+// between converting the header pointer and entering the syscall. Keeping all
+// receive storage local exercises this path with the compiler's maymorestack
+// stack-movement diagnostic, including the additional socketcall frame on 386.
+func TestRawRecvmsgStackStorage(t *testing.T) {
+	fds := socketpair(t)
+	if err := syscall.Sendmsg(fds[0], []byte{0x19, 0x72}, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	var payload [1]byte
+	iov := syscall.Iovec{Base: &payload[0]}
+	iov.SetLen(len(payload))
+	msg := syscall.Msghdr{Iov: &iov}
+	msg.Iovlen = 1
+	n, err := rawRecvmsg(fds[1], &msg, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || payload[0] != 0x19 || msg.Flags&syscall.MSG_TRUNC == 0 {
+		t.Fatalf("recvmsg n=%d payload=%x flags=%x; want n=1 payload=19 and MSG_TRUNC",
+			n, payload[0], msg.Flags)
 	}
 }

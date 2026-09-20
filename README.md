@@ -1,3 +1,7 @@
+<!-- Copyright 2026 gomaja. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- This file includes modifications by gomaja. -->
+
 Stream Control Transmission Protocol (SCTP)
 ----
 
@@ -97,7 +101,7 @@ rather than leaving to inference.
 | --- | --- |
 | `linux/amd64` | The whole suite against a real SCTP stack, with and without `-race`. |
 | `linux/386` | The whole suite against a real SCTP stack. The runner is x86_64, so a static 32-bit binary executes natively and the `socketcall` wrappers actually run. |
-| `linux/s390x` | 64-bit big-endian, under emulation: byte order, struct layout, cmsg building and parsing, and address marshalling. The socket-backed paths are **not** covered — qemu-user translates `setsockopt` per level, has no case for SOL_SCTP, and answers `EPROTONOSUPPORT` before the kernel sees the call. Covering them needs a full-system emulator running its own kernel. |
+| `linux/s390x` | Compilation via `TestCrossCompileSmoke` and cross-vet only; public CI has no runtime big-endian execution. |
 | `linux/arm`, `linux/mips` | Compilation and `go vet` only. `mips` is 32-bit big-endian, so it carries both axes and is the least exercised of the set. |
 
 Android is covered by the `linux` build tag and is not separately tested.
@@ -405,3 +409,18 @@ reachable from ordinary Go code, parser boundaries and portable build behavior.
 Socket-backed tests require a Linux SCTP stack, which the project CI provisions
 before running the Linux suite. Tests for optional kernel capabilities skip when
 the specific capability they exercise is unavailable.
+
+License
+----
+
+Except where a file states otherwise, this project is licensed under the
+[Apache License, Version 2.0](LICENSE).
+
+Copyright in gomaja's original contributions and modifications belongs to
+gomaja. Upstream-derived portions remain copyright of their respective owners;
+the applicable source files retain those notices and identify gomaja's changes.
+
+`ipsock_linux.go` is derived from the Go standard library and remains licensed
+under the BSD 3-Clause License. Its copyright and license terms are preserved in
+the source file and [GO_LICENSE](GO_LICENSE); [NOTICE](NOTICE) records the
+third-party attribution.

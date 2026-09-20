@@ -1,3 +1,7 @@
+<!-- Copyright 2026 gomaja. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- This file includes modifications by gomaja. -->
+
 # SCTP standards and conformance baseline
 
 This document records the standards baseline for this repository. The full
