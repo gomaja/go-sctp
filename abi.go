@@ -33,6 +33,7 @@
 // meaning; the package uses the constants the standard syscall package
 // already exports for those (syscall.SO_RCVBUF and so on) instead of
 // duplicating them here.
+
 package sctp
 
 import "math/bits"

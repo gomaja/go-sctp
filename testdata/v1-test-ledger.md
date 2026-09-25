@@ -446,26 +446,26 @@ order it appears in its file.
 | sctp_readmsg_test.go | TestZeroLengthSendIsRefusedByTheKernel | pending |
 | sctp_readmsg_test.go | FuzzReadMsg | pending |
 | sctp_resolve_linux_test.go | TestExplicitNetworkRejectsTheOtherAddressFamily | pending |
-| sctp_resolve_portable_test.go | TestNilSCTPAddrString | pending |
-| sctp_resolve_portable_test.go | TestDirectSCTPAddrValuesAreValidated | pending |
+| sctp_resolve_portable_test.go | TestNilSCTPAddrString | ported → TestNilAddrString (addr_test.go) |
+| sctp_resolve_portable_test.go | TestDirectSCTPAddrValuesAreValidated | ported → its zone and empty-address validation moved into the sockaddr codec: TestEncodeAddrRejectsTheZeroAddr, TestEncodeAddrRejectsZoneOnIPv4, TestEncodeAddrRejectsNonLinkLocalZone, TestEncodeAddrRejectsUnknownZone (sockaddr_test.go); its "malformed IP length" case has no counterpart — netip.Addr admits no such value — and its SCTPBind/SCTPConnect/SetPrimaryPeerAddr call sites stay pending for whichever task ports those calls |
 | sctp_resolve_portable_test.go | TestSCTPBindRejectsUnknownFlagsBeforeTouchingTheAddress | pending |
-| sctp_resolve_portable_test.go | TestResolveSCTPAddrRejectsMalformedInput | pending |
-| sctp_resolve_portable_test.go | TestResolveSCTPAddrAcceptsTheDocumentedForms | pending |
-| sctp_resolve_portable_test.go | TestResolveSCTPAddrNeverReturnsANilAddress | pending |
-| sctp_resolve_portable_test.go | FuzzResolveSCTPAddr | pending |
-| sctp_resolve_portable_test.go | FuzzSCTPAddrMarshal | pending |
+| sctp_resolve_portable_test.go | TestResolveSCTPAddrRejectsMalformedInput | ported → TestResolveAddrRejectsMalformedInput (addr_test.go); a bare ":port" stays the wildcard, as in v1, but any other empty element in a multi-address list is still refused |
+| sctp_resolve_portable_test.go | TestResolveSCTPAddrAcceptsTheDocumentedForms | ported → TestResolveAddrAcceptsTheDocumentedForms (addr_test.go), including its "bare port is the wildcard" row, unchanged from v1 |
+| sctp_resolve_portable_test.go | TestResolveSCTPAddrNeverReturnsANilAddress | ported → TestResolveAddrNeverReturnsANilAddress (addr_test.go) |
+| sctp_resolve_portable_test.go | FuzzResolveSCTPAddr | ported → FuzzResolveAddr (addr_test.go) |
+| sctp_resolve_portable_test.go | FuzzSCTPAddrMarshal | retired: it fuzzed SCTPAddr's raw net.IP/Zone fields for a malformed value MarshalSockaddr must catch (a bad IP length, an invalid zone string). netip.Addr, encodeAddr's argument type, admits no such malformed value by construction — every netip.Addr is either the invalid zero value (TestEncodeAddrRejectsTheZeroAddr) or a well-formed address — so the field-level fuzz surface this test exercised no longer exists; FuzzDecodeAddrs (sockaddr_fuzz_test.go) covers the remaining untrusted-bytes surface, the decode direction |
 | sctp_resolveraw_kernel_test.go | TestKernelAddrsRoundTrip | pending |
-| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrMixedFamilies | pending |
-| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrV6First | pending |
-| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrUnknownFamilyIsRejected | pending |
-| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrZeroCount | pending |
-| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrRespectsBuffer | pending |
-| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrRejectsImpossibleCountBeforeWalking | pending |
-| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrNegativeCount | pending |
-| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrPortFromLaterEntriesIgnored | pending |
-| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrPortFromFirstEntry | pending |
-| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrDoesNotAliasBuffer | pending |
-| sctp_resolveraw_portable_test.go | FuzzResolveFromRawAddr | pending |
+| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrMixedFamilies | ported → TestDecodeAddrsMixedFamilies/v4_first (sockaddr_test.go) |
+| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrV6First | ported → TestDecodeAddrsMixedFamilies/v6_first (sockaddr_test.go) |
+| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrUnknownFamilyIsRejected | ported → TestDecodeAddrsRejectsUnknownFamily (sockaddr_test.go) |
+| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrZeroCount | ported → TestDecodeAddrsZeroCount (sockaddr_test.go) |
+| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrRespectsBuffer | ported → TestDecodeAddrsRejectsTruncatedEntries (sockaddr_test.go); decodeAddrs takes a real []byte bounded by len(b), so the separate limit==0 "unbounded" mode this test also covered has no v2 counterpart |
+| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrRejectsImpossibleCountBeforeWalking | ported → TestDecodeAddrsRejectsImpossibleCount and TestDecodeAddrsAllocatesNothingOnError (sockaddr_test.go); the latter tightens the property to cover an unknown family and a truncated entry too, not just an oversized count, each proven zero-allocation with testing.AllocsPerRun |
+| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrNegativeCount | ported → TestDecodeAddrsNegativeCount (sockaddr_test.go) |
+| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrPortFromLaterEntriesIgnored | ported → TestDecodeAddrsPortFromFirstEntryOnly (sockaddr_test.go) |
+| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrPortFromFirstEntry | ported → TestDecodeAddrsPortFromFirstEntryOnly (sockaddr_test.go), which covers both directions of the rule in one test |
+| sctp_resolveraw_portable_test.go | TestResolveFromRawAddrDoesNotAliasBuffer | retired: it guarded against net.IP's slice header aliasing the kernel's reply buffer once copied out carelessly. netip.Addr is an immutable value type built from a fixed-size array (netip.AddrFrom4/AddrFrom16), never a slice into the source, so a decoded address cannot alias b by construction — the class of bug this test caught cannot be reintroduced |
+| sctp_resolveraw_portable_test.go | FuzzResolveFromRawAddr | ported → FuzzDecodeAddrs (sockaddr_fuzz_test.go) |
 | sctp_shutdownwait_test.go | TestAssocQueryAnswersForALiveAssociation | pending |
 | sctp_shutdownwait_test.go | TestWaitAssocGoneDoesNotTreatProbeFailureAsCompletion | pending |
 | sctp_shutdownwait_test.go | TestShutdownViaEOFRetriesInterruptAndBackpressure | pending |
@@ -517,8 +517,8 @@ order it appears in its file.
 | sctp_test.go | TestSCTPCloseRecv | pending |
 | sctp_test.go | TestGetStatus | pending |
 | sctp_test.go | TestGetStatusUsage | pending |
-| sctp_tobuf_test.go | TestToBufSerialisesFixedSizeStructs | pending |
-| sctp_tobuf_test.go | TestToBufPanicsOnUnserialisableType | pending |
+| sctp_tobuf_test.go | TestToBufSerialisesFixedSizeStructs | retired: toBuf and the syscall.RawSockaddrInet4/6 and SndRcvInfo struct-to-bytes marshalling it served are gone; the package now writes and reads every kernel structure byte-wise at offsets abi.go pins and abi_test.go's layout tests check directly, so there is no generic struct serialiser left to size-check |
+| sctp_tobuf_test.go | TestToBufPanicsOnUnserialisableType | retired: same reason — there is no toBuf, so there is nothing that can be handed a type it cannot serialise |
 | sctp_unsupported_test.go | TestUnsupportedHighLevelErrorsCarryOperationContext | pending |
 | sctp_unsupported_test.go | TestUnsupportedRawConnectErrorRemainsUnwrapped | pending |
 | sctp_unsupported_test.go | TestNewSCTPConnClosesOwnedDescriptorOnUnsupportedPlatform | pending |

@@ -5,8 +5,9 @@ Copyright 2026 gomaja.
 Copyright in upstream-derived portions remains with the respective copyright
 holders. Modified files retain those notices and identify gomaja's changes.
 
-This distribution includes third-party source code:
+Portions of addr.go and sockaddr.go are derived from Wataru Ishida's
+go-sctp; both files retain that copyright notice alongside gomaja's.
 
-- ipsock_linux.go is derived from the Go standard library. Copyright 2009
-  The Go Authors. It is licensed under the BSD 3-Clause License; see
-  GO_LICENSE for the applicable license text.
+This distribution currently includes no third-party source code under a
+license other than Apache-2.0; GO_LICENSE (BSD 3-Clause) is kept for a Go
+standard library derived file that names it here when one exists.
