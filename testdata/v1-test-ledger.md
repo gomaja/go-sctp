@@ -79,11 +79,11 @@ order it appears in its file.
 | sctp_cause_test.go | TestRemoteErrorErrorIsDecodedFromNetworkOrder | pending |
 | sctp_cause_test.go | TestSendFailedErrorIsDecodedFromNetworkOrder | pending |
 | sctp_cause_test.go | TestPeerAddrChangeErrorStaysHostOrder | pending |
-| sctp_cause_test.go | TestErrorCauseStringNamesTheRFCCauses | pending |
+| sctp_cause_test.go | TestErrorCauseStringNamesTheRFCCauses | ported → TestErrorCauseIANANames (enums_test.go); the expected names changed from v1's own SCTP_ERROR_* constant spelling to the IANA "SCTP Error Cause Codes" registry names |
 | sctp_cause_test.go | TestAbortReportsTheUserAbortCause | pending |
 | sctp_cause_test.go | TestParsesTheEventsStreamReconfigurationNeeds | pending |
 | sctp_cause_test.go | TestNewNotificationsRejectTruncation | pending |
-| sctp_cause_test.go | TestNotificationTypeNumbersMatchTheKernel | pending |
+| sctp_cause_test.go | TestNotificationTypeNumbersMatchTheKernel | ported → TestEnumerationValues (its EventType rows; enums_test.go); its SCTP_SN_TYPE_BASE row retired: 0x8000 is never a real notification on the wire (it is SCTP_DATA_IO_EVENT, a subscription-only pseudo-type from the deprecated EventSubscribe bitmask), so EventType names nothing at it |
 | sctp_cause_test.go | TestNotificationPPIDIsConvertedToHostOrder | pending |
 | sctp_cause_test.go | TestParseNotificationRejectsADeclaredLengthItDoesNotHave | pending |
 | sctp_close_fuzz_test.go | FuzzCloseWithTimeout | pending |
@@ -174,7 +174,7 @@ order it appears in its file.
 | sctp_endpoint_linux_test.go | TestSocketConfigEndpointOrderAndRequiredMetadata | pending |
 | sctp_endpoint_linux_test.go | TestSCTPEndpointFragmentsHandlerReentryAndMissingMetadata | pending |
 | sctp_endpoint_linux_test.go | TestSCTPEndpointHandlerReassemblesNotificationWithTinyBuffer | pending |
-| sctp_endpoint_portable_test.go | TestErrUnsupportedWrapsStdlibSentinel | pending |
+| sctp_endpoint_portable_test.go | TestErrUnsupportedWrapsStdlibSentinel | ported → TestErrUnsupportedMatchesStdlib (errors_test.go) |
 | sctp_endpoint_portable_test.go | TestAssociationIDFromIntRejectsWidthAliasing | pending |
 | sctp_endpoint_portable_test.go | TestValidEndpointAssociationID | pending |
 | sctp_endpoint_portable_test.go | TestSCTPEndpointNetwork | pending |
@@ -221,9 +221,9 @@ order it appears in its file.
 | sctp_extensions_test.go | TestAutoAsconfNeedsBoundSocket | pending |
 | sctp_extensions_test.go | TestPrSupportedFollowsSysctl | pending |
 | sctp_extensions_test.go | TestDefaultPrInfoRoundTrip | pending |
-| sctp_extensions_test.go | TestPrPolicyConstantValues | pending |
-| sctp_extensions_test.go | TestOptionNumbersMatchHeader | pending |
-| sctp_extensions_test.go | TestAssocIDAndSinfoConstantsMatchHeader | pending |
+| sctp_extensions_test.go | TestPrPolicyConstantValues | ported → TestEnumerationValues (its PR-policy, stream-reset-mask and HMAC rows; enums_test.go); its SCTP_ENABLE_STRRESET_MASK completeness check has no v2 row of its own — StreamResetMask only names the three bits the mask actually carries |
+| sctp_extensions_test.go | TestOptionNumbersMatchHeader | ported → TestOptionNumbers (abi_test.go); its SCTP_PEER_ADDR_THLDS, SCTP_SOCKOPT_PEELOFF and SCTP_SOCKOPT_CONNECTX rows retired: v2 uses only SCTP_PEER_ADDR_THLDS_V2, SCTP_SOCKOPT_PEELOFF_FLAGS and SCTP_SOCKOPT_CONNECTX3, so the superseded option numbers are never defined |
+| sctp_extensions_test.go | TestAssocIDAndSinfoConstantsMatchHeader | ported → TestAssocScopeSelectors (abi_test.go); its SCTP_NOTIFICATION == MSG_NOTIFICATION row has no v2 counterpart, see TestAssocScopeSelectors's doc comment |
 | sctp_extensions_test.go | TestDefaultPrInfoRejectsUnknownPolicy | pending |
 | sctp_extensions_test.go | TestPrStreamStatusNeedsAssociation | pending |
 | sctp_extensions_test.go | TestPrAssocStatus | pending |
@@ -262,7 +262,7 @@ order it appears in its file.
 | sctp_kernelpaths_test.go | TestReconfigurationEventsDecodeFromKernelBytes | pending |
 | sctp_kernelpaths_test.go | TestStreamChangeReportsAddedStreamsNotTheNewWidth | pending |
 | sctp_kernelpaths_test.go | TestStreamChangeReportsDeniedWhenThePeerRefuses | pending |
-| sctp_layout_test.go | TestStructLayoutsMatchKernel | pending |
+| sctp_layout_test.go | TestStructLayoutsMatchKernel | ported → TestCmsgStructLayouts, TestOptionStructLayouts, TestSockaddrStorageOptionLayouts, TestKernel64Layouts, TestSockaddrStorageLayoutFormula (abi_test.go); its EventSubscribe subtest retired: this package does not implement SCTP_EVENTS, the deprecated RFC 6458 mechanism it configures. Its AssocStats subtest is only half covered by that port: the layout-pinning half (assocStatsCounters, assocStatsSize) moved to TestSockaddrStorageOptionLayouts/TestKernel64Layouts, but the decoding half (AssocStats.unmarshal against a hand-built buffer) stays pending until the exported AssocStats type and its unmarshal method exist |
 | sctp_linux_test.go | TestNotificationHandlerAssignmentOnDialing | pending |
 | sctp_linux_test.go | TestNotificationHandlerAssignmentOnListening | pending |
 | sctp_linux_test.go | TestDialUseControlFuncWithoutLocalAddress | pending |
@@ -329,7 +329,7 @@ order it appears in its file.
 | sctp_options_test.go | TestPublicRawSockoptRoundTripAndLifecycle | pending |
 | sctp_options_test.go | TestInterleavingSupportedDirectAccessors | pending |
 | sctp_options_test.go | TestNoDelayValueMatchesLinuxInt | pending |
-| sctp_options_test.go | TestPeerAddrParamsLayoutMatchesKernel | pending |
+| sctp_options_test.go | TestPeerAddrParamsLayoutMatchesKernel | ported → TestOptionStructLayouts (its sctp_paddrparams/sizePathParams rows; abi_test.go) |
 | sctp_options_test.go | TestPeerAddrParamsRoundTripsThroughItsPackedForm | pending |
 | sctp_options_test.go | TestPeerAddrParamsRoundTripsThroughTheKernel | pending |
 | sctp_options_test.go | TestGetPeerAddrInfoReportsThePath | pending |
@@ -343,13 +343,13 @@ order it appears in its file.
 | sctp_options_test.go | TestAdaptationLayerRoundTrips | pending |
 | sctp_options_test.go | TestGetInitMsgReadsBackWhatWasSet | pending |
 | sctp_options_test.go | TestSetInitMsgRejectsOutOfRangeValues | pending |
-| sctp_options_test.go | TestPeelOffArgMatchesTheKernelABI | pending |
+| sctp_options_test.go | TestPeelOffArgMatchesTheKernelABI | ported → TestOptionStructLayouts (its sctp_peeloff_flags_arg_t/sizePeeloffFlagsArg rows; abi_test.go); v2 pins the modern _FLAGS variant (associd, sd, flags) rather than v1's plain sctp_peeloff_arg_t (associd, sd), since PeelOff uses SCTP_SOCKOPT_PEELOFF_FLAGS, not the legacy SCTP_SOCKOPT_PEELOFF |
 | sctp_options_test.go | TestLegacyPeelOffFDClosesOnExecBeforeReleasingForkLock | pending |
 | sctp_options_test.go | TestLegacyPeelOffFDReleasesForkLockOnFailure | pending |
 | sctp_options_test.go | TestPeelOffRejectsAOneToOneSocket | pending |
-| sctp_options_test.go | TestSendFlagsMatchTheKernel | pending |
-| sctp_options_test.go | TestSockaddrStorageOptionLayouts | pending |
-| sctp_options_test.go | TestSockaddrStorageLayoutFormula | pending |
+| sctp_options_test.go | TestSendFlagsMatchTheKernel | split and ported → TestSendFlagBits + TestPRPolicyBitsDoNotOverlapSendFlags (abi_test.go) |
+| sctp_options_test.go | TestSockaddrStorageOptionLayouts | ported → TestSockaddrStorageOptionLayouts (abi_test.go, same name and structure: sctp_udpencaps, sctp_probeinterval, sctp_paddrthlds_v2 sizes now include sctp_assoc_stats' header offset too) |
+| sctp_options_test.go | TestSockaddrStorageLayoutFormula | ported → TestSockaddrStorageLayoutFormula (abi_test.go, same name) |
 | sctp_options_test.go | TestPeerThresholdKernelCompatLayout | pending |
 | sctp_options_test.go | TestSockaddrStorageOptionsRoundTripThroughBytes | pending |
 | sctp_options_test.go | TestUDPEncapsPort9899UsesNetworkByteOrder | pending |
