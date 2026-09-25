@@ -23,12 +23,20 @@
 // That check runs against this file's source, not against a fixed list, so
 // it stays correct as this file grows.
 //
-// Nothing is declared here yet. Addresses, notifications and enumerations
-// are portable and carry no build tag, and every socket-backed constructor
-// and method this package will expose is added to the Linux build, and
-// stubbed here alongside it, separately. A stub carried over from v1's
-// sctp_unsupported.go (git show main:sctp_unsupported.go) brings that
-// file's Wataru Ishida copyright notice into this one the first time one
-// is added, the same way addr.go and sockaddr.go already do.
+// No function is declared here yet. Addresses, notifications and
+// enumerations are portable and carry no build tag, and every socket-backed
+// constructor and method this package will expose is added to the Linux
+// build, and stubbed here alongside it, separately. The two types below
+// exist only so that Conn, which is portable, compiles here. A stub carried
+// over from v1's sctp_unsupported.go (git show main:sctp_unsupported.go)
+// brings that file's Wataru Ishida copyright notice into this one the first
+// time one is added, the same way addr.go and sockaddr.go already do.
 
 package sctp
+
+// sendState is a Conn's send storage. On Linux it holds a syscall.Msghdr,
+// which not every platform defines; with no send path here, it is empty.
+type sendState struct{}
+
+// recvState is a Conn's receive storage, empty here for the same reason.
+type recvState struct{}
