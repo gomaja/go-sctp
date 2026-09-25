@@ -550,6 +550,14 @@ func (i AuthIndication) String() string {
 // kernel value. ParseNotification resolves which of the two a raw 0 means
 // by state (AddrUnreachable or not) when it decodes spc_error into one of
 // these constants; that resolution is why the constants have this shape.
+//
+// A raw value the kernel's own enum never produces renders as
+// AddrChangeReason(n): a positive raw n (other than the six the kernel
+// defines) as AddrChangeReason(n+1), same as any named reason; a negative
+// raw n, or the largest value a C int holds, as AddrChangeReason(n)
+// unshifted, since shifting either would either land on a number this type
+// already assigns to some other raw (raw -1 shifted would read as
+// ReasonNone's own 0) or have no int32 representation to shift to at all.
 type AddrChangeReason int32
 
 const (
