@@ -180,7 +180,7 @@ const (
 const (
 	sndFlagUnordered       = 1 << 0 // SCTP_UNORDERED
 	sndFlagAddrOver        = 1 << 1 // SCTP_ADDR_OVER: send to SendOptions.Path instead of the primary
-	sndFlagAbort           = 1 << 2 // SCTP_ABORT: AbortAssoc's empty send
+	sndFlagAbort           = 1 << 2 // SCTP_ABORT: AbortAssoc's send, payload the caller's cause bytes (possibly empty)
 	sndFlagSackImmediately = 1 << 3 // SCTP_SACK_IMMEDIATELY
 	sndFlagPRAll           = 1 << 7 // SCTP_PR_SCTP_ALL
 	msgNotification        = 0x8000 // MSG_NOTIFICATION (include/uapi/linux/sctp.h:180), aliased by
