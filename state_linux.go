@@ -18,3 +18,8 @@ type sendState struct{}
 // declared per platform for the same reason as sendState, and holds nothing
 // until the receive path is built on it.
 type recvState struct{}
+
+// init prepares s for c's sends; newConn calls it once the connection's
+// association id is known. sendState holds no storage yet, so there is
+// nothing to prepare.
+func (s *sendState) init(*Conn) {}

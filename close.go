@@ -277,6 +277,11 @@ func (l *lifecycle) finish(err error) error {
 // timer never delivers a value from before the reset, and an unreferenced
 // timer is collected without being stopped, so the clock needs no cleanup
 // when close returns with a step still pending.
+//
+// A closeClock has one caller: the close call whose wait it times. Its
+// timer is reset in place, so two closes sharing one clock would reset
+// each other's waits; every close builds closeOps, and with them a
+// closeClock, of its own.
 type closeClock struct {
 	timer *time.Timer
 }

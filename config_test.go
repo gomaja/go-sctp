@@ -1237,3 +1237,19 @@ func data0(data []byte) byte {
 	}
 	return data[0]
 }
+
+// TestPrepareMarksOnlyTheFileStyleAdopted: only the Config form of
+// FileConn and FileListener produces a prepared value marked adopted, the
+// one whose connections take their subscriptions from the kernel rather
+// than from Config.Notifications.
+func TestPrepareMarksOnlyTheFileStyleAdopted(t *testing.T) {
+	for _, style := range []socketStyle{styleDial, styleListen, styleListenEndpoint, styleOpenEndpoint, styleFile} {
+		p, err := (&Config{}).prepare(style)
+		if err != nil {
+			t.Fatalf("prepare(%v): %v", style, err)
+		}
+		if got, want := p.adopted, style == styleFile; got != want {
+			t.Errorf("prepare(%v).adopted = %v, want %v", style, got, want)
+		}
+	}
+}
