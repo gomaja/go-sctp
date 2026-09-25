@@ -120,11 +120,11 @@ func canonicalNetwork(network string, ips []netip.Addr) (family int, err error) 
 // syscall.EINVAL, as is a port outside 0-65535.
 //
 // A bare ":port", with no host at all, is the wildcard address: it resolves
-// to &Addr{Port: port}, an empty IPs list, matching every local address (v1
-// ResolveSCTPAddr). Any other empty element — "/10.0.0.1:80",
-// "10.0.0.1//10.0.0.2:80", "10.0.0.1/:80" — is refused instead, since a
-// caller that named at least one address almost never means for the
-// wildcard to be silently added alongside it.
+// to &Addr{Port: port}, an empty IPs list, matching every local address. Any
+// other empty element — "/10.0.0.1:80", "10.0.0.1//10.0.0.2:80",
+// "10.0.0.1/:80" — is refused instead, since a caller that named at least
+// one address almost never means for the wildcard to be silently added
+// alongside it.
 //
 // Every element but the last is a bare host; an IPv6 literal among them,
 // with or without a zone, is bracketed the way the last element's is by

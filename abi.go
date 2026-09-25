@@ -318,6 +318,18 @@ const (
 // ---------------------------------------------------------------------
 
 const (
+	// notificationHeaderSize is sizeof the 8-byte prefix every one of the
+	// twelve structs below starts with: { type(2) flags(2) length(4) }.
+	// notificationTypeOff, notificationFlagsOff and notificationLengthOff
+	// read it before the type is known, since every struct places the
+	// three fields at the same offsets (RFC 6458 §6).
+	notificationHeaderSize = 8
+	notificationTypeOff    = 0
+	notificationFlagsOff   = 2
+	notificationLengthOff  = 4
+)
+
+const (
 	// struct sctp_assoc_change { sac_type(2) sac_flags(2) sac_length(4)
 	// sac_state(2) sac_error(2) sac_outbound_streams(2) sac_inbound_streams(2)
 	// sac_assoc_id(4) sac_info[] }.
@@ -453,6 +465,68 @@ const (
 	sendFailedEventInfoOff    = 12
 	sendFailedEventAssocIDOff = 28
 	sendFailedEventDataOff    = 32
+)
+
+// ---------------------------------------------------------------------
+// Notification flag bits: the 8-byte header's flags field (notificationFlagsOff,
+// above) carries type-specific meaning for five of the twelve notification
+// structs, and is not always 0 for any of the five — every value below is a
+// mask to test against that field with &, not a separate struct member;
+// the other seven structs' flags fields carry no meaning this package
+// decodes.
+// ---------------------------------------------------------------------
+
+const (
+	// pdapi_flags (struct sctp_pdapi_event, above). RFC 6458 §6.1.7 calls
+	// this field unused, and net/sctp/ulpevent.c's sctp_ulpevent_make_pdapi
+	// still quotes that description in its own comment ("Currently
+	// unused") — not the UAPI header, which has none at all — but
+	// net/sctp/stream_interleave.c (sctp_intl_abort_pd, sctp_intl_skip)
+	// sets it when the partial delivery it is aborting was an unordered
+	// message under I-DATA (RFC 8260), and clears it otherwise.
+	pdapiFlagUnordered = 0x1
+
+	// ssf_flags (struct sctp_send_failed_event, above): the anonymous enum
+	// { SCTP_DATA_UNSENT, SCTP_DATA_SENT } (include/uapi/linux/sctp.h,
+	// v6.12, lines 482-483).
+	sendFailedFlagSent = 1 // SCTP_DATA_SENT
+
+	// strreset_flags (struct sctp_stream_reset_event, above), RFC 6525
+	// §6.1.1 (include/uapi/linux/sctp.h, v6.12, lines 571-574).
+	streamResetFlagIncoming = 0x0001 // SCTP_STREAM_RESET_INCOMING_SSN
+	streamResetFlagOutgoing = 0x0002 // SCTP_STREAM_RESET_OUTGOING_SSN
+	streamResetFlagDenied   = 0x0004 // SCTP_STREAM_RESET_DENIED
+	streamResetFlagFailed   = 0x0008 // SCTP_STREAM_RESET_FAILED
+
+	// assocreset_flags (struct sctp_assoc_reset_event, above), RFC 6525
+	// §6.1.2 (include/uapi/linux/sctp.h, v6.12, lines 583-584).
+	assocResetFlagDenied = 0x0004 // SCTP_ASSOC_RESET_DENIED
+	assocResetFlagFailed = 0x0008 // SCTP_ASSOC_RESET_FAILED
+
+	// strchange_flags (struct sctp_stream_change_event, above), RFC 6525
+	// §6.1.3. The header #defines these as aliases of
+	// SCTP_ASSOC_CHANGE_DENIED/_FAILED rather than giving them their own
+	// values (include/uapi/linux/sctp.h, v6.12, lines 594-597).
+	streamChangeFlagDenied = 0x0004 // SCTP_STREAM_CHANGE_DENIED
+	streamChangeFlagFailed = 0x0008 // SCTP_STREAM_CHANGE_FAILED
+)
+
+// ---------------------------------------------------------------------
+// DATA chunk header flags, RFC 9260 §3.3.1, as SendFailed decodes them out
+// of ssfe_info.snd_flags: Linux copies the failed DATA chunk's own header
+// byte there verbatim (net/sctp/ulpevent.c,
+// sctp_ulpevent_make_send_failed_event: "ssf->ssfe_info.snd_flags =
+// chunk->chunk_hdr->flags"). This is a different bit position in a
+// different field from sndFlagUnordered above, which is the socket API's
+// own sinfo_flags/snd_flags bit for an outgoing send, not the wire chunk
+// header's. The kernel's names for these bits are internal
+// (include/linux/sctp.h, v6.12, lines 251-258), not part of the UAPI.
+// ---------------------------------------------------------------------
+
+const (
+	dataChunkFlagLastFragment  = 0x01 // E bit: SCTP_DATA_LAST_FRAG
+	dataChunkFlagFirstFragment = 0x02 // B bit: SCTP_DATA_FIRST_FRAG
+	dataChunkFlagUnordered     = 0x04 // U bit: SCTP_DATA_UNORDERED
 )
 
 // ---------------------------------------------------------------------

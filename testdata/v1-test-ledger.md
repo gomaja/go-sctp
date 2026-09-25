@@ -75,17 +75,17 @@ order it appears in its file.
 | sctp_bindx_test.go | TestSCTPConnBindAddRemoveRefreshesLocalAddr | pending |
 | sctp_bindx_test.go | TestConcurrentListenerBindAddKeepsCacheInSync | pending |
 | sctp_bindx_test.go | TestConnectedBindAddRemoveUpdatesPeerAddressReadback | pending |
-| sctp_cause_test.go | TestAssocChangeErrorIsDecodedFromNetworkOrder | pending |
-| sctp_cause_test.go | TestRemoteErrorErrorIsDecodedFromNetworkOrder | pending |
-| sctp_cause_test.go | TestSendFailedErrorIsDecodedFromNetworkOrder | pending |
-| sctp_cause_test.go | TestPeerAddrChangeErrorStaysHostOrder | pending |
+| sctp_cause_test.go | TestAssocChangeErrorIsDecodedFromNetworkOrder | ported → TestAssocChangeErrorIsDecodedFromNetworkOrder (notification_test.go), unchanged in substance: sac_error is still read big-endian, only the decoded field's type changed (raw uint16 → ErrorCause) |
+| sctp_cause_test.go | TestRemoteErrorErrorIsDecodedFromNetworkOrder | ported → TestRemoteErrorErrorIsDecodedFromNetworkOrder (notification_test.go), same property (sre_error read big-endian) |
+| sctp_cause_test.go | TestSendFailedErrorIsDecodedFromNetworkOrder | ported → TestSendFailedErrorIsDecodedFromNetworkOrder (notification_test.go); the fixture now targets ssf_error of struct sctp_send_failed_event (v2's SendFailed, RFC 6458 §6.1.11), not the legacy struct sctp_send_failed this package does not decode, but causeFromU32's promotion-and-swap behaviour is identical |
+| sctp_cause_test.go | TestPeerAddrChangeErrorStaysHostOrder | ported → TestAddrChangeReasonDecoding (notification_test.go); v1 asserted the raw spc_error stayed host-order and unconverted, v2 additionally decodes it into a named AddrChangeReason, which the new test's table covers, spc_error's own host-order-ness among them |
 | sctp_cause_test.go | TestErrorCauseStringNamesTheRFCCauses | ported → TestErrorCauseIANANames (enums_test.go); the expected names changed from v1's own SCTP_ERROR_* constant spelling to the IANA "SCTP Error Cause Codes" registry names |
-| sctp_cause_test.go | TestAbortReportsTheUserAbortCause | pending |
-| sctp_cause_test.go | TestParsesTheEventsStreamReconfigurationNeeds | pending |
-| sctp_cause_test.go | TestNewNotificationsRejectTruncation | pending |
+| sctp_cause_test.go | TestAbortReportsTheUserAbortCause | pending: exercises a live association (Abort + a real SCTP_COMM_LOST read) and so is not a portable test; the property (a real ABORT's cause decodes correctly end to end) is left for whichever task ports v1's live-kernel notification tests or adds wire-level proof of cause decoding |
+| sctp_cause_test.go | TestParsesTheEventsStreamReconfigurationNeeds | ported → TestParseNotificationStreamReset, TestParseNotificationAssocReset, TestParseNotificationStreamChange, TestParseNotificationSendFailed, TestParseNotificationAuthEvent (notification_test.go), split one per event type instead of one table of subtests |
+| sctp_cause_test.go | TestNewNotificationsRejectTruncation | ported → folded into TestParseNotificationRejectsTruncated (notification_test.go), which now covers all twelve notification types in one table instead of two overlapping tests |
 | sctp_cause_test.go | TestNotificationTypeNumbersMatchTheKernel | ported → TestEnumerationValues (its EventType rows; enums_test.go); its SCTP_SN_TYPE_BASE row retired: 0x8000 is never a real notification on the wire (it is SCTP_DATA_IO_EVENT, a subscription-only pseudo-type from the deprecated EventSubscribe bitmask), so EventType names nothing at it |
-| sctp_cause_test.go | TestNotificationPPIDIsConvertedToHostOrder | pending |
-| sctp_cause_test.go | TestParseNotificationRejectsADeclaredLengthItDoesNotHave | pending |
+| sctp_cause_test.go | TestNotificationPPIDIsConvertedToHostOrder | ported → TestNotificationPPIDIsConvertedToHostOrder (notification_test.go); only the SendFailed (formerly SendFailedEvent) case remains, since v2 does not implement the legacy SCTP_SEND_FAILED/SndRcvInfo path the other v1 subtest covered |
+| sctp_cause_test.go | TestParseNotificationRejectsADeclaredLengthItDoesNotHave | ported → TestParseNotificationBoundsByDeclaredLength (notification_test.go), same subtests (declared longer than present, a variable tail that did not all arrive, declared exactly what is present, declared shorter than present) plus one more for the NotificationReassemblyLimit bound |
 | sctp_close_fuzz_test.go | FuzzCloseWithTimeout | pending |
 | sctp_close_fuzz_test.go | TestCloseTimeoutZeroIsImmediate | pending |
 | sctp_close_fuzz_test.go | TestCloseSubMicrosecondTimeout | pending |
@@ -310,19 +310,19 @@ order it appears in its file.
 | sctp_notification_kernel_test.go | TestNotificationHandlerReassemblesKernelNotification | pending |
 | sctp_notification_kernel_test.go | TestRawNotificationReadPreservesFragments | pending |
 | sctp_notification_kernel_test.go | TestSendFailedEventExceedsNotificationMaxSize | pending |
-| sctp_notification_test.go | TestTypedNilNotificationAccessorsReturnZero | pending |
-| sctp_notification_test.go | TestNotificationSizesMatchKernel | pending |
-| sctp_notification_test.go | TestNotificationMaxSizeHoldsEveryFixedNotification | pending |
-| sctp_notification_test.go | TestNotificationAccumulator | pending |
-| sctp_notification_test.go | FuzzNotificationAccumulator | pending |
-| sctp_notification_test.go | TestParseNotificationRejectsTruncated | pending |
-| sctp_notification_test.go | TestParseNotificationBoundsByDeclaredLength | pending |
-| sctp_notification_test.go | TestParseNotificationAssocChange | pending |
-| sctp_notification_test.go | TestParseNotificationCopiesTrailingData | pending |
-| sctp_notification_test.go | TestParseNotificationPartialDeliveryFieldOrder | pending |
-| sctp_notification_test.go | TestParseNotificationPeerAddrChange | pending |
-| sctp_notification_test.go | TestParseNotificationUnknownType | pending |
-| sctp_notification_test.go | FuzzParseNotification | pending |
+| sctp_notification_test.go | TestTypedNilNotificationAccessorsReturnZero | ported → TestUnknownNotificationTypeNilReceiver (notification_test.go), narrowed to the one type it still matters for: v2 drops v1's Flags()/Length() accessors, and twelve of the thirteen concrete types' Type methods return a fixed constant without ever touching the receiver, so a typed nil is safe by construction and needs no test; UnknownNotification is the exception, since its Type reads the notification type out of Data itself, so it is the one that needs, and gets, an explicit nil guard |
+| sctp_notification_test.go | TestNotificationSizesMatchKernel | ported → TestNotificationStructLayouts (abi_test.go); its legacy sctp_send_failed (SndRcvInfo-based) row has no v2 counterpart — this package does not implement the deprecated SCTP_SEND_FAILED, replaced by SendFailed (RFC 6458 §6.1.11's SCTP_SEND_FAILED_EVENT) |
+| sctp_notification_test.go | TestNotificationMaxSizeHoldsEveryFixedNotification | ported → TestNotificationMaxSizeHoldsEveryFixedNotification (notification_test.go), same name and property |
+| sctp_notification_test.go | TestNotificationAccumulator | ported → TestNotificationAccumulator (notification_test.go), same name; adds a byte-at-a-time fragmentation subtest and a reuse-across-records subtest (JDK-8261601) |
+| sctp_notification_test.go | FuzzNotificationAccumulator | ported → FuzzNotificationAccumulator (notification_test.go), same name and property |
+| sctp_notification_test.go | TestParseNotificationRejectsTruncated | ported → TestParseNotificationRejectsTruncated (notification_test.go), extended to all twelve notification types (see sctp_cause_test.go's TestNewNotificationsRejectTruncation row) |
+| sctp_notification_test.go | TestParseNotificationBoundsByDeclaredLength | ported → TestParseNotificationBoundsByDeclaredLength (notification_test.go), same name and subtests, plus the NotificationReassemblyLimit bound |
+| sctp_notification_test.go | TestParseNotificationAssocChange | ported → TestParseNotificationAssocChange (notification_test.go), same name and property |
+| sctp_notification_test.go | TestParseNotificationCopiesTrailingData | ported → TestParseNotificationCopies (notification_test.go); the required v2 ownership test name, generalised from AssocChange.Info alone to every byte-slice field every type carries (RemoteError.Data, SendFailed.Data, UnknownNotification.Data) plus StreamReset.Streams |
+| sctp_notification_test.go | TestParseNotificationPartialDeliveryFieldOrder | ported → TestParseNotificationPartialDeliveryFieldOrder (notification_test.go), same name and property; its Indication assertion has no v2 counterpart since PartialDelivery no longer carries that field (the kernel defines only one indication value, SCTP_PARTIAL_DELIVERY_ABORTED) |
+| sctp_notification_test.go | TestParseNotificationPeerAddrChange | ported → TestParseNotificationPeerAddrChange (notification_test.go), extended with AF_INET, mapped-AF_INET6 and genuine-AF_INET6 subtests through sockaddr.go's decodeAddr; the raw Addr/State/Error fields are now netip.AddrPort/AddrChangeState/AddrChangeReason, covered together with TestAddrChangeReasonDecoding |
+| sctp_notification_test.go | TestParseNotificationUnknownType | ported → TestParseNotificationUnknownType (notification_test.go); v2's behaviour is the opposite of v1's — an unknown type now decodes to *UnknownNotification carrying a copy of the whole record, instead of (nil, nil), so a kernel addition is never dropped silently |
+| sctp_notification_test.go | FuzzParseNotification | ported → FuzzParseNotification (notification_fuzz_test.go), same name and property, extended to check the result never aliases the input for every type that carries a byte-slice field |
 | sctp_oobpool_test.go | TestPooledOobDoesNotCrossAssociations | pending |
 | sctp_oobpool_test.go | TestPooledOobHoldsEveryInfoCmsgAtOnce | pending |
 | sctp_oobpool_test.go | TestPooledOobSurvivesReuse | pending |
