@@ -32,6 +32,11 @@ type Conn struct {
 	laddr atomic.Pointer[Addr]
 	raddr atomic.Pointer[Addr]
 
+	// bindMu serialises BindAdd and BindRemove, each with the snapshot
+	// refresh that follows it, so that an older refresh never replaces the
+	// snapshots a newer one stored.
+	bindMu sync.Mutex
+
 	handler   NotificationHandler
 	closeWait time.Duration // Config.CloseTimeout, resolved: the grace period of Close
 
@@ -52,7 +57,7 @@ type Conn struct {
 // every system call reaches it, so none can run on a descriptor number
 // after file has released it.
 //
-//lint:ignore U1000 the fields are used by the Linux code that opens and closes the descriptor
+//lint:ignore U1000 only the Linux code opens descriptors; on other platforms the fields stay unused
 type socket struct {
 	file    *os.File
 	raw     syscall.RawConn

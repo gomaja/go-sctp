@@ -260,19 +260,27 @@ func sockaddrEntrySize(b []byte, at int) (int, error) {
 // netip.Addr, never IPv4-mapped.
 //
 // A genuine IPv6 entry keeps its scope id as a zone only when the address
-// is link-local unicast. Linux sets sin6_scope_id to the reporting or
-// receiving interface's index for every IPv6 address it hands back from
-// SCTP_GET_LOCAL_ADDRS and SCTP_GET_PEER_ADDRS, not only link-local ones
-// (net/sctp/ipv6.c: sctp_v6_copy_addrlist sets it from dev->ifindex for
-// every address on the local device's address list, and
-// sctp_v6_from_addr_param sets it from the receiving interface for every
-// peer address parameter; sctp_v6_addr_to_user, which builds the value
-// userspace reads, never clears or conditions it). A loopback or global
-// address decoded this way would otherwise pick up a spurious zone from
-// whichever interface happened to report or receive it. Linux's own bind
-// and send paths apply the same restriction the other way — a scope id is
-// only checked, or required to be non-zero, when the address is link-local
-// (sctp_inet6_bind_verify, sctp_inet6_send_verify, __sctp_v6_cmp_addr).
+// is link-local unicast. Linux sets sin6_scope_id without regard to the
+// address's kind, and differently for the two lists SCTP_GET_LOCAL_ADDRS
+// and SCTP_GET_PEER_ADDRS hand back (net/sctp/ipv6.c): every local
+// address carries its device's index (sctp_v6_copy_addrlist sets it from
+// dev->ifindex for every address on the device's list); a peer address
+// taken from a packet's source carries the receiving interface's index
+// (sctp_v6_from_skb); and a peer address learned from an INIT, INIT ACK
+// or ASCONF address parameter carries 0, since sctp_v6_from_addr_param
+// stores its iif argument and every caller passes 0
+// (net/sctp/sm_make_chunk.c: sctp_process_init, sctp_process_param,
+// sctp_add_asconf_response, sctp_asconf_param_success; net/sctp/input.c:
+// __sctp_rcv_init_lookup, __sctp_rcv_asconf_lookup). sctp_v6_addr_to_user,
+// which builds the value userspace reads, never clears or conditions it.
+// A loopback or global address decoded with its scope id would therefore
+// pick up a spurious zone from whichever interface happened to report or
+// receive it, and a peer's link-local address arrives with none, which is
+// left as it is — no interface index can be made up for it. Linux's own
+// bind and send paths apply the same restriction the other way — a scope
+// id is only checked, or required to be non-zero, when the address is
+// link-local (sctp_inet6_bind_verify, sctp_inet6_send_verify,
+// __sctp_v6_cmp_addr).
 func decodeSockaddrEntry(b []byte) (netip.Addr, uint16) {
 	family := binary.NativeEndian.Uint16(b[sockaddrInFamilyOff:])
 	// sockaddrInPortOff and sockaddrIn6PortOff agree (both 2), so this reads

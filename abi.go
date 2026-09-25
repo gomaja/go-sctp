@@ -38,7 +38,10 @@
 
 package sctp
 
-import "math/bits"
+import (
+	"math/bits"
+	"unsafe"
+)
 
 // ---------------------------------------------------------------------
 // Address families (include/linux/socket.h, v6.12, lines 193 and 201).
@@ -783,7 +786,41 @@ const (
 	sizeSetPeerPrim       = 132
 	setPeerPrimAssocIDOff = 0
 	setPeerPrimAddrOff    = 4
+
+	// struct sctp_authchunk { sauth_chunk(1) }: the SCTP_AUTH_CHUNK value,
+	// one chunk type per setsockopt.
+	sizeAuthChunk = 1
+
+	// struct sctp_setadaptation { ssb_adaptation_ind(4) }: the
+	// SCTP_ADAPTATION_LAYER value.
+	sizeSetAdaptation = 4
+
+	// A plain C int: the value of every boolean or integer option that
+	// takes no association id (SCTP_NODELAY, SCTP_RECVRCVINFO,
+	// SCTP_FRAGMENT_INTERLEAVE, SO_RCVBUF and the like).
+	sizeInt = 4
 )
+
+// connectx3Arg is struct sctp_getaddrs_old { sctp_assoc_t assoc_id; int
+// addr_num; struct sockaddr *addrs; } (include/uapi/linux/sctp.h), the
+// value SCTP_SOCKOPT_CONNECTX3 takes. Unlike every other layout here it is
+// a Go struct, because it carries a pointer to the packed address array:
+// written into a byte buffer, that pointer would be invisible to the
+// garbage collector, and a moving stack could leave it stale. The Go
+// layout matches the kernel's on every word size: assoc_id at 0, addr_num
+// at 4, and the pointer at 8, 8 bytes wide on a 64-bit build and 4 on a
+// 32-bit one, which is also struct compat_sctp_getaddrs_old, the form a
+// 64-bit kernel reads from a 32-bit process (net/sctp/socket.c:
+// sctp_getsockopt_connectx3). addrNum is the length of the array in bytes,
+// not a count: the kernel copies that many bytes (memdup_user) and walks
+// the entries by their own families. The kernel writes the new
+// association's id back over assocID when the call succeeds or returns
+// EINPROGRESS.
+type connectx3Arg struct {
+	assocID int32
+	addrNum int32
+	addrs   unsafe.Pointer
+}
 
 // ---------------------------------------------------------------------
 // Word-size-dependent option structs: each embeds a sockaddr_storage right

@@ -7,6 +7,7 @@ import (
 	"math/bits"
 	"runtime"
 	"testing"
+	"unsafe"
 )
 
 // numberCase is one named constant checked against a number written out by
@@ -557,6 +558,31 @@ func TestOptionStructLayouts(t *testing.T) {
 		{"sizeSetPeerPrim", sizeSetPeerPrim, 132},
 		{"setPeerPrimAssocIDOff", setPeerPrimAssocIDOff, 0},
 		{"setPeerPrimAddrOff", setPeerPrimAddrOff, 4},
+
+		// struct sctp_authchunk, lines 825-827.
+		{"sizeAuthChunk", sizeAuthChunk, 1},
+
+		// struct sctp_setadaptation, lines 776-778.
+		{"sizeSetAdaptation", sizeSetAdaptation, 4},
+
+		// A plain C int on every Linux ABI the package builds for.
+		{"sizeInt", sizeInt, 4},
+	})
+}
+
+// TestConnectx3ArgLayout pins connectx3Arg against struct
+// sctp_getaddrs_old (include/uapi/linux/sctp.h, lines 1019-1027): assoc_id
+// at 0, addr_num at 4 and the address pointer at 8, one word wide, so the
+// struct is 16 bytes on a 64-bit build and 12 on a 32-bit one — also the
+// size of struct compat_sctp_getaddrs_old, which a 64-bit kernel reads from
+// a 32-bit process (net/sctp/socket.c: sctp_getsockopt_connectx3).
+func TestConnectx3ArgLayout(t *testing.T) {
+	var a connectx3Arg
+	checkNumbers(t, []numberCase{
+		{"offsetof(assocID)", int(unsafe.Offsetof(a.assocID)), 0},
+		{"offsetof(addrNum)", int(unsafe.Offsetof(a.addrNum)), 4},
+		{"offsetof(addrs)", int(unsafe.Offsetof(a.addrs)), 8},
+		{"sizeof(connectx3Arg)", int(unsafe.Sizeof(a)), 8 + bits.UintSize/8},
 	})
 }
 

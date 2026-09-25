@@ -6,13 +6,17 @@
 package sctp
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net/netip"
 	"os"
 	"sort"
 	"testing"
+	"time"
 )
 
 // unsupportedStubCase is one function or method stubbed in unsupported.go,
@@ -20,26 +24,103 @@ import (
 type unsupportedStubCase struct {
 	name string
 	call func() error
+
+	// value marks a stub that returns only a value (an address or an
+	// association id), which cannot carry ErrUnsupported: its call checks
+	// that the stub returned the zero value, and returns an error only if
+	// it did not.
+	value bool
+}
+
+// zeroValueErr is what a value case returns when its stub did not return
+// the zero value.
+func zeroValueErr(got any) error {
+	return fmt.Errorf("returned %v, want the zero value", got)
 }
 
 // unsupportedStubCases lists one case per function or method declared in
 // unsupported.go, by the same name TestUnsupportedStubManifestIsComplete
 // reads from that file's source (a bare function's own name, or
-// "Receiver.Method" for a method). It is empty for now: unsupported.go
-// declares nothing yet, and each stub a later change adds there adds its
-// case here in the same change, so the two lists never drift apart for
-// more than one commit.
+// "Receiver.Method" for a method), so the two lists never drift apart.
 func unsupportedStubCases() []unsupportedStubCase {
-	return nil
+	var (
+		cfg Config
+		l   Listener
+		c   Conn
+	)
+	ctx := context.Background()
+	raddr := &Addr{IPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}, Port: 9}
+	ip := netip.MustParseAddr("127.0.0.1")
+	return []unsupportedStubCase{
+		{name: "Dial", call: func() error { _, err := Dial(ctx, "sctp", nil, raddr); return err }},
+		{name: "Config.Dial", call: func() error { _, err := cfg.Dial(ctx, "sctp", nil, raddr); return err }},
+		{name: "Listen", call: func() error { _, err := Listen("sctp", nil); return err }},
+		{name: "Config.Listen", call: func() error { _, err := cfg.Listen("sctp", nil); return err }},
+		{name: "FileConn", call: func() error { _, err := FileConn(os.Stdin); return err }},
+		{name: "Config.FileConn", call: func() error { _, err := cfg.FileConn(os.Stdin); return err }},
+		{name: "FileListener", call: func() error { _, err := FileListener(os.Stdin); return err }},
+		{name: "Config.FileListener", call: func() error { _, err := cfg.FileListener(os.Stdin); return err }},
+		{name: "InstallAuthKey", call: func() error { return InstallAuthKey(nil, 1, []byte("k")) }},
+		{name: "ActivateAuthKey", call: func() error { return ActivateAuthKey(nil, 1) }},
+		{name: "Listener.AcceptSCTP", call: func() error { _, err := l.AcceptSCTP(); return err }},
+		{name: "Listener.Addr", value: true, call: func() error {
+			if a := l.Addr(); a != nil {
+				return zeroValueErr(a)
+			}
+			return nil
+		}},
+		{name: "Listener.Close", call: l.Close},
+		{name: "Listener.SetDeadline", call: func() error { return l.SetDeadline(time.Now()) }},
+		{name: "Listener.BindAdd", call: func() error { return l.BindAdd(ip) }},
+		{name: "Listener.BindRemove", call: func() error { return l.BindRemove(ip) }},
+		{name: "Listener.SyscallConn", call: func() error { _, err := l.SyscallConn(); return err }},
+		{name: "Conn.AssocID", value: true, call: func() error {
+			if id := c.AssocID(); id != 0 {
+				return zeroValueErr(id)
+			}
+			return nil
+		}},
+		{name: "Conn.LocalAddr", value: true, call: func() error {
+			if a := c.LocalAddr(); a != nil {
+				return zeroValueErr(a)
+			}
+			return nil
+		}},
+		{name: "Conn.RemoteAddr", value: true, call: func() error {
+			if a := c.RemoteAddr(); a != nil {
+				return zeroValueErr(a)
+			}
+			return nil
+		}},
+		{name: "Conn.LocalAddrs", call: func() error { _, err := c.LocalAddrs(); return err }},
+		{name: "Conn.PeerAddrs", call: func() error { _, err := c.PeerAddrs(); return err }},
+		{name: "Conn.BindAdd", call: func() error { return c.BindAdd(ip) }},
+		{name: "Conn.BindRemove", call: func() error { return c.BindRemove(ip) }},
+		{name: "Conn.SetDeadline", call: func() error { return c.SetDeadline(time.Now()) }},
+		{name: "Conn.SetReadDeadline", call: func() error { return c.SetReadDeadline(time.Now()) }},
+		{name: "Conn.SetWriteDeadline", call: func() error { return c.SetWriteDeadline(time.Now()) }},
+		{name: "Conn.SyscallConn", call: func() error { _, err := c.SyscallConn(); return err }},
+		{name: "Conn.Close", call: c.Close},
+		{name: "Conn.CloseWithTimeout", call: func() error { return c.CloseWithTimeout(time.Second) }},
+		{name: "Conn.Shutdown", call: c.Shutdown},
+		{name: "Conn.Abort", call: c.Abort},
+	}
 }
 
 // TestUnsupportedEntryPointsReportTheSentinel calls every case in
 // unsupportedStubCases and requires it to return an error matching both
 // ErrUnsupported and the standard library's errors.ErrUnsupported, rather
-// than a bare nil a caller checking err would read as success.
+// than a bare nil a caller checking err would read as success. A value
+// case must instead report nothing: its stub returned the zero value.
 func TestUnsupportedEntryPointsReportTheSentinel(t *testing.T) {
 	for _, tc := range unsupportedStubCases() {
 		err := tc.call()
+		if tc.value {
+			if err != nil {
+				t.Errorf("%s %v", tc.name, err)
+			}
+			continue
+		}
 		if err == nil {
 			t.Errorf("%s returned a nil error on a platform without SCTP; "+
 				"a caller checking err then uses a nil result", tc.name)

@@ -322,6 +322,12 @@ type prepared struct {
 	abandon      AbandonPolicy
 	subscribed   eventSet           // caller's logical subscriptions (Notifications, plus EventAssocChange on endpoints)
 	fragLevel    FragmentInterleave // the effective level: Config.FragmentInterleave, or InterleaveAssocs on an Endpoint when nil
+
+	// adopted marks the Config form of FileConn and FileListener: the
+	// descriptor was set up by someone else, so subscribed says nothing
+	// about which notifications its creator asked for, and a connection
+	// built from it reads them from the kernel instead.
+	adopted bool
 }
 
 // streamResetKnownBits is every bit StreamResetMask names (RFC 6525 §6.3);
@@ -805,6 +811,7 @@ func prepareFileStyle(c *Config, closeTimeout time.Duration) (*prepared, error) 
 		closeTimeout: closeTimeout,
 		abandon:      AbandonAbort,
 		fragLevel:    InterleaveNone,
+		adopted:      true,
 	}, nil
 }
 

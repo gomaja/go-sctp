@@ -23,16 +23,24 @@
 // That check runs against this file's source, not against a fixed list, so
 // it stays correct as this file grows.
 //
-// No function is declared here yet. Addresses, notifications and
-// enumerations are portable and carry no build tag, and every socket-backed
-// constructor and method this package will expose is added to the Linux
-// build, and stubbed here alongside it, separately. The two types below
-// exist only so that Conn, which is portable, compiles here. A stub carried
-// over from v1's sctp_unsupported.go (git show main:sctp_unsupported.go)
-// brings that file's Wataru Ishida copyright notice into this one the first
-// time one is added, the same way addr.go and sockaddr.go already do.
+// Addresses, notifications and enumerations are portable and carry no build
+// tag. Value-only accessors (LocalAddr, RemoteAddr, Listener.Addr,
+// AssocID) return their zero value here, since no Conn or Listener can
+// exist on these platforms to hold anything else; every other stub returns
+// ErrUnsupported. None of them is carried over from v1's
+// sctp_unsupported.go (git show main:sctp_unsupported.go): the API they
+// stand in for is new.
 
 package sctp
+
+import (
+	"context"
+	"net"
+	"net/netip"
+	"os"
+	"syscall"
+	"time"
+)
 
 // sendState is a Conn's send storage. On Linux it holds a syscall.Msghdr,
 // which not every platform defines; with no send path here, it is empty.
@@ -40,3 +48,101 @@ type sendState struct{}
 
 // recvState is a Conn's receive storage, empty here for the same reason.
 type recvState struct{}
+
+// Dial reports ErrUnsupported: SCTP sockets exist only on Linux.
+func Dial(context.Context, string, *Addr, *Addr) (*Conn, error) { return nil, ErrUnsupported }
+
+// Dial reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Config) Dial(context.Context, string, *Addr, *Addr) (*Conn, error) {
+	return nil, ErrUnsupported
+}
+
+// Listen reports ErrUnsupported: SCTP sockets exist only on Linux.
+func Listen(string, *Addr) (*Listener, error) { return nil, ErrUnsupported }
+
+// Listen reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Config) Listen(string, *Addr) (*Listener, error) { return nil, ErrUnsupported }
+
+// FileConn reports ErrUnsupported: SCTP sockets exist only on Linux.
+func FileConn(*os.File) (*Conn, error) { return nil, ErrUnsupported }
+
+// FileConn reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Config) FileConn(*os.File) (*Conn, error) { return nil, ErrUnsupported }
+
+// FileListener reports ErrUnsupported: SCTP sockets exist only on Linux.
+func FileListener(*os.File) (*Listener, error) { return nil, ErrUnsupported }
+
+// FileListener reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Config) FileListener(*os.File) (*Listener, error) { return nil, ErrUnsupported }
+
+// InstallAuthKey reports ErrUnsupported: SCTP sockets exist only on Linux.
+func InstallAuthKey(syscall.RawConn, uint16, []byte) error { return ErrUnsupported }
+
+// ActivateAuthKey reports ErrUnsupported: SCTP sockets exist only on Linux.
+func ActivateAuthKey(syscall.RawConn, uint16) error { return ErrUnsupported }
+
+// AcceptSCTP reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (l *Listener) AcceptSCTP() (*Conn, error) { return nil, ErrUnsupported }
+
+// Addr returns nil: no Listener is ever bound here.
+func (l *Listener) Addr() net.Addr { return nil }
+
+// Close reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (l *Listener) Close() error { return ErrUnsupported }
+
+// SetDeadline reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (l *Listener) SetDeadline(time.Time) error { return ErrUnsupported }
+
+// BindAdd reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (l *Listener) BindAdd(...netip.Addr) error { return ErrUnsupported }
+
+// BindRemove reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (l *Listener) BindRemove(...netip.Addr) error { return ErrUnsupported }
+
+// SyscallConn reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (l *Listener) SyscallConn() (syscall.RawConn, error) { return nil, ErrUnsupported }
+
+// AssocID returns 0: no association exists here.
+func (c *Conn) AssocID() AssocID { return 0 }
+
+// LocalAddr returns nil: no Conn is ever connected here.
+func (c *Conn) LocalAddr() net.Addr { return nil }
+
+// RemoteAddr returns nil: no Conn is ever connected here.
+func (c *Conn) RemoteAddr() net.Addr { return nil }
+
+// LocalAddrs reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) LocalAddrs() (*Addr, error) { return nil, ErrUnsupported }
+
+// PeerAddrs reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) PeerAddrs() (*Addr, error) { return nil, ErrUnsupported }
+
+// BindAdd reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) BindAdd(...netip.Addr) error { return ErrUnsupported }
+
+// BindRemove reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) BindRemove(...netip.Addr) error { return ErrUnsupported }
+
+// SetDeadline reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetDeadline(time.Time) error { return ErrUnsupported }
+
+// SetReadDeadline reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetReadDeadline(time.Time) error { return ErrUnsupported }
+
+// SetWriteDeadline reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetWriteDeadline(time.Time) error { return ErrUnsupported }
+
+// SyscallConn reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SyscallConn() (syscall.RawConn, error) { return nil, ErrUnsupported }
+
+// Close reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) Close() error { return ErrUnsupported }
+
+// CloseWithTimeout reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) CloseWithTimeout(time.Duration) error { return ErrUnsupported }
+
+// Shutdown reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) Shutdown() error { return ErrUnsupported }
+
+// Abort reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) Abort() error { return ErrUnsupported }
