@@ -107,17 +107,17 @@ order it appears in its file.
 | sctp_close_test.go | TestCloseDuringBlockedRead | pending |
 | sctp_close_test.go | TestCloseDuringWrite | pending |
 | sctp_close_test.go | TestCloseAfterCompletedHandshakeGivesPeerEOF | pending |
-| sctp_cmsgbuild_test.go | TestBuildSndRcvCmsgMatchesLegacy | pending |
-| sctp_cmsgbuild_test.go | TestBuildSndRcvCmsgHeader | pending |
-| sctp_cmsgbuild_test.go | TestBuildSndRcvCmsgOffsetsMatchStruct | pending |
-| sctp_cmsgbuild_test.go | TestBuildSndRcvCmsgRoundTripsThroughParser | pending |
-| sctp_cmsgbuild_test.go | TestParseSndRcvInfoDoesNotAliasInput | pending |
-| sctp_cmsgbuild_test.go | TestAncillaryParsersIgnoreShortSCTPPayloads | pending |
-| sctp_cmsgbuild_test.go | FuzzAncillaryParsers | pending |
-| sctp_cmsgbuild_test.go | TestParseSndRcvInfoPrefersSndRcvOverRcvInfo | pending |
-| sctp_cmsgbuild_test.go | TestSCTPReadInfoSurvivesLaterReads | pending |
-| sctp_cmsgbuild_test.go | TestSCTPWriteDoesNotMutateInfo | pending |
-| sctp_cmsgbuild_test.go | TestSCTPWriteConcurrentSharedInfo | pending |
+| sctp_cmsgbuild_test.go | TestBuildSndRcvCmsgMatchesLegacy | retired: it pinned buildSndRcvCmsg's bytes against the deprecated SCTP_SNDRCV struct (struct sctp_sndrcvinfo), which the package no longer builds at all — SendOptions encodes only SCTP_SNDINFO, SCTP_PRINFO and SCTP_AUTHINFO (RFC 6458 §5.3.2 deprecates SCTP_SNDRCV in favor of them) |
+| sctp_cmsgbuild_test.go | TestBuildSndRcvCmsgHeader | ported → TestAppendSendCmsgsEncodesSndInfo, TestAppendSendCmsgsAllThreeFitsSndCmsgSpaceExactly (msginfo_test.go), for SCTP_SNDINFO's own cmsg_level/cmsg_type in place of the retired SCTP_SNDRCV's |
+| sctp_cmsgbuild_test.go | TestBuildSndRcvCmsgOffsetsMatchStruct | ported → TestCmsgStructLayouts (abi_test.go, pinning sndInfoStreamOff etc. directly) and TestAppendSendCmsgsAllThreeFitsSndCmsgSpaceExactly, TestCmsgFormulaAcrossWordSizes (msginfo_test.go, pinning the CMSG_SPACE total), for the SNDINFO/PRINFO/AUTHINFO layout in place of SndRcvInfo's |
+| sctp_cmsgbuild_test.go | TestBuildSndRcvCmsgRoundTripsThroughParser | retired: the deprecated SCTP_SNDRCV cmsg it round-tripped served both directions at once; the non-deprecated API splits that into SCTP_SNDINFO (send) and SCTP_RCVINFO (receive), two distinct wire records with no shared struct to round-trip through one parser — TestAppendSendCmsgsEncodesSndInfo and TestParseRecvCmsgsFillsRcvInfo (msginfo_test.go) pin each direction's own byte layout separately |
+| sctp_cmsgbuild_test.go | TestParseSndRcvInfoDoesNotAliasInput | retired: it guarded against parseSndRcvInfo returning a *SndRcvInfo that aliased the read buffer. RcvInfo and NxtInfo are returned by value inside MsgInfo, not by a pointer into the read buffer, so a decoded record cannot alias its source buffer by construction — the same reasoning that retired TestResolveFromRawAddrDoesNotAliasBuffer for netip.Addr |
+| sctp_cmsgbuild_test.go | TestAncillaryParsersIgnoreShortSCTPPayloads | ported → TestParseRecvCmsgsIgnoresShortPayloads (msginfo_test.go), for RCVINFO/NXTINFO in place of the retired SCTP_SNDRCV/RCVINFO/NXTINFO trio |
+| sctp_cmsgbuild_test.go | FuzzAncillaryParsers | ported → FuzzParseRecvCmsgs (msginfo_test.go), for RCVINFO/NXTINFO; SCTP_SNDRCV is retired and appendSendCmsgs is an encoder with a fixed-size destination, not a decoder of untrusted bytes, so it is not itself a fuzz target |
+| sctp_cmsgbuild_test.go | TestParseSndRcvInfoPrefersSndRcvOverRcvInfo | retired: it pinned that the deprecated SCTP_SNDRCV wins when both it and SCTP_RCVINFO are present in one buffer. SCTP_SNDRCV is retired, so SCTP_RCVINFO is the only per-message receive-info record parseRecvCmsgs looks for and there is no precedence left to test |
+| sctp_cmsgbuild_test.go | TestSCTPReadInfoSurvivesLaterReads | retired: it guarded against a pooled oob buffer clobbering an earlier read's *SndRcvInfo. RcvInfo/NxtInfo are copied by value into the caller's own MsgInfo on every call, not referenced by a pointer into a reused buffer, so there is nothing later reuse could clobber |
+| sctp_cmsgbuild_test.go | TestSCTPWriteDoesNotMutateInfo | ported → TestAppendSendCmsgsDoesNotMutateInputs (msginfo_test.go), for SndInfo/PrInfo/AuthKey in place of SndRcvInfo |
+| sctp_cmsgbuild_test.go | TestSCTPWriteConcurrentSharedInfo | ported → TestAppendSendCmsgsConcurrentSharedInputs (msginfo_test.go), for SndInfo/PrInfo/AuthKey in place of SndRcvInfo |
 | sctp_connect_test.go | TestDialUnderChurnSucceeds | pending |
 | sctp_contract_test.go | TestReadWithZeroLengthBufferConsumesNothing | pending |
 | sctp_contract_test.go | TestReadIntoFullBufferTailIsNotAConsumingRead | pending |
@@ -479,15 +479,15 @@ order it appears in its file.
 | sctp_shutdownwait_test.go | TestListenerDeadlineInThePast | pending |
 | sctp_shutdownwait_test.go | TestSendDoesNotRaiseSIGPIPE | pending |
 | sctp_shutdownwait_test.go | TestRawWaitTerminatesOnAbortedAssociation | pending |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoCarriesStreamAndPPID | pending |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoNilInfoUsesDefaults | pending |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoWithPrInfo | pending |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoCmsgPadding | pending |
-| sctp_sndinfo_test.go | TestCmsgPaddingIsObservable | pending |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoRejectsBadPrPolicy | pending |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoInteropWithSCTPWrite | pending |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoHonoursWriteDeadline | pending |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoWithAuthInfo | pending |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoCarriesStreamAndPPID | ported → TestAppendSendCmsgsEncodesSndInfo (msginfo_test.go) for the SNDINFO byte encoding, including the PPID conversion; the live-socket, end-to-end half stays pending until Conn.SendMsg exists |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoNilInfoUsesDefaults | pending: a nil SndInfo falling back to the cached socket default is the send path's job (validateSendOptions and appendSendCmsgs take an already-resolved SndInfo/PrInfo and never decide defaults themselves), so this stays pending until that path exists |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoWithPrInfo | ported → TestAppendSendCmsgsEncodesPrInfoWhenSet, TestAppendSendCmsgsPRTTLConvertsToMilliseconds (msginfo_test.go) for the PRINFO byte encoding; the live-socket half (a PR-SCTP send actually arriving) stays pending until Conn.SendMsg exists |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoCmsgPadding | ported → TestAppendSendCmsgsAllThreeFitsSndCmsgSpaceExactly, TestAppendSendCmsgsZeroesPaddingGaps (msginfo_test.go) for the inter-cmsg alignment padding itself; the live-socket confirmation that a malformed pad makes the kernel reject the sendmsg stays pending until Conn.SendMsg exists |
+| sctp_sndinfo_test.go | TestCmsgPaddingIsObservable | ported → TestCmsgLenIsExactNotAligned, TestCmsgFormulaAcrossWordSizes (msginfo_test.go), pinning the same CMSG_LEN-vs-CMSG_SPACE gap for AUTHINFO directly from the word-size formula instead of syscall.CmsgLen/CmsgSpace |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoRejectsBadPrPolicy | ported → TestValidateSendOptionsRefusesUnknownPRPolicyBits (msginfo_test.go): the package now runs the same SCTP_PR_SCTP_MASK check itself before any syscall (validateSendOptions), rather than relying solely on the kernel's own EINVAL |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoInteropWithSCTPWrite | retired: it pinned that the deprecated SCTP_SNDRCV send path (SCTPWrite) and the non-deprecated one (SCTPWriteInfo) interoperate on one association. v2 has a single send path (SendMsg/Write, where Write is SendMsg with no control records), not two different wire formats to interoperate between |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoHonoursWriteDeadline | pending: write-deadline enforcement belongs to the send path itself (the runtime poller and the connection's write deadline), not to the metadata codecs here |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoWithAuthInfo | ported → TestAppendSendCmsgsEncodesAuthInfoWhenKeySet (msginfo_test.go) for the AUTHINFO byte encoding; the live-socket half (needs net.sctp.auth_enable) stays pending until Conn.SendMsg exists |
 | sctp_sockopt_stack_test.go | TestSubscribedEventsSurvivesStackGrowth | pending |
 | sctp_sockopt_stack_test.go | TestRawGetsockoptSurvivesStackGrowth | pending |
 | sctp_sockopt_stack_test.go | TestInternalRawGetsockoptSurvivesStackGrowth | pending |
