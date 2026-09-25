@@ -86,12 +86,12 @@ order it appears in its file.
 | sctp_cause_test.go | TestNotificationTypeNumbersMatchTheKernel | ported → TestEnumerationValues (its EventType rows; enums_test.go); its SCTP_SN_TYPE_BASE row retired: 0x8000 is never a real notification on the wire (it is SCTP_DATA_IO_EVENT, a subscription-only pseudo-type from the deprecated EventSubscribe bitmask), so EventType names nothing at it |
 | sctp_cause_test.go | TestNotificationPPIDIsConvertedToHostOrder | ported → TestNotificationPPIDIsConvertedToHostOrder (notification_test.go); only the SendFailed (formerly SendFailedEvent) case remains, since v2 does not implement the legacy SCTP_SEND_FAILED/SndRcvInfo path the other v1 subtest covered |
 | sctp_cause_test.go | TestParseNotificationRejectsADeclaredLengthItDoesNotHave | ported → TestParseNotificationBoundsByDeclaredLength (notification_test.go), same subtests (declared longer than present, a variable tail that did not all arrive, declared exactly what is present, declared shorter than present) plus one more for the NotificationReassemblyLimit bound |
-| sctp_close_fuzz_test.go | FuzzCloseWithTimeout | pending |
-| sctp_close_fuzz_test.go | TestCloseTimeoutZeroIsImmediate | pending |
-| sctp_close_fuzz_test.go | TestCloseSubMicrosecondTimeout | pending |
+| sctp_close_fuzz_test.go | FuzzCloseWithTimeout | ported → FuzzLifecycleClose (close_test.go) for the state machine: for every grace period, including zero, negative and sub-microsecond ones, close returns, releases the descriptor exactly once and leaves every later call reporting net.ErrClosed, now also with scripted status polls, failing steps and an Abort during the wait; the half that needs a live socket (checking that the descriptor is really closed) stays pending until the Linux close path exists |
+| sctp_close_fuzz_test.go | TestCloseTimeoutZeroIsImmediate | ported → TestLifecycleCloseNonPositiveGraceAborts (close_test.go) for the state machine: a zero or negative grace goes straight to the abortive close, with no SHUTDOWN, poll or wait; the half that needs a live socket stays pending until the Linux close path exists |
+| sctp_close_fuzz_test.go | TestCloseSubMicrosecondTimeout | ported → TestLifecycleCloseSubMicrosecondGrace (close_test.go); the timeval conversion it guarded no longer exists (the wait is a timer), so the property is that a grace below the first 200 µs backoff step still bounds the one wait and ends in the abortive close |
 | sctp_close_fuzz_test.go | TestCloseChurnUnderLoad | pending |
 | sctp_close_fuzz_test.go | TestCloseRacesWithReadAndWrite | pending |
-| sctp_close_fuzz_test.go | TestAbortDoesNotWait | pending |
+| sctp_close_fuzz_test.go | TestAbortDoesNotWait | ported → TestLifecycleAbortFromOpenDoesNotWait (close_test.go) for the state machine: an Abort from open starts no SHUTDOWN, polls nothing and never waits; the half that needs a live socket (against an already aborted peer) stays pending until the Linux close path exists |
 | sctp_close_fuzz_test.go | TestPeelOffRacesWithClose | pending |
 | sctp_close_fuzz_test.go | TestClosingAPeeledConnectionShutsDownGracefully | pending |
 | sctp_close_fuzz_test.go | TestClosingBackpressuredPeeledConnectionRetriesEOF | pending |
@@ -101,9 +101,9 @@ order it appears in its file.
 | sctp_close_test.go | TestCloseDoesNotLeakDescriptors | pending |
 | sctp_close_test.go | TestCloseReleasesPortForRebind | pending |
 | sctp_close_test.go | TestCloseWithUnreachablePeerReturnsWithinTimeout | pending |
-| sctp_close_test.go | TestDoubleCloseReturnsNetErrClosed | pending |
+| sctp_close_test.go | TestDoubleCloseReturnsNetErrClosed | ported → TestLifecycleClosedAfterRelease (close_test.go) for the state machine, after every path that releases the descriptor, Shutdown included; the half that needs a live socket stays pending until the Linux close path exists |
 | sctp_close_test.go | TestCloseOnNilConn | pending |
-| sctp_close_test.go | TestConcurrentCloseAndAbort | pending |
+| sctp_close_test.go | TestConcurrentCloseAndAbort | ported → TestLifecycleConcurrentCloseAndAbort (close_test.go), with a changed invariant: an Abort that arrives while a Close waits now overtakes it and both return nil, so "exactly one caller succeeds" became "the descriptor is released exactly once, at most one Close succeeds, and if none does exactly one Abort did"; TestLifecycleConcurrentClose, TestLifecycleConcurrentAbortsDuringClose and TestLifecycleAbortiveCloseIsExclusive cover the other pairings; the half that needs a live socket stays pending until the Linux close path exists |
 | sctp_close_test.go | TestCloseDuringBlockedRead | pending |
 | sctp_close_test.go | TestCloseDuringWrite | pending |
 | sctp_close_test.go | TestCloseAfterCompletedHandshakeGivesPeerEOF | pending |
@@ -467,12 +467,12 @@ order it appears in its file.
 | sctp_resolveraw_portable_test.go | TestResolveFromRawAddrDoesNotAliasBuffer | retired: it guarded against net.IP's slice header aliasing the kernel's reply buffer once copied out carelessly. netip.Addr is an immutable value type built from a fixed-size array (netip.AddrFrom4/AddrFrom16), never a slice into the source, so a decoded address cannot alias b by construction — the class of bug this test caught cannot be reintroduced |
 | sctp_resolveraw_portable_test.go | FuzzResolveFromRawAddr | ported → FuzzDecodeAddrs (sockaddr_fuzz_test.go) |
 | sctp_shutdownwait_test.go | TestAssocQueryAnswersForALiveAssociation | pending |
-| sctp_shutdownwait_test.go | TestWaitAssocGoneDoesNotTreatProbeFailureAsCompletion | pending |
+| sctp_shutdownwait_test.go | TestWaitAssocGoneDoesNotTreatProbeFailureAsCompletion | ported → TestLifecycleCloseProbeFailureAborts (close_test.go), same property; the failed query now leads to the abortive close in the same call, which reports the query's error joined with the abortive close's |
 | sctp_shutdownwait_test.go | TestShutdownViaEOFRetriesInterruptAndBackpressure | pending |
 | sctp_shutdownwait_test.go | TestShutdownViaEOFBackpressureHonorsDeadline | pending |
 | sctp_shutdownwait_test.go | TestShutdownViaEOFPropagatesWaitAndSendErrors | pending |
-| sctp_shutdownwait_test.go | TestCloseTimeoutBoundsTheShutdownWait | pending |
-| sctp_shutdownwait_test.go | TestCloseWithRespondingPeerReturnsPromptly | pending |
+| sctp_shutdownwait_test.go | TestCloseTimeoutBoundsTheShutdownWait | ported → TestLifecycleCloseGraceExpiry (close_test.go) for the state machine: the whole grace period is spent on the backoff schedule, then the abortive close; the half that needs a live socket (a stalled peer) stays pending until the Linux close path exists |
+| sctp_shutdownwait_test.go | TestCloseWithRespondingPeerReturnsPromptly | ported → TestLifecycleCloseGraceful (close_test.go) for the state machine: close stops at the first poll that finds the association gone; the half that needs a live socket (a peer that answers) stays pending until the Linux close path exists |
 | sctp_shutdownwait_test.go | TestCloseReleasesPortAfterUnresponsivePeer | pending |
 | sctp_shutdownwait_test.go | TestListenerAcceptDeadline | pending |
 | sctp_shutdownwait_test.go | TestRawSocketTimeoutDoesNotBecomeListenerDeadline | pending |
