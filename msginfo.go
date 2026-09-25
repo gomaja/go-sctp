@@ -30,7 +30,6 @@ package sctp
 
 import (
 	"encoding/binary"
-	"math"
 	"net/netip"
 	"time"
 )
@@ -172,35 +171,15 @@ func validateSendOptions(opts *SendOptions) error {
 		}
 	}
 
+	// The policy and TTL checks themselves live in validatePrInfo
+	// (options.go), shared with Config.DefaultPrInfo's validation: RFC
+	// 6458 §5.3.7's "In the case of SCTP_PR_SCTP_TTL, the lifetime is
+	// provided in pr_value" and RFC 7496 §4.2's table ("SCTP_PR_SCTP_TTL |
+	// Lifetime in ms") apply the same way to a default as to a per-message
+	// send.
 	if pr := opts.PR; pr != nil {
-		// sctp_msghdr_parse's SCTP_PRINFO case (net/sctp/socket.c):
-		// "if (cmsgs->prinfo->pr_policy & ~SCTP_PR_SCTP_MASK) return -EINVAL;".
-		// PRAll (0x0080, RFC 7496 §§4.3-4.4's SCTP_PR_ASSOC_STATUS/
-		// SCTP_PR_STREAM_STATUS aggregate-query value) and any bit outside
-		// the two-bit policy field both fail this one mask test — PRAll is
-		// never a valid per-message policy, only a query answer.
-		if pr.Policy&^PRPolicy(prPolicyMask) != 0 {
-			if pr.Policy == PRAll {
-				return invalidArg("SendOptions.PR.Policy is PRAll, which RFC 7496 §§4.3-4.4 define only for a status query, not a per-message send")
-			}
-			return invalidArg("SendOptions.PR.Policy %#04x is not a known PR-SCTP policy", uint16(pr.Policy))
-		}
-
-		// TTL matters only for PRTTL: it becomes pr_value, a uint32 count of
-		// milliseconds (RFC 6458 §5.3.7: "In the case of SCTP_PR_SCTP_TTL,
-		// the lifetime is provided in pr_value"; RFC 7496 §4.2's table gives
-		// the unit, "SCTP_PR_SCTP_TTL | Lifetime in ms"), so it must convert
-		// without loss.
-		if pr.Policy == PRTTL {
-			if pr.TTL < 0 {
-				return invalidArg("SendOptions.PR.TTL %s is negative", pr.TTL)
-			}
-			if pr.TTL%time.Millisecond != 0 {
-				return invalidArg("SendOptions.PR.TTL %s is not a whole number of milliseconds", pr.TTL)
-			}
-			if pr.TTL/time.Millisecond > math.MaxUint32 {
-				return invalidArg("SendOptions.PR.TTL %s exceeds the uint32 millisecond range struct sctp_prinfo's pr_value carries", pr.TTL)
-			}
+		if err := validatePrInfo("SendOptions.PR", pr); err != nil {
+			return err
 		}
 	}
 
@@ -282,16 +261,11 @@ func appendSendCmsgs(dst []byte, snd *SndInfo, assoc AssocID, pr *PrInfo, key *u
 		start := off
 		putCmsgHeader(dst, start, sizePrInfo, cmsgPrInfo)
 		p := start + sizeCmsghdr
-		binary.NativeEndian.PutUint16(dst[p+prInfoPolicyOff:], uint16(pr.Policy))
-		var value uint32
-		switch pr.Policy {
-		case PRNone:
-			value = 0
-		case PRTTL:
-			value = uint32(pr.TTL / time.Millisecond)
-		default: // PRRtx, PRPrio
-			value = pr.Value
-		}
+		// resolvePrInfo (options.go) is the shared policy/value resolution
+		// this comment block describes; config.go's DefaultPrInfo handling
+		// calls the same function for SCTP_DEFAULT_PRINFO.
+		policy, value := resolvePrInfo(pr)
+		binary.NativeEndian.PutUint16(dst[p+prInfoPolicyOff:], policy)
 		binary.NativeEndian.PutUint32(dst[p+prInfoValueOff:], value)
 		off = start + cmsgSpace(sizePrInfo)
 	}
