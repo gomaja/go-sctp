@@ -14,12 +14,14 @@
 // checked against: include/uapi/linux/sctp.h (option numbers, cmsg types,
 // send-flag bits, struct sizes and offsets; notification type values are
 // instead the EventType constants of enums.go, which already are the wire
-// values), include/linux/socket.h (AF_INET, AF_INET6, and MSG_FIN, which
-// SCTP_EOF aliases) and include/uapi/linux/socket.h (struct
-// __kernel_sockaddr_storage). All were read from the flattened Linux 6.12
-// sources at go-sctp-kernel-6.12-sources/, except include/linux/socket.h
-// and include/uapi/linux/socket.h, which are not in that flattened set and
-// were fetched at tag v6.12 from
+// values), include/linux/socket.h (AF_INET, AF_INET6, MSG_FIN which
+// SCTP_EOF aliases, MSG_CTRUNC, MSG_EOR and struct cmsghdr),
+// include/uapi/linux/socket.h (struct __kernel_sockaddr_storage) and
+// include/uapi/linux/in.h (IPPROTO_SCTP). All were read from the flattened
+// Linux 6.12 sources at go-sctp-kernel-6.12-sources/, except
+// include/linux/socket.h, include/uapi/linux/socket.h and
+// include/uapi/linux/in.h, which are not in that flattened set and were
+// fetched at tag v6.12 from
 // https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/.
 //
 // What is deliberately not here: the deprecated RFC 6458 mechanisms
@@ -46,6 +48,14 @@ const (
 	afInet  = 2  // AF_INET
 	afInet6 = 10 // AF_INET6
 )
+
+// ---------------------------------------------------------------------
+// ipprotoSCTP is the cmsg_level every control message this package sends or
+// parses carries (IPPROTO_SCTP, include/uapi/linux/in.h, v6.12, line 74),
+// and the level setsockopt/getsockopt use for every option below.
+// ---------------------------------------------------------------------
+
+const ipprotoSCTP = 132 // IPPROTO_SCTP
 
 // ---------------------------------------------------------------------
 // Reserved association-scope selectors, RFC 6458 §7.2
@@ -178,6 +188,13 @@ const (
 	sndFlagEOF = 0x200 // MSG_FIN (include/linux/socket.h, v6.12 line 314), aliased by
 	// SCTP_EOF: CloseAssoc's and a peeled-off Conn.Close's empty send.
 
+	// msgCtrunc and msgEOR are recvmsg()'s own msg_flags bits (include/linux/socket.h,
+	// v6.12, lines 308 and 312), not a cmsg payload field: parseRecvCmsgs tests them
+	// against the flags argument recvmsg() returned, exactly like msgNotification
+	// above, which is the same kind of bit despite living in the SCTP-specific enum.
+	msgCtrunc = 0x08 // MSG_CTRUNC: the ancillary data did not fit msg_control
+	msgEOR    = 0x80 // MSG_EOR: this recvmsg() reached the end of the SCTP message
+
 	// prPolicyMask isolates the PR-SCTP policy bits (PRNone, PRTTL, PRRtx,
 	// PRPrio — enums.go) from the flag bits above, all of which share the
 	// same 16-bit snd_flags/sinfo_flags word (SCTP_PR_SCTP_MASK).
@@ -234,6 +251,32 @@ const (
 	ssAlign      = wordSize
 	ssAddrOffset = (4 + ssAlign - 1) &^ (ssAlign - 1)
 	ssTailOffset = ssAddrOffset + sizeSockaddrStorage
+)
+
+// ---------------------------------------------------------------------
+// struct cmsghdr (include/linux/socket.h, v6.12, lines 105-109 — not in the
+// flattened kernel source set; fetched at tag v6.12 from
+// https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/, same
+// as include/linux/socket.h's other uses elsewhere in this file): the
+// envelope every ancillary-data record below sits inside.
+//
+//	struct cmsghdr {
+//		__kernel_size_t	cmsg_len;   // data byte count, including this header
+//		int		cmsg_level; // IPPROTO_SCTP for every record this package uses
+//		int		cmsg_type;  // one of the cmsgXxx values above
+//	};
+//
+// cmsg_len is a __kernel_size_t — wordSize bytes, like sizeSockaddrStorage's
+// trailing void* — while cmsg_level and cmsg_type are plain int, always 4
+// bytes regardless of word size, so sizeCmsghdr is wordSize (already a
+// multiple of 4, so no gap follows it) plus 8.
+// ---------------------------------------------------------------------
+
+const (
+	sizeCmsghdr     = wordSize + 8
+	cmsghdrLenOff   = 0
+	cmsghdrLevelOff = wordSize
+	cmsghdrTypeOff  = wordSize + 4
 )
 
 // ---------------------------------------------------------------------
