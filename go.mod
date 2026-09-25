@@ -4,4 +4,6 @@
 
 module github.com/gomaja/go-sctp
 
-go 1.21
+go 1.26
+
+retract [v1.0.0, v1.0.6] // superseded: go get github.com/gomaja/go-sctp@main
