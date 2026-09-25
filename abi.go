@@ -881,3 +881,57 @@ const (
 	sizeAssocStatsHeaderKernel64 = (ssTailOffsetKernel64 + 8 - 1) &^ (8 - 1)
 	sizeAssocStatsKernel64       = sizeAssocStatsHeaderKernel64 + 15*8
 )
+
+// ---------------------------------------------------------------------
+// SCTP chunk types, enum sctp_cid (include/linux/sctp.h — not the UAPI
+// header; a chunk type is wire protocol data the kernel manages, not a
+// setsockopt/getsockopt-shaped value this package otherwise exposes).
+// Config.AuthChunks needs these to enforce what net/sctp/socket.c's
+// sctp_setsockopt_auth_chunk refuses outright, and what net/sctp/
+// endpointola.c's sctp_endpoint_init and net/sctp/socket.c's
+// sctp_setsockopt_auth_supported/sctp_setsockopt_asconf_supported add to
+// an endpoint's chunk list on their own (config.go has the full citations
+// and reasoning). net/sctp/auth.c only supplies the primitive those three
+// call, sctp_auth_ep_add_chunkid; it does not decide when to call it.
+// ---------------------------------------------------------------------
+
+const (
+	chunkTypeInit             = 1    // SCTP_CID_INIT
+	chunkTypeInitAck          = 2    // SCTP_CID_INIT_ACK
+	chunkTypeShutdownComplete = 14   // SCTP_CID_SHUTDOWN_COMPLETE
+	chunkTypeAuth             = 0x0F // SCTP_CID_AUTH (15)
+	chunkTypeASCONFAck        = 0x80 // SCTP_CID_ASCONF_ACK (128)
+	chunkTypeASCONF           = 0xC1 // SCTP_CID_ASCONF (193)
+)
+
+// sctpNumChunkTypes is SCTP_NUM_CHUNK_TYPES (include/net/sctp/constants.h,
+// not in the UAPI header): 15 base chunk types (SCTP_NUM_BASE_CHUNK_TYPES,
+// SCTP_CID_BASE_MAX+1 — DATA through SHUTDOWN_COMPLETE, chunk types 0-14)
+// plus 2 ADDIP (SCTP_NUM_ADDIP_CHUNK_TYPES: ASCONF, ASCONF-ACK), 1 PR-SCTP
+// (SCTP_NUM_PRSCTP_CHUNK_TYPES: FORWARD_TSN), 1 RECONF
+// (SCTP_NUM_RECONF_CHUNK_TYPES) and 1 AUTH (SCTP_NUM_AUTH_CHUNK_TYPES)
+// chunk type: 15+2+1+1+1 = 20. This is the cap net/sctp/auth.c's
+// sctp_auth_ep_add_chunkid enforces on one endpoint's own chunk list
+// ("if (nchunks == SCTP_NUM_CHUNK_TYPES) return -EINVAL;") — not the
+// portable limit this package enforces on Config.AuthChunks; see
+// sctpAuthMaxChunks below for that.
+const sctpNumChunkTypes = 20
+
+// sctpAuthMaxChunks is SCTP_AUTH_MAX_CHUNKS (include/net/sctp/constants.h:
+// "#define SCTP_AUTH_MAX_CHUNKS (SCTP_NUM_CHUNK_TYPES -
+// SCTP_NUM_NOAUTH_CHUNKS)", where SCTP_NUM_NOAUTH_CHUNKS is 4 — the base
+// chunk types AUTH governs by protocol rule rather than by list membership
+// (INIT, INIT-ACK, SHUTDOWN-COMPLETE, AUTH itself): 20-4 = 16. This is the
+// entry count struct sctp_cookie's own auth_chunks field holds
+// (include/net/sctp/structs.h: "__u8 auth_chunks[sizeof(struct
+// sctp_paramhdr) + SCTP_AUTH_MAX_CHUNKS]", immediately followed in the
+// struct by raw_addr_list_len). sctp_association_init copies the
+// endpoint's chunk list into this field with a memcpy sized by the
+// endpoint list's own header length, not clamped to the destination's
+// capacity (net/sctp/associola.c:265-267: "memcpy(asoc->c.auth_chunks,
+// ep->auth_chunk_list, ntohs(ep->auth_chunk_list->param_hdr.length))") —
+// so an endpoint list of 17-20 entries, which sctp_auth_ep_add_chunkid
+// alone would happily allow (it only enforces sctpNumChunkTypes, above),
+// overruns auth_chunks into raw_addr_list_len. This package refuses before
+// ever reaching that state (config.go).
+const sctpAuthMaxChunks = sctpNumChunkTypes - 4 // SCTP_NUM_NOAUTH_CHUNKS
