@@ -489,11 +489,11 @@ order it appears in its file.
 | sctp_sndinfo_test.go | TestSCTPWriteInfoHonoursWriteDeadline | pending: write-deadline enforcement belongs to the send path itself (the runtime poller and the connection's write deadline), not to the metadata codecs here |
 | sctp_sndinfo_test.go | TestSCTPWriteInfoWithAuthInfo | ported → TestAppendSendCmsgsEncodesAuthInfoWhenKeySet (msginfo_test.go) for the AUTHINFO byte encoding; the live-socket half (needs net.sctp.auth_enable) stays pending until Conn.SendMsg exists |
 | sctp_sockopt_stack_test.go | TestSubscribedEventsSurvivesStackGrowth | pending |
-| sctp_sockopt_stack_test.go | TestRawGetsockoptSurvivesStackGrowth | pending |
-| sctp_sockopt_stack_test.go | TestInternalRawGetsockoptSurvivesStackGrowth | pending |
+| sctp_sockopt_stack_test.go | TestRawGetsockoptSurvivesStackGrowth | ported → TestRawSockoptStackStorage (syscall_linux_test.go); the wrapper it exercised, SCTPConn.Getsockopt, has no v2 equivalent (raw option access is SyscallConn), so this now proves the same stack-growth-survives-a-syscall property directly against rawSetsockopt/rawGetsockopt, the layer that wrapper used to sit on |
+| sctp_sockopt_stack_test.go | TestInternalRawGetsockoptSurvivesStackGrowth | pending: exercised SCTPConn.getsockoptRaw, an internal helper tied to the x86_64 compat-layout retry for the peer-address-threshold options; not yet implemented |
 | sctp_sockopt_stack_test.go | TestSubscribeEventsSurvivesStackGrowth | pending |
 | sctp_sockopt_stack_test.go | TestSetRtoInfoKeepsOptionAlive | pending |
-| sctp_sockopt_stack_test.go | TestRawSetsockoptKeepsOptionAlive | pending |
+| sctp_sockopt_stack_test.go | TestRawSetsockoptKeepsOptionAlive | ported → TestRawSockoptStackStorage (syscall_linux_test.go); same reasoning as TestRawGetsockoptSurvivesStackGrowth above — SCTPConn.Setsockopt has no v2 equivalent, and the property now lives directly on rawSetsockopt/rawGetsockopt |
 | sctp_sockopt_test.go | TestFragmentInterleaveRoundTrip | pending |
 | sctp_sockopt_test.go | TestFragmentInterleaveRejectsOutOfRange | pending |
 | sctp_sockopt_test.go | TestPartialDeliveryPointRoundTrip | pending |
@@ -507,9 +507,9 @@ order it appears in its file.
 | sctp_state_test.go | TestGetStatusReportsEstablished | pending |
 | sctp_state_test.go | TestGetStatusAfterShutdown | pending |
 | sctp_streams_test.go | TestStreams | pending |
-| sctp_syscall_linux_test.go | TestRawSockoptSyscalls | pending |
-| sctp_syscall_linux_test.go | TestRawMessageSyscalls | pending |
-| sctp_syscall_linux_test.go | TestRawRecvmsgStackStorage | pending |
+| sctp_syscall_linux_test.go | TestRawSockoptSyscalls | ported → TestRawSockoptRoundTrip (syscall_linux_test.go); exercises a real SCTP socket and SCTP_NODELAY instead of an AF_UNIX pair and SO_PASSCRED, per the new rawSetsockopt/rawGetsockopt signature (unsafe.Pointer instead of a caller-converted uintptr) |
+| sctp_syscall_linux_test.go | TestRawMessageSyscalls | ported → TestRawMessageSyscalls (syscall_linux_test.go), unchanged in substance (an AF_UNIX pair; the syscalls do not care what kind of socket they are handed) |
+| sctp_syscall_linux_test.go | TestRawRecvmsgStackStorage | ported → TestRawRecvmsgStackStorage (syscall_linux_test.go), unchanged in substance; still the regression test for the 386 storage fix (commit b6f3db1) |
 | sctp_test.go | TestSCTPAddrString | pending |
 | sctp_test.go | TestResolveSCTPAddr | pending |
 | sctp_test.go | TestSCTPListenerName | pending |
@@ -524,8 +524,8 @@ order it appears in its file.
 | sctp_unsupported_test.go | TestNewSCTPConnClosesOwnedDescriptorOnUnsupportedPlatform | pending |
 | sctp_unsupported_test.go | TestDialContextWithAbandonPolicyValidatesPolicyOnUnsupportedPlatform | pending |
 | sctp_unsupported_test.go | TestDynamicBindEntryPointsReportUnsupported | pending |
-| sctp_unsupported_test.go | TestUnsupportedEntryPointsReportTheSentinel | pending |
-| sctp_unsupported_test.go | TestUnsupportedStubManifestIsComplete | pending |
+| sctp_unsupported_test.go | TestUnsupportedEntryPointsReportTheSentinel | ported → TestUnsupportedEntryPointsReportTheSentinel (unsupported_test.go), same mechanism (calls every case in the stub manifest, requires ErrUnsupported and errors.ErrUnsupported); the manifest itself is empty for now, since unsupported.go declares no stubs until a later task adds a Linux constructor or method for it to stand in for |
+| sctp_unsupported_test.go | TestUnsupportedStubManifestIsComplete | ported → TestUnsupportedStubManifestIsComplete (unsupported_test.go), same mechanism (parses unsupported.go with go/ast and requires its declarations to match the manifest by name exactly) |
 | sctp_untested_test.go | TestSubscribedEventsReportsEachFlagIndependently | pending |
 | sctp_untested_test.go | TestSubscribedEventsRoundTripsTheWholeSet | pending |
 | sctp_untested_test.go | TestSackTimerLayoutAndRoundTrip | pending |

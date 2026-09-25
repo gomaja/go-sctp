@@ -10,6 +10,7 @@
 // Every type here is portable: it carries no kernel offset or byte layout
 // of its own (abi.go has those) and no build tag. Marshalling a value to or
 // from the kernel's own struct shape is a platform concern for later.
+
 package sctp
 
 import (

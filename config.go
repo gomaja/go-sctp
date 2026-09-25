@@ -13,6 +13,7 @@
 // kernel-shaped value (a whole millisecond count, a raw flag word, a copied
 // slice), but writing it to a descriptor — the setsockopt calls themselves
 // — belongs to the platform-specific code that consumes a prepared value.
+
 package sctp
 
 import (

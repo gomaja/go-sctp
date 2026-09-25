@@ -26,6 +26,7 @@
 // are where this package performs the htonl/ntohl the RFC leaves to the
 // user. Nothing here calls sendmsg or recvmsg itself, so the file carries
 // no build tag and is exercised on every platform the package builds for.
+
 package sctp
 
 import (

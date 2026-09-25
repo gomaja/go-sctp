@@ -166,7 +166,7 @@ jobs:
         run: CGO_ENABLED=0 GOOS=linux GOARCH=386 go test -c -o sctp-386.test .
       - name: Run it against the host kernel
         # The runner is x86_64, so a static i686 binary executes natively. This
-        # runs the socketcall path in sctp_syscall_linux_386.go against a real
+        # runs the socketcall path in syscall_linux_386.go against a real
         # SCTP stack rather than only compiling it. It is the one architecture
         # besides the host's own that can run the socket-backed suite in public
         # CI.
@@ -177,7 +177,7 @@ jobs:
             -gcflags=all=-d=maymorestack=runtime.mayMoreStackMove \
             -o sctp-386-stackmove.test .
           ./sctp-386-stackmove.test \
-            -test.run '^TestRawRecvmsgStackStorage$' \
+            -test.run '^TestRaw(Recvmsg|Sockopt)StackStorage$' \
             -test.count=10 \
             -test.timeout=120s
 
