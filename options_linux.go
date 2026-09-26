@@ -611,6 +611,10 @@ func (c *Conn) SetRemoteUDPEncapsPort(path netip.Addr, port uint16) error {
 // (SCTP_PLPMTUD_PROBE_INTERVAL, a Linux option). A path that is not the
 // peer's is refused by Linux with EINVAL
 // (net/sctp/socket.c: sctp_getsockopt_probe_interval).
+// Linux keeps an association's and a path's interval in kernel ticks
+// (net/sctp/socket.c: sctp_setsockopt_probe_interval,
+// sctp_getsockopt_probe_interval), so readback rounds up to a tick: exact
+// at HZ=1000, a multiple of 10 ms at HZ=100.
 //
 // A link-local path given without a zone is completed as for
 // SendOptions.Path.

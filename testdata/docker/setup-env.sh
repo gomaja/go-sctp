@@ -13,11 +13,8 @@
 #
 # Runs as whatever user invoked it: as root already (inside a Docker
 # container) every command below runs directly; otherwise each one that
-# needs root runs under sudo. It is meant to run once against a fresh
-# network namespace — a second run on the same host fails re-adding an
-# address or a link that is already there, which is the same "run once
-# per fresh container or runner" assumption linux-suite.sh's own container
-# gives it.
+# needs root runs under sudo. It can run in a fresh or existing network
+# namespace.
 set -euo pipefail
 
 if [ $# -ne 2 ]; then
@@ -67,9 +64,9 @@ $SUDO sysctl -w net.sctp.auth_enable="$AUTH_ENABLE" net.sctp.intl_enable="$INTL_
 # that a wildcard-bound client's local address set equals the
 # association's addresses and not the whole namespace's, both need more
 # than one usable source address on the same host.
-$SUDO ip addr add 127.0.0.2/8 dev lo
-$SUDO ip addr add 127.0.0.3/8 dev lo
-$SUDO ip addr add 127.0.0.4/8 dev lo
+$SUDO ip addr replace 127.0.0.2/8 dev lo
+$SUDO ip addr replace 127.0.0.3/8 dev lo
+$SUDO ip addr replace 127.0.0.4/8 dev lo
 
 # A dummy-routed, unlistened peer: 192.0.2.1 (RFC 5737 TEST-NET-1) is
 # routed out a dummy link with nothing behind it. A dummy interface has no
@@ -79,12 +76,14 @@ $SUDO ip addr add 127.0.0.4/8 dev lo
 # needs that genuine silence: a fast, synthetic ECONNREFUSED would return
 # before the timeout or cancellation ever had anything to interrupt, and
 # the test would pass for the wrong reason.
-$SUDO ip link add silent0 type dummy
+if ! ip link show silent0 >/dev/null 2>&1; then
+	$SUDO ip link add silent0 type dummy
+fi
 $SUDO ip link set silent0 up
-$SUDO ip route add 192.0.2.1/32 dev silent0
+$SUDO ip route replace 192.0.2.1/32 dev silent0
 # fe80::9 is a known link-local address on silent0, which the link-local
 # path tests bind, so that an association spans two links, and check for.
-$SUDO ip -6 addr add fe80::9/64 dev silent0 nodad
+$SUDO ip -6 addr replace fe80::9/64 dev silent0 nodad
 
 # A real interface literally named zone0 lets a zoned link-local address
 # round trip (fe80::1%zone0) through address resolution, encoding,
@@ -92,7 +91,9 @@ $SUDO ip -6 addr add fe80::9/64 dev silent0 nodad
 # of skipping for want of a matching interface. fe80::3 on the same link
 # lets two endpoints bind link-local addresses of that one link only, for
 # the tests of link-local paths given without a zone.
-$SUDO ip link add zone0 type dummy
+if ! ip link show zone0 >/dev/null 2>&1; then
+	$SUDO ip link add zone0 type dummy
+fi
 $SUDO ip link set zone0 up
-$SUDO ip -6 addr add fe80::1/64 dev zone0 nodad
-$SUDO ip -6 addr add fe80::3/64 dev zone0 nodad
+$SUDO ip -6 addr replace fe80::1/64 dev zone0 nodad
+$SUDO ip -6 addr replace fe80::3/64 dev zone0 nodad

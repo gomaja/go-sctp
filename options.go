@@ -56,6 +56,9 @@ type InitMsg struct {
 // independently: a zero field leaves that value unchanged
 // (net/sctp/socket.c: sctp_setsockopt_rtoinfo checks each of
 // srto_initial/srto_max/srto_min against zero before applying it).
+// Linux keeps association RTOs in kernel ticks (net/sctp/socket.c:
+// sctp_setsockopt_rtoinfo, sctp_getsockopt_rtoinfo), so readback rounds up
+// to a tick: exact at HZ=1000, a multiple of 10 ms at HZ=100.
 type RTOInfo struct {
 	Initial, Max, Min time.Duration
 }
@@ -77,7 +80,10 @@ type AssocInfo struct {
 // leaves both fields unchanged. Delay is at most 500 ms
 // (RFC 9260 §6.2's MUST NOT; net/sctp/socket.c:
 // __sctp_setsockopt_delayed_ack refuses more outright). Frequency of 1
-// disables delayed SACK.
+// disables delayed SACK. Linux keeps an association's delay in kernel ticks
+// (net/sctp/socket.c: sctp_apply_asoc_delayed_ack,
+// sctp_getsockopt_delayed_ack), so readback rounds up to a tick: exact at
+// HZ=1000, a multiple of 10 ms at HZ=100.
 type DelayedSACK struct {
 	Delay     time.Duration
 	Frequency uint32
@@ -86,7 +92,11 @@ type DelayedSACK struct {
 // PathParams is struct sctp_paddrparams (RFC 6458 §8.1.12). A nil field
 // leaves that setting unchanged; PathMTU only takes effect with PMTUD set
 // to false. DelayedSACK and SACKDelay are a Linux extension to the RFC's
-// struct, the per-path counterpart of Config.DelayedSACK.
+// struct, the per-path counterpart of Config.DelayedSACK. Linux keeps an
+// association's heartbeat interval and SACK delay in kernel ticks
+// (net/sctp/socket.c: sctp_setsockopt_peer_addr_params,
+// sctp_getsockopt_peer_addr_params), so readback rounds up to a tick: exact
+// at HZ=1000, a multiple of 10 ms at HZ=100.
 type PathParams struct {
 	Heartbeat         *bool
 	HeartbeatInterval *time.Duration // 0 = SPP_HB_TIME_IS_ZERO
@@ -122,6 +132,10 @@ type PathInfo struct {
 	// HZ — so this field is a plain integer, useful only for comparison.
 	SRTTTicks uint32
 
+	// Linux keeps the path RTO in kernel ticks (net/sctp/socket.c:
+	// sctp_getsockopt_peer_addr_info, sctp_getsockopt_sctp_status), so its
+	// millisecond readback is at tick precision: exact at HZ=1000, a
+	// multiple of 10 ms at HZ=100.
 	RTO time.Duration
 	MTU uint32
 }

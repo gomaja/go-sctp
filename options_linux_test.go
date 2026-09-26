@@ -422,10 +422,10 @@ func TestPathParamsThroughTheKernel(t *testing.T) {
 	primary := primaryPath(t, client)
 	set := &PathParams{
 		Heartbeat:         new(true),
-		HeartbeatInterval: new(7 * time.Second),
+		HeartbeatInterval: new(7*time.Second + 3*time.Millisecond),
 		PathMaxRetrans:    new(uint16(9)),
 		DelayedSACK:       new(true),
-		SACKDelay:         new(400 * time.Millisecond),
+		SACKDelay:         new(403 * time.Millisecond),
 		DSCP:              new(uint8(0xb8)),
 	}
 	if err := client.SetPathParams(primary, set); err != nil {
@@ -435,14 +435,14 @@ func TestPathParamsThroughTheKernel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PathParams(%v): %v", primary, err)
 	}
-	if *got.HeartbeatInterval != 7*time.Second || *got.PathMaxRetrans != 9 || !*got.DelayedSACK || *got.SACKDelay != 400*time.Millisecond || got.DSCP == nil || *got.DSCP != 0xb8 {
+	if !kernelTickReadback(*got.HeartbeatInterval, 7*time.Second+3*time.Millisecond) || *got.PathMaxRetrans != 9 || !*got.DelayedSACK || !kernelTickReadback(*got.SACKDelay, 403*time.Millisecond) || got.DSCP == nil || *got.DSCP != 0xb8 {
 		t.Errorf("PathParams(%v) = %s after setting %s", primary, pathParamsString(got), pathParamsString(set))
 	}
 
 	if err := client.SetPathParams(primary, &PathParams{Heartbeat: new(false)}); err != nil {
 		t.Fatalf("SetPathParams(heartbeat off): %v", err)
 	}
-	if got, err := client.PathParams(primary); err != nil || *got.Heartbeat || *got.HeartbeatInterval != 7*time.Second {
+	if got, err := client.PathParams(primary); err != nil || *got.Heartbeat || !kernelTickReadback(*got.HeartbeatInterval, 7*time.Second+3*time.Millisecond) {
 		t.Errorf("after switching heartbeats off: %v, %v; want off with the interval kept", pathParamsString(got), err)
 	}
 	if err := client.SetPathParams(primary, &PathParams{PMTUD: new(false), PathMTU: new(uint32(1400))}); err != nil {
@@ -815,11 +815,11 @@ func TestUDPEncapsAndProbeIntervalPerPath(t *testing.T) {
 		t.Errorf("association-wide RemoteUDPEncapsPort = %d, %v; want 0, untouched by the per-path setting", got, err)
 	}
 
-	if err := client.SetPLPMTUDProbeInterval(primary, 20*time.Second); err != nil {
+	if err := client.SetPLPMTUDProbeInterval(primary, 20*time.Second+3*time.Millisecond); err != nil {
 		t.Fatalf("SetPLPMTUDProbeInterval(%v): %v", primary, err)
 	}
-	if got, err := client.PLPMTUDProbeInterval(primary); err != nil || got != 20*time.Second {
-		t.Errorf("PLPMTUDProbeInterval(%v) = %v, %v; want 20s", primary, got, err)
+	if got, err := client.PLPMTUDProbeInterval(primary); err != nil || !kernelTickReadback(got, 20*time.Second+3*time.Millisecond) {
+		t.Errorf("PLPMTUDProbeInterval(%v) = %v, %v; want tick-rounded 20.003s", primary, got, err)
 	}
 	if err := client.SetPLPMTUDProbeInterval(netip.Addr{}, 0); err != nil {
 		t.Fatalf("SetPLPMTUDProbeInterval(0): %v", err)
@@ -1029,17 +1029,17 @@ func TestDelayedSACKZeroFieldsLeaveValues(t *testing.T) {
 			t.Fatalf("SetDelayedSACK(%+v): %v", d, err)
 		}
 	}
-	set(DelayedSACK{Delay: 300 * time.Millisecond, Frequency: 5})
+	set(DelayedSACK{Delay: 303 * time.Millisecond, Frequency: 5})
 	set(DelayedSACK{Frequency: 9})
-	if got := get(); got != (DelayedSACK{Delay: 300 * time.Millisecond, Frequency: 9}) {
+	if got := get(); !kernelTickReadback(got.Delay, 303*time.Millisecond) || got.Frequency != 9 {
 		t.Errorf("after a zero Delay: %+v, want the delay kept", got)
 	}
-	set(DelayedSACK{Delay: 200 * time.Millisecond})
-	if got := get(); got != (DelayedSACK{Delay: 200 * time.Millisecond, Frequency: 9}) {
+	set(DelayedSACK{Delay: 203 * time.Millisecond})
+	if got := get(); !kernelTickReadback(got.Delay, 203*time.Millisecond) || got.Frequency != 9 {
 		t.Errorf("after a zero Frequency: %+v, want the frequency kept", got)
 	}
 	set(DelayedSACK{})
-	if got := get(); got != (DelayedSACK{Delay: 200 * time.Millisecond, Frequency: 9}) {
+	if got := get(); !kernelTickReadback(got.Delay, 203*time.Millisecond) || got.Frequency != 9 {
 		t.Errorf("an empty DelayedSACK changed the values to %+v", got)
 	}
 	set(DelayedSACK{Frequency: 1})
