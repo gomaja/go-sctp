@@ -524,16 +524,10 @@ func (c *Conn) abortInterruptedMessage(cause error) error {
 
 // abortInterrupted aborts the connection after an interrupted record and
 // returns err, joined with net.ErrClosed when the connection was already
-// released, or with the abort's own failure.
+// released, or with the cause of the abort's own failure (joinAbortCause,
+// errors.go).
 func (c *Conn) abortInterrupted(err error) error {
-	switch aerr := c.Abort(); {
-	case aerr == nil:
-	case errors.Is(aerr, net.ErrClosed):
-		err = errors.Join(err, net.ErrClosed)
-	default:
-		err = errors.Join(err, aerr)
-	}
-	return err
+	return joinAbortCause(err, c.Abort())
 }
 
 // ReadMsg reads one whole message, reassembling it across as many recvmsg

@@ -945,3 +945,17 @@ func TestEncodeAddrZonedAllocatesNothing(t *testing.T) {
 		t.Errorf("encodeAddr(%v) allocated %.1f times, want 0", ip, allocs)
 	}
 }
+
+// BenchmarkEncodeAddrs (v1 BenchmarkToRawSockAddrBuf): marshalling a
+// multi-homed address list into its raw wire form, the operation
+// localBindAddrs and Dial's peer encoding both call on every multi-homed
+// Listen or Dial.
+func BenchmarkEncodeAddrs(b *testing.B) {
+	ips := []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2")}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := encodeAddrs(afInet, ips, 9999); err != nil {
+			b.Fatalf("encodeAddrs: %v", err)
+		}
+	}
+}

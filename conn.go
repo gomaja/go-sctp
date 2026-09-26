@@ -18,7 +18,14 @@ import (
 //
 // Every method of Conn may be called from several goroutines at once.
 //
-//lint:ignore U1000 only the Linux code opens, reads and sends on a Conn; on other platforms the fields stay unused
+// Without the directive below, staticcheck flags sock, assoc, peerPort,
+// laddr, raddr, pathScope, bindMu, optMu, handler, closeWait, subs,
+// subMu, send, recv and term as unused (U1000) on GOOS=darwin and
+// GOOS=windows (kind and life are not flagged): only conn_linux.go's
+// methods read or write them, and the portable stubs in unsupported.go
+// never touch a real Conn's fields at all.
+//
+//lint:ignore U1000 see the comment above
 type Conn struct {
 	sock     socket
 	kind     connKind
@@ -77,7 +84,7 @@ type Conn struct {
 // every system call reaches it, so none can run on a descriptor number
 // after file has released it.
 //
-//lint:ignore U1000 only the Linux code opens descriptors; on other platforms the fields stay unused
+//lint:ignore U1000 staticcheck flags file, raw and family as unused (U1000) on GOOS=darwin and GOOS=windows without this: only socket_linux.go and its siblings open a descriptor and set them
 type socket struct {
 	file    *os.File
 	raw     syscall.RawConn
@@ -118,7 +125,7 @@ const (
 // while waiting, and the error such a call takes is stored before mu is
 // released, so no call can take the error without the latch holding it.
 //
-//lint:ignore U1000 the fields are used by the Linux receive and send paths
+//lint:ignore U1000 staticcheck flags every field below as unused (U1000) on GOOS=darwin and GOOS=windows without this: only the Linux receive and send paths (recv_linux.go, send_linux.go) read or latch into them. Removing Conn's own directive (above) too, rather than only this one, makes it flag termState itself as unused, not merely its fields, since nothing would then reference the Conn.term field that keeps the type alive
 type termState struct {
 	mu     sync.Mutex
 	err    error // the latched errno: ECONNRESET, ETIMEDOUT, ECONNABORTED or ENOTCONN

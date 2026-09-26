@@ -9,7 +9,8 @@ Portions of addr.go, close.go, close_linux.go, conn_linux.go,
 dial_linux.go, listener_linux.go, notification.go, recv_linux.go,
 send_linux.go, socket_linux.go and sockaddr.go, and of their tests, are
 derived from Wataru Ishida's go-sctp; those files retain that copyright
-notice alongside gomaja's.
+notice alongside gomaja's. crosscompile_test.go carries the same notice
+independently of that list.
 
 This distribution currently includes no third-party source code under a
 license other than Apache-2.0; GO_LICENSE (BSD 3-Clause) is kept for a Go

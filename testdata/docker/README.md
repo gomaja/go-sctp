@@ -25,10 +25,23 @@ both sysctl states, and with `-race`, before it is committed.
 
 ## Why each setup step exists
 
-- **`apt-get install iproute2`.** The base `golang:*-bookworm` image has
-  `sysctl` (from `procps`) but not `ip`; the interface and route setup below
-  needs it. Its output is logged and only shown if the install fails, since
-  a successful run has nothing useful to say here.
+Every step below lives in `setup-env.sh`, one script this suite and the CI
+workflow (`.github/workflows/ci.yml`) both call, so the two environments
+cannot drift apart: a fix or an addition made here reaches CI on the next
+run, not only the next time someone remembers to update both.
+
+- **`modprobe sctp`, then require `/proc/net/sctp/snmp`.** The SCTP module
+  is loadable on some kernels and built in on others; the load is
+  attempted and its failure ignored, but the `/proc` entry it (or a
+  built-in SCTP) leaves behind is required, since every test below needs
+  a working SCTP stack to mean anything.
+
+- **`apt-get install iproute2`, only if `ip` is missing.** The base
+  `golang:*-bookworm` image has `sysctl` (from `procps`) but not `ip`; the
+  interface and route setup below needs it. A GitHub-hosted runner already
+  has both, so this is a no-op there. Its output is logged and only shown
+  if the install fails, since a successful run has nothing useful to say
+  here.
 
 - **`sysctl -w net.sctp.auth_enable=$A net.sctp.intl_enable=$I`, run in both
   states.** AUTH (RFC 4895) and I-DATA / message interleaving (RFC 8260,

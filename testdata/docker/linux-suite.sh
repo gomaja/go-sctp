@@ -132,58 +132,10 @@ INTL_ENABLE="$2"
 RACE="$3"
 RUN="$4"
 
-# apt-get's own chatter (including a harmless "delaying package
-# configuration" debconf notice) is noise on a successful run; keep it in a
-# log and only show it if the install actually fails.
-apt_log="$(mktemp)"
-if ! apt-get -qq update >"$apt_log" 2>&1 || ! apt-get -qq install -y iproute2 >>"$apt_log" 2>&1; then
-	cat "$apt_log" >&2
-	exit 1
-fi
-
-# AUTH (RFC 4895) and I-DATA / message interleaving (RFC 8260, "intl") are
-# each required by some behaviour and forbidden by other behaviour: a
-# MessageInterleaving option must fail with EPERM when intl_enable is 0,
-# and the AUTH key helpers must still succeed when auth_enable is 0
-# (lksctp-tools #69). A single fixed sysctl state would hide whichever half
-# of that contract it doesn't exercise, so this suite is meant to be run
-# once with both on and once with both off; a test that needs the other
-# state skips itself, by design, and says why.
-sysctl -w net.sctp.auth_enable="$AUTH_ENABLE" net.sctp.intl_enable="$INTL_ENABLE"
-
-# Loopback only carries 127.0.0.1 by default. Multihome tests, and a test
-# that a wildcard-bound client's local address set equals the
-# association's addresses and not the whole namespace's, both need more
-# than one usable source address on the same host.
-ip addr add 127.0.0.2/8 dev lo
-ip addr add 127.0.0.3/8 dev lo
-ip addr add 127.0.0.4/8 dev lo
-
-# A dummy-routed, unlistened peer: 192.0.2.1 (RFC 5737 TEST-NET-1) is
-# routed out a dummy link with nothing behind it. A dummy interface has no
-# peer to answer and raises no ICMP unreachable, so packets sent to it are
-# silently dropped instead of provoking an immediate refusal the way an
-# unused loopback port would. A dial-timeout or cancelled-context test
-# needs that genuine silence: a fast, synthetic ECONNREFUSED would return
-# before the timeout or cancellation ever had anything to interrupt, and
-# the test would pass for the wrong reason.
-ip link add silent0 type dummy
-ip link set silent0 up
-ip route add 192.0.2.1/32 dev silent0
-# fe80::9 is a known link-local address on silent0, which the link-local
-# path tests bind, so that an association spans two links, and check for.
-ip -6 addr add fe80::9/64 dev silent0 nodad
-
-# A real interface literally named zone0 lets a zoned link-local address
-# round trip (fe80::1%zone0) through address resolution, encoding,
-# decoding and printing against a genuine kernel interface index, instead
-# of skipping for want of a matching interface. fe80::3 on the same link
-# lets two endpoints bind link-local addresses of that one link only, for
-# the tests of link-local paths given without a zone.
-ip link add zone0 type dummy
-ip link set zone0 up
-ip -6 addr add fe80::1/64 dev zone0 nodad
-ip -6 addr add fe80::3/64 dev zone0 nodad
+# The network and sysctl setup this suite and the CI workflow both need,
+# built by the one script both call, so the two environments cannot drift
+# apart (testdata/docker/setup-env.sh).
+/src/testdata/docker/setup-env.sh "$AUTH_ENABLE" "$INTL_ENABLE"
 
 uname -r
 go version

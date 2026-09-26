@@ -29,6 +29,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -46,6 +47,107 @@ func wantDialError(t testing.TB, err, target error) {
 	}
 	if !errors.Is(err, target) {
 		t.Fatalf("err = %v, want it to match %v", err, target)
+	}
+}
+
+// TestDialErrorCarriesOperationAndAddresses: a Control failure — the one
+// error every Dial path can fail with before any association setup starts
+// — comes back as a *net.OpError with Op "dial", Source laddr and Addr
+// raddr, wrapping the cause; the snapshot survives the caller changing
+// laddr and raddr afterward, since Dial copies both into the error before
+// it returns (see netAddr).
+func TestDialErrorCarriesOperationAndAddresses(t *testing.T) {
+	cause := errors.New("control failed")
+	laddr := loopback4(0)
+	raddr := &Addr{IPs: []netip.Addr{netip.MustParseAddr("127.0.0.2")}, Port: 2905}
+	cfg := &Config{Control: func(string, string, syscall.RawConn) error { return cause }}
+
+	conn, err := cfg.Dial(testContext(t, 5*time.Second), "sctp4", laddr, raddr)
+	if conn != nil {
+		_ = conn.Abort()
+		t.Fatal("Dial returned a connection with a failing Control hook")
+	}
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Op != "dial" || opErr.Net != "sctp4" {
+		t.Fatalf("err = %#v, want a *net.OpError with Op dial, Net sctp4", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("err = %v, want it to wrap %v", err, cause)
+	}
+	wantSource, wantAddr := laddr.String(), raddr.String()
+	if got := opErr.Source.String(); got != wantSource {
+		t.Fatalf("Source = %q, want laddr %q", got, wantSource)
+	}
+	if got := opErr.Addr.String(); got != wantAddr {
+		t.Fatalf("Addr = %q, want raddr %q", got, wantAddr)
+	}
+
+	laddr.Port = 1
+	laddr.IPs[0] = netip.MustParseAddr("10.0.0.9")
+	raddr.Port = 1
+	raddr.IPs[0] = netip.MustParseAddr("10.0.0.9")
+	if got := opErr.Source.String(); got != wantSource {
+		t.Errorf("Source changed after caller mutation: got %q, want %q", got, wantSource)
+	}
+	if got := opErr.Addr.String(); got != wantAddr {
+		t.Errorf("Addr changed after caller mutation: got %q, want %q", got, wantAddr)
+	}
+}
+
+// TestDialWrapsForeignOperationError: a Control hook that returns a
+// *net.OpError from some other operation entirely — a TCP dialer it
+// wraps, say — must not have that operation's Op and Net leak into the
+// error Dial itself reports. The result is still Op "dial", Net "sctp4",
+// with this call's own Source and Addr, and errors.Is still reaches the
+// foreign error's own root cause.
+func TestDialWrapsForeignOperationError(t *testing.T) {
+	raddr := &Addr{IPs: []netip.Addr{netip.MustParseAddr("127.0.0.2")}, Port: 2905}
+	for name, laddr := range map[string]*Addr{
+		"nil laddr":     nil,
+		"non-nil laddr": loopback4(0),
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := errors.New("control failed")
+			foreign := &net.OpError{Op: "control", Net: "tcp", Err: root}
+			cfg := &Config{Control: func(string, string, syscall.RawConn) error { return foreign }}
+
+			_, err := cfg.Dial(testContext(t, 5*time.Second), "sctp4", laddr, raddr)
+			var opErr *net.OpError
+			if !errors.As(err, &opErr) || opErr.Op != "dial" || opErr.Net != "sctp4" {
+				t.Fatalf("err = %#v, want a *net.OpError with Op dial, Net sctp4", err)
+			}
+			if laddr == nil {
+				if opErr.Source != nil {
+					t.Errorf("Source = %v, want nil (no laddr)", opErr.Source)
+				}
+			} else if got, want := opErr.Source.String(), laddr.String(); got != want {
+				t.Errorf("Source = %q, want %q", got, want)
+			}
+			if got, want := opErr.Addr.String(), raddr.String(); got != want {
+				t.Errorf("Addr = %q, want %q", got, want)
+			}
+			if !errors.Is(err, root) {
+				t.Fatalf("err = %v, want it to reach the foreign error's own root cause %v", err, root)
+			}
+			if errors.Unwrap(opErr) != foreign {
+				t.Errorf("opError's cause is %#v, want the foreign *net.OpError %#v itself", errors.Unwrap(opErr), foreign)
+			}
+		})
+	}
+}
+
+// TestDialPreservesMatchingOperationError: a Control hook that returns a
+// *net.OpError which already describes exactly this dial — same Op, Net,
+// Source and Addr — comes back unchanged, not wrapped a second time.
+func TestDialPreservesMatchingOperationError(t *testing.T) {
+	root := errors.New("control failed")
+	raddr := &Addr{IPs: []netip.Addr{netip.MustParseAddr("127.0.0.2")}, Port: 2905}
+	matching := &net.OpError{Op: "dial", Net: "sctp4", Addr: netAddr(raddr), Err: root}
+	cfg := &Config{Control: func(string, string, syscall.RawConn) error { return matching }}
+
+	_, err := cfg.Dial(testContext(t, 5*time.Second), "sctp4", nil, raddr)
+	if err != matching {
+		t.Errorf("err = %#v, want the matching *net.OpError %#v unchanged", err, matching)
 	}
 }
 
@@ -98,8 +200,13 @@ func TestDialContextAlreadyCancelledOpensNoSocket(t *testing.T) {
 		sawControl = true
 		return nil
 	}}
-	_, err := cfg.Dial(ctx, "sctp4", nil, unreachableAddr())
+	raddr := unreachableAddr()
+	_, err := cfg.Dial(ctx, "sctp4", nil, raddr)
 	wantDialError(t, err, context.Canceled)
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Source != nil || opErr.Addr.String() != raddr.String() {
+		t.Errorf("err = %#v, want a *net.OpError with a nil Source and Addr %v", err, raddr)
+	}
 	if sawControl {
 		t.Error("a socket was created for a context that was already done")
 	}
@@ -971,5 +1078,85 @@ func TestZonedLinkLocalConnectionRoundTrip(t *testing.T) {
 	}
 	if back.String() != client.RemoteAddr().String() {
 		t.Errorf("round trip: %q parsed back as %q", client.RemoteAddr(), back)
+	}
+}
+
+// TestDialDoesNotMutateItsAddr is TestListenDoesNotMutateItsAddr's twin
+// for the dial path (v1 TestDialDoesNotMutateItsAddr), and additionally
+// shows the consequence a mutation would have: the same laddr value,
+// reused for a second dial, must still mean "any local address, any
+// port" — if the first dial had appended a wildcard into it, the second
+// would bind an address the caller never asked for.
+func TestDialDoesNotMutateItsAddr(t *testing.T) {
+	l := mustListen(t, nil, "sctp4", loopback4(0))
+	go func() {
+		for {
+			c, err := l.AcceptSCTP()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = c.Abort() })
+		}
+	}()
+	raddr := listenerAddr(t, l)
+
+	laddr := &Addr{}
+	before := slices.Clone(laddr.IPs)
+
+	first, err := Dial(testContext(t, 10*time.Second), "sctp4", laddr, raddr)
+	if err != nil {
+		t.Fatalf("first dial: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Abort() })
+
+	if !slices.Equal(laddr.IPs, before) {
+		t.Fatalf("Dial changed the caller's IPs: %v -> %v", before, laddr.IPs)
+	}
+
+	second, err := Dial(testContext(t, 10*time.Second), "sctp4", laddr, raddr)
+	if err != nil {
+		t.Fatalf("second dial with the same laddr: %v", err)
+	}
+	_ = second.Abort()
+}
+
+// BenchmarkDial (v1 BenchmarkDial): one dial-and-accept round trip
+// against a listener that accepts and closes as fast as it can.
+func BenchmarkDial(b *testing.B) {
+	l, err := Listen("sctp4", loopback4(0))
+	if err != nil {
+		b.Fatalf("listen: %v", err)
+	}
+	b.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.AcceptSCTP()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	raddr := listenerAddr(b, l)
+
+	// One context for every iteration, not a fresh one per dial:
+	// testContext registers a b.Cleanup, and calling it inside the loop
+	// below would pile up one per iteration, none of them running until
+	// the whole benchmark ends, skewing both the allocation count
+	// b.ReportAllocs() takes and the per-iteration timer b.Loop() keeps.
+	// Unbounded, not a fixed deadline: a dial against this loopback
+	// listener, which accepts and closes as fast as it can, returns near
+	// instantly, so nothing here needs one, and a bounded context shared
+	// across every iteration would expire partway through a long run
+	// regardless.
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		c, err := Dial(ctx, "sctp4", nil, raddr)
+		if err != nil {
+			b.Fatalf("dial: %v", err)
+		}
+		_ = c.Close()
 	}
 }

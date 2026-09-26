@@ -269,8 +269,20 @@ func TestUnsupportedConstructorsCheckConfigFirst(t *testing.T) {
 		DelayedSACK:        &DelayedSACK{Delay: 200 * time.Millisecond, Frequency: 2},
 	}
 	for name, c := range calls(valid) {
-		if err := c.run(); !errors.Is(err, ErrUnsupported) || !errors.Is(err, errors.ErrUnsupported) {
+		err := c.run()
+		if !errors.Is(err, ErrUnsupported) || !errors.Is(err, errors.ErrUnsupported) {
 			t.Errorf("%s with a valid Config = %v, want ErrUnsupported", name, err)
+		}
+		// A valid Config still reaches ErrUnsupported, but the error it
+		// gets there is the same *net.OpError shape as an invalid one
+		// below, and the one Linux itself builds when socket(2) answers
+		// EPROTONOSUPPORT or ESOCKTNOSUPPORT (socket_linux.go: openSocket,
+		// socketError): every constructor's error is a *net.OpError on
+		// every platform, never a bare sentinel on this one and a wrapped
+		// one elsewhere.
+		var opErr *net.OpError
+		if !errors.As(err, &opErr) || opErr.Op != c.op || opErr.Net != c.net || addrString(opErr.Source) != c.source || addrString(opErr.Addr) != c.remote {
+			t.Errorf("%s with a valid Config = %#v, want a *net.OpError with Op %s, Net %s, Source %q and Addr %q", name, err, c.op, c.net, c.source, c.remote)
 		}
 	}
 	invalid := &Config{DelayedSACK: &DelayedSACK{Delay: 501 * time.Millisecond}}
@@ -299,6 +311,63 @@ func TestUnsupportedConstructorsCheckConfigFirst(t *testing.T) {
 		if !errors.As(err, &opErr) || opErr.Op != "file" || opErr.Net != "sctp" {
 			t.Errorf("%s with a Config it cannot take = %#v, want a *net.OpError with Op file", name, err)
 		}
+	}
+	for name, run := range map[string]func() error{
+		"FileConn":     func() error { _, err := new(Config).FileConn(os.Stdin); return err },
+		"FileListener": func() error { _, err := new(Config).FileListener(os.Stdin); return err },
+	} {
+		err := run()
+		if !errors.Is(err, ErrUnsupported) {
+			t.Errorf("%s with a valid Config = %v, want ErrUnsupported", name, err)
+		}
+		var opErr *net.OpError
+		if !errors.As(err, &opErr) || opErr.Op != "file" || opErr.Net != "sctp" {
+			t.Errorf("%s with a valid Config = %#v, want a *net.OpError with Op file", name, err)
+		}
+	}
+}
+
+// TestUnsupportedConstructorErrorsHaveOneShapeOnEveryPlatform is
+// TestUnsupportedConstructorsCheckConfigFirst's property restated for the
+// package-level constructors (a zero Config, called through Dial, Listen,
+// ListenEndpoint, OpenEndpoint, FileConn and FileListener directly rather
+// than through a *Config): the *net.OpError every one of them reports
+// here is the same one Linux itself builds when socket(2) answers
+// EPROTONOSUPPORT or ESOCKTNOSUPPORT (socket_linux.go: openSocket,
+// socketError), so a caller's error-handling code, which never sees this
+// platform at build time, sees one shape either way.
+func TestUnsupportedConstructorErrorsHaveOneShapeOnEveryPlatform(t *testing.T) {
+	ctx := context.Background()
+	laddr := &Addr{IPs: []netip.Addr{netip.MustParseAddr("127.0.0.2")}, Port: 7}
+	raddr := &Addr{IPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}, Port: 9}
+	addrString := func(a net.Addr) string {
+		if a == nil {
+			return ""
+		}
+		return a.String()
+	}
+	for name, tc := range map[string]struct {
+		run            func() error
+		op, net        string
+		source, remote string
+	}{
+		"Dial":           {func() error { _, err := Dial(ctx, "sctp4", laddr, raddr); return err }, "dial", "sctp4", laddr.String(), raddr.String()},
+		"Listen":         {func() error { _, err := Listen("", laddr); return err }, "listen", "sctp", "", laddr.String()},
+		"ListenEndpoint": {func() error { _, err := ListenEndpoint("sctp6", laddr); return err }, "listen", "sctp6", "", laddr.String()},
+		"OpenEndpoint":   {func() error { _, err := OpenEndpoint("sctp", nil); return err }, "listen", "sctp", "", ""},
+		"FileConn":       {func() error { _, err := FileConn(os.Stdin); return err }, "file", "sctp", "", ""},
+		"FileListener":   {func() error { _, err := FileListener(os.Stdin); return err }, "file", "sctp", "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := tc.run()
+			if !errors.Is(e, ErrUnsupported) {
+				t.Fatalf("%s = %v, want ErrUnsupported", name, e)
+			}
+			var opErr *net.OpError
+			if !errors.As(e, &opErr) || opErr.Op != tc.op || opErr.Net != tc.net || addrString(opErr.Source) != tc.source || addrString(opErr.Addr) != tc.remote {
+				t.Errorf("%s = %#v, want a *net.OpError with Op %s, Net %s, Source %q and Addr %q", name, e, tc.op, tc.net, tc.source, tc.remote)
+			}
+		})
 	}
 }
 

@@ -53,7 +53,13 @@ import (
 // Conn; a reader that reassembles a message across several RecvMsg calls
 // must keep other readers away until the message ends (MsgInfo.EOR).
 //
-//lint:ignore U1000 only the Linux code opens an Endpoint; on other platforms the fields stay unused
+// Without the directive below, staticcheck flags peel, addr, bindMu,
+// handler, closeWait, subs, life, send and recv as unused (U1000) on
+// GOOS=darwin and GOOS=windows (sock is not flagged: Network, below,
+// reads e.sock.network in a file with no build tag): only
+// endpoint_linux.go's methods open, read or write the rest.
+//
+//lint:ignore U1000 see the comment above
 type Endpoint struct {
 	sock socket
 

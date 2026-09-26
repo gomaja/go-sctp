@@ -1017,9 +1017,9 @@ func TestNoWaitRefusalQueuesNothing(t *testing.T) {
 // buffer space; a write deadline then releases both with the deadline
 // error.
 func TestNoWaitWaitsBehindParkedSend(t *testing.T) {
-	client, _ := connPair(t, nil, nil)
+	client, server := connPair(t, nil, &Config{ReadBuffer: new(closingReadBuffer)})
 	payload := fill(512)
-	fillSendBuffer(t, client, payload)
+	fillSendBufferStable(t, client, server, payload)
 
 	blocking := make(chan error, 1)
 	go func() {
@@ -1063,9 +1063,9 @@ func TestNoWaitWaitsBehindParkedSend(t *testing.T) {
 // deadline set while it waits passes, or when the connection is closed.
 func TestSendWaitsForBufferSpace(t *testing.T) {
 	t.Run("drain", func(t *testing.T) {
-		client, server := connPair(t, nil, nil)
+		client, server := connPair(t, nil, &Config{ReadBuffer: new(closingReadBuffer)})
 		payload := fill(512)
-		sent := fillSendBuffer(t, client, payload)
+		sent := fillSendBufferStable(t, client, server, payload)
 		drained := make(chan error, 1)
 		go func() {
 			time.Sleep(250 * time.Millisecond)
@@ -1095,9 +1095,9 @@ func TestSendWaitsForBufferSpace(t *testing.T) {
 		}
 	})
 	t.Run("deadline set while waiting", func(t *testing.T) {
-		client, _ := connPair(t, nil, nil)
+		client, server := connPair(t, nil, &Config{ReadBuffer: new(closingReadBuffer)})
 		payload := fill(512)
-		fillSendBuffer(t, client, payload)
+		fillSendBufferStable(t, client, server, payload)
 		done := make(chan error, 1)
 		go func() {
 			_, err := client.Write(payload)
@@ -1130,9 +1130,9 @@ func TestSendWaitsForBufferSpace(t *testing.T) {
 		}
 	})
 	t.Run("deadline set before", func(t *testing.T) {
-		client, _ := connPair(t, nil, nil)
+		client, server := connPair(t, nil, &Config{ReadBuffer: new(closingReadBuffer)})
 		payload := fill(512)
-		fillSendBuffer(t, client, payload)
+		fillSendBufferStable(t, client, server, payload)
 		if err := client.SetWriteDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
 			t.Fatalf("SetWriteDeadline: %v", err)
 		}
@@ -1145,9 +1145,9 @@ func TestSendWaitsForBufferSpace(t *testing.T) {
 	})
 	t.Run("Close", func(t *testing.T) {
 		cfg := &Config{CloseTimeout: 300 * time.Millisecond}
-		client, _ := connPair(t, cfg, nil)
+		client, server := connPair(t, cfg, &Config{ReadBuffer: new(closingReadBuffer)})
 		payload := fill(512)
-		fillSendBuffer(t, client, payload)
+		fillSendBufferStable(t, client, server, payload)
 		done := make(chan error, 1)
 		go func() {
 			_, err := client.SendMsg(payload, SendOptions{})
@@ -1984,4 +1984,205 @@ func BenchmarkWrite(b *testing.B) {
 		_, err := c.Write(p)
 		return err
 	})
+}
+
+// benchmarkEchoRoundTrip drives client and server, both net.Conn, through
+// b.N request/reply round trips of size bytes each, after one warm-up
+// round trip that also checks the payload survives the echo intact (v1
+// benchmarkEchoRoundTrip).
+func benchmarkEchoRoundTrip(b *testing.B, client, server net.Conn, size int) {
+	b.Helper()
+	deadline := time.Now().Add(10 * time.Minute)
+	if err := client.SetDeadline(deadline); err != nil {
+		b.Fatalf("client deadline: %v", err)
+	}
+	if err := server.SetDeadline(deadline); err != nil {
+		b.Fatalf("server deadline: %v", err)
+	}
+
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		buf := make([]byte, size)
+		for {
+			if _, err := io.ReadFull(server, buf); err != nil {
+				return
+			}
+			if _, err := server.Write(buf); err != nil {
+				return
+			}
+		}
+	}()
+	b.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+		<-finished
+	})
+
+	payload := make([]byte, size)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	reply := make([]byte, size)
+	if _, err := client.Write(payload); err != nil {
+		b.Fatalf("warm-up write: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		b.Fatalf("warm-up read: %v", err)
+	}
+	if !bytes.Equal(reply, payload) {
+		b.Fatal("warm-up echo changed the payload")
+	}
+
+	b.SetBytes(int64(2 * size))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := client.Write(payload); err != nil {
+			b.Fatalf("write: %v", err)
+		}
+		if _, err := io.ReadFull(client, reply); err != nil {
+			b.Fatalf("read: %v", err)
+		}
+	}
+}
+
+// benchTCPPair is a connected TCP pair on loopback, the comparison point
+// BenchmarkTransportEcho measures SCTP against.
+func benchTCPPair(b *testing.B) (client, server net.Conn) {
+	b.Helper()
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		b.Fatalf("TCP listen: %v", err)
+	}
+	b.Cleanup(func() { _ = ln.Close() })
+
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	accepted := make(chan result, 1)
+	go func() {
+		conn, err := ln.Accept()
+		accepted <- result{conn, err}
+	}()
+	client, err = net.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		b.Fatalf("TCP dial: %v", err)
+	}
+	b.Cleanup(func() { _ = client.Close() })
+	r := <-accepted
+	if r.err != nil {
+		b.Fatalf("TCP accept: %v", r.err)
+	}
+	server = r.conn
+	b.Cleanup(func() { _ = server.Close() })
+	return client, server
+}
+
+// BenchmarkTransportEcho compares one request/reply round trip's latency
+// and throughput over SCTP against TCP, at a few message sizes (v1
+// BenchmarkTransportEcho): informational, since net.Conn's contract is
+// the same read/write shape either way and nothing here asserts a
+// relative bound.
+func BenchmarkTransportEcho(b *testing.B) {
+	for _, transport := range []struct {
+		name string
+		pair func(b *testing.B) (client, server net.Conn)
+	}{
+		{"SCTP", func(b *testing.B) (net.Conn, net.Conn) {
+			return connPair(b, &Config{NoDelay: new(true)}, &Config{NoDelay: new(true)})
+		}},
+		{"TCP", benchTCPPair},
+	} {
+		b.Run(transport.name, func(b *testing.B) {
+			for _, size := range []int{64, 512, 4096} {
+				b.Run(fmt.Sprintf("bytes=%d", size), func(b *testing.B) {
+					client, server := transport.pair(b)
+					benchmarkEchoRoundTrip(b, client, server, size)
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkConcurrentEcho spreads b.N request/reply round trips over a
+// growing number of concurrently dialed peers against one listener, so
+// ns/op stays "per round trip" however many peers are running at once
+// (v1 BenchmarkConcurrentEcho).
+func BenchmarkConcurrentEcho(b *testing.B) {
+	for _, peers := range []int{1, 4, 16, 64} {
+		b.Run(fmt.Sprintf("peers=%d", peers), func(b *testing.B) {
+			l := mustListen(b, &Config{NoDelay: new(true)}, "sctp4", loopback4(0))
+			var srvWG sync.WaitGroup
+			srvWG.Add(1)
+			go func() {
+				defer srvWG.Done()
+				for {
+					c, err := l.AcceptSCTP()
+					if err != nil {
+						return
+					}
+					srvWG.Add(1)
+					go func(c *Conn) {
+						defer srvWG.Done()
+						defer func() { _ = c.Close() }()
+						buf := make([]byte, 4096)
+						for {
+							n, err := c.Read(buf)
+							if err != nil {
+								return
+							}
+							if _, err := c.Write(buf[:n]); err != nil {
+								return
+							}
+						}
+					}(c)
+				}
+			}()
+			raddr := listenerAddr(b, l)
+
+			conns := make([]*Conn, 0, peers)
+			for i := range peers {
+				c, err := (&Config{NoDelay: new(true)}).Dial(testContext(b, 5*time.Minute), "sctp4", nil, raddr)
+				if err != nil {
+					b.Fatalf("dial %d: %v", i, err)
+				}
+				conns = append(conns, c)
+			}
+			b.Cleanup(func() {
+				for _, c := range conns {
+					_ = c.Close()
+				}
+				_ = l.Close()
+				srvWG.Wait()
+			})
+
+			each := b.N / peers
+			if each == 0 {
+				each = 1
+			}
+			payload := make([]byte, 512)
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			var wg sync.WaitGroup
+			for _, c := range conns {
+				wg.Add(1)
+				go func(c *Conn) {
+					defer wg.Done()
+					buf := make([]byte, 4096)
+					for range each {
+						if _, err := c.Write(payload); err != nil {
+							return
+						}
+						if _, err := c.Read(buf); err != nil {
+							return
+						}
+					}
+				}(c)
+			}
+			wg.Wait()
+			b.StopTimer()
+		})
+	}
 }

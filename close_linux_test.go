@@ -221,6 +221,68 @@ func TestCloseAfterCompletedHandshakeGivesPeerEOF(t *testing.T) {
 	}
 }
 
+// TestGracefulCloseSurvivesSignals: a Close under a storm of signals must
+// still read as a graceful end at the peer, not an ABORT. A signal
+// arriving during the close path's own status-query read makes it return
+// EINTR (v1 TestGracefulCloseSurvivesSignals; see signalStorm).
+func TestGracefulCloseSurvivesSignals(t *testing.T) {
+	stop := signalStorm(t)
+	defer stop()
+	const rounds = 25
+	var reset int
+	for i := range rounds {
+		client, server := connPair(t, nil, nil)
+		if err := server.Close(); err != nil {
+			t.Fatalf("round %d: server close: %v", i, err)
+		}
+		if err := client.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			t.Fatalf("round %d: deadline: %v", i, err)
+		}
+		buf := make([]byte, 256)
+		_, err := client.Read(buf)
+		switch {
+		case err == nil:
+			// Application data ahead of the shutdown; keep draining.
+		case errors.Is(err, syscall.ECONNRESET):
+			reset++
+		case err != io.EOF:
+			t.Errorf("round %d: client read = %v, want io.EOF or a message", i, err)
+		}
+		_ = client.Close()
+	}
+	if reset > 0 {
+		t.Errorf("%d of %d graceful closes were reported as an ABORT: a "+
+			"signal during the close path's own read must not be mistaken "+
+			"for the peer having failed", reset, rounds)
+	}
+}
+
+// TestCloseTerminatesPromptlyUnderSignals bounds Close's retry loop under
+// continuous signals: whatever EINTR does to any one syscall in the poll,
+// the whole call still returns within its grace period, not after it (v1
+// TestCloseTerminatesPromptlyUnderSignals).
+func TestCloseTerminatesPromptlyUnderSignals(t *testing.T) {
+	stop := signalStorm(t)
+	defer stop()
+	const rounds = 20
+	const grace = 700 * time.Millisecond
+	var worst time.Duration
+	for range rounds {
+		client, _ := connPair(t, nil, nil)
+		start := time.Now()
+		if err := client.CloseWithTimeout(grace); err != nil {
+			t.Fatalf("CloseWithTimeout: %v", err)
+		}
+		if d := time.Since(start); d > worst {
+			worst = d
+		}
+	}
+	t.Logf("worst CloseWithTimeout(%v) across %d rounds under signals: %v", grace, rounds, worst)
+	if worst > grace*4 {
+		t.Errorf("a close took %v against a %v grace period; the retry loop is not bounded under signals", worst, grace)
+	}
+}
+
 // TestAssocQueryAnswersForALiveAssociation: the status query Close polls
 // reports a live association as live; if it did not, Close would stop
 // waiting for the handshake with no other test noticing.
@@ -437,7 +499,9 @@ func TestCloseReleasesParkedReaderAndWriter(t *testing.T) {
 	for _, side := range []string{"dialed", "accepted", "peeled"} {
 		t.Run(side, func(t *testing.T) {
 			before := openFds(t)
-			cfg := &Config{CloseTimeout: 300 * time.Millisecond}
+			// Each side gets a receive buffer whose window the other's
+			// messages close (closingReadBuffer), whichever side sends.
+			cfg := &Config{CloseTimeout: 300 * time.Millisecond, ReadBuffer: new(closingReadBuffer)}
 			var (
 				c, client, server *Conn
 				release           func()
@@ -447,7 +511,7 @@ func TestCloseReleasesParkedReaderAndWriter(t *testing.T) {
 				if err != nil {
 					t.Fatalf("ListenEndpoint: %v", err)
 				}
-				client, err = Dial(testContext(t, 10*time.Second), "sctp4", nil, endpointAddr(t, e))
+				client, err = cfg.Dial(testContext(t, 10*time.Second), "sctp4", nil, endpointAddr(t, e))
 				if err != nil {
 					t.Fatalf("Dial: %v", err)
 				}
@@ -468,7 +532,11 @@ func TestCloseReleasesParkedReaderAndWriter(t *testing.T) {
 				}
 				release = func() { _ = l.Close() }
 			}
-			fillSendBuffer(t, c, fill(512))
+			receiver := server
+			if c == server {
+				receiver = client
+			}
+			fillSendBufferStable(t, c, receiver, fill(512))
 
 			readParked, writeParked := make(chan struct{}), make(chan struct{})
 			readDone := parkRead(c, readParked)

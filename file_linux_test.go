@@ -1,5 +1,21 @@
+// Copyright 2019 Wataru Ishida. All rights reserved.
 // Copyright 2026 gomaja. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// This file includes modifications by gomaja.
+
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+// implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //go:build linux
 
@@ -9,6 +25,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -329,6 +346,64 @@ func TestFileListenerAdoptsQueuedAssociations(t *testing.T) {
 			t.Errorf("accepted %d: logical subscriptions = %#x, want the creator's EventPeerAddrChange only (%#x)", i, got, want)
 		}
 	}
+}
+
+// TestListenerSurvivesGCAfterFileListener: adopting a duplicate of a live
+// *Listener's own descriptor must not leave the original descriptor
+// exposed to a finalizer. os.NewFile takes ownership of the descriptor it
+// is handed and closes it once the *os.File becomes unreachable
+// (os/file_unix.go); FileListener dups again for the *Listener it
+// returns, so the temporary file it was given has no owner left once it
+// returns and must be closed explicitly, never dropped for the finalizer
+// to find. This proves that under real GC pressure: two collections after
+// dropping every reference to the temporary file, the original listener's
+// descriptor is still open and the listener it belongs to still accepts.
+func TestListenerSurvivesGCAfterFileListener(t *testing.T) {
+	l := mustListen(t, nil, "sctp4", loopback4(0))
+	laddr := listenerAddr(t, l)
+
+	var lnFd int
+	var fln *Listener
+	rc := mustListenerRawConn(t, l)
+	if cerr := rc.Control(func(fd uintptr) {
+		lnFd = int(fd)
+		dup, derr := syscall.Dup(int(fd))
+		if derr != nil {
+			t.Errorf("dup: %v", derr)
+			return
+		}
+		f := os.NewFile(uintptr(dup), "listener")
+		defer func() { _ = f.Close() }()
+		var err error
+		fln, err = FileListener(f)
+		if err != nil {
+			t.Errorf("FileListener: %v", err)
+		}
+	}); cerr != nil {
+		t.Fatalf("control: %v", cerr)
+	}
+	if fln == nil {
+		t.Fatal("FileListener returned no listener")
+	}
+	t.Cleanup(func() { _ = fln.Close() })
+
+	// Run finalizers for anything the block above dropped. Twice: the
+	// first collection queues the finalizer, the second lets it run.
+	runtime.GC()
+	runtime.GC()
+
+	if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(lnFd), syscall.F_GETFD, 0); errno != 0 {
+		t.Fatalf("listener descriptor %d was closed by a finalizer while the listener still owned it: %v", lnFd, errno)
+	}
+
+	// The listener must still be usable, not merely still hold a
+	// descriptor: a dial that completes proves the socket is the one
+	// still listening.
+	conn, err := Dial(testContext(t, 10*time.Second), "sctp4", nil, laddr)
+	if err != nil {
+		t.Fatalf("dial listener after GC: %v", err)
+	}
+	_ = conn.Close()
 }
 
 // mustListenerRawConn is l.SyscallConn that fails the test on an error.

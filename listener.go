@@ -33,7 +33,7 @@ import (
 //
 // Every method may be called from several goroutines at once.
 //
-//lint:ignore U1000 only the Linux code listens and accepts; on other platforms the fields stay unused
+//lint:ignore U1000 staticcheck flags every field below as unused (U1000) on GOOS=darwin and GOOS=windows without this: only listener_linux.go's methods open, read or write them
 type Listener struct {
 	sock socket
 	prep *prepared // the Config snapshot every accepted Conn is built from

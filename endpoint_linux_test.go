@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net"
 	"net/netip"
@@ -1006,7 +1007,10 @@ func TestEndpointSendDefaultsAllCombinations(t *testing.T) {
 
 // TestEndpointSendMsgWaitsAndNoWait: SendMsg waits for send-buffer space
 // unless NoWait is set, which fails at once with EAGAIN and queues
-// nothing, as on a Conn; the wait is endpoint-wide (RFC 6458 §3.2).
+// nothing, as on a Conn; the wait is endpoint-wide (RFC 6458 §3.2). The
+// buffer is made to stay full first (fillEndpointStable): a single EAGAIN
+// can come while DATA is still in flight, and the delayed SACK for it
+// would free room inside the wait.
 func TestEndpointSendMsgWaitsAndNoWait(t *testing.T) {
 	l := mustListen(t, &Config{ReadBuffer: new(4096)}, "sctp4", loopback4(0))
 	e := openEndpoint(t, &Config{WriteBuffer: new(16384)}, "sctp4", loopback4(0))
@@ -1021,24 +1025,20 @@ func TestEndpointSendMsgWaitsAndNoWait(t *testing.T) {
 	t.Cleanup(func() { _ = peer.Abort() })
 	awaitCommUp(t, e)
 	payload := fill(512)
-	sent := 0
-	for ; sent < 1<<16; sent++ {
-		_, err := e.SendMsg(id, payload, SendOptions{NoWait: true})
-		if errors.Is(err, syscall.EAGAIN) {
-			wantOp(t, "NoWait on a full buffer", "write", err, syscall.EAGAIN)
-			break
-		}
-		if err != nil {
-			t.Fatalf("SendMsg %d: %v", sent, err)
-		}
-	}
-	if sent == 0 || sent == 1<<16 {
-		t.Fatalf("the send buffer filled after %d messages", sent)
+	sent := fillEndpointStable(t, e, map[AssocID]*Conn{id: peer}, payload)
+
+	// With the buffer full for good, NoWait fails at once, and queues
+	// nothing: the peer reads exactly the messages counted above.
+	start := time.Now()
+	_, err = e.SendMsg(id, payload, SendOptions{NoWait: true})
+	wantOp(t, "NoWait on a full buffer", "write", err, syscall.EAGAIN)
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("the NoWait refusal took %v; it must not wait", d)
 	}
 	if err := e.SetWriteDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
 		t.Fatalf("SetWriteDeadline: %v", err)
 	}
-	start := time.Now()
+	start = time.Now()
 	_, err = e.SendMsg(id, payload, SendOptions{})
 	wantOp(t, "a waiting SendMsg on a full buffer", "write", err, os.ErrDeadlineExceeded)
 	if d := time.Since(start); d < 150*time.Millisecond {
@@ -1063,8 +1063,82 @@ func TestEndpointSendMsgWaitsAndNoWait(t *testing.T) {
 		t.Fatalf("the waiting SendMsg: %v", err)
 	}
 	if n, err := peer.Read(buf); err != nil || string(buf[:n]) != "the last one" {
-		t.Fatalf("peer Read = %q, %v", buf[:n], err)
+		t.Fatalf("peer Read = %q, %v; want the last message, after exactly the %d queued before it", buf[:n], err, sent)
 	}
+}
+
+// endpointStats reads SCTP_GET_ASSOC_STATS for association id of e,
+// through the options layer's own layout.
+func endpointStats(t testing.TB, e *Endpoint, id AssocID) AssocStats {
+	t.Helper()
+	layout, err := e.sock.storageLayout()
+	if err != nil {
+		t.Fatalf("storage layout: %v", err)
+	}
+	var buf [sizeAssocStatsKernel64]byte
+	b := layout.assocStatsRequest(buf[:], id)
+	l := uint32(len(b))
+	if err := e.sock.getsockopt(optGetAssocStats, unsafe.Pointer(&b[0]), &l); err != nil {
+		t.Fatalf("SCTP_GET_ASSOC_STATS for association %d: %v", id, err)
+	}
+	return layout.assocStats(b)
+}
+
+// fillEndpoint sends payload with NoWait to each association of peers in
+// turn until every one is refused with EAGAIN, and returns how many
+// messages each accepted. The peers must not be reading. The buffer is the
+// endpoint's, so an EAGAIN for one association is an EAGAIN for all.
+func fillEndpoint(t testing.TB, e *Endpoint, ids []AssocID, payload []byte) map[AssocID]int {
+	t.Helper()
+	queued := make(map[AssocID]int, len(ids))
+	refused := 0
+	for i := 0; refused < len(ids); i++ {
+		if i >= 1<<20 {
+			t.Fatal("the send buffer never filled")
+		}
+		id := ids[i%len(ids)]
+		_, err := e.SendMsg(id, payload, SendOptions{NoWait: true})
+		switch {
+		case errors.Is(err, syscall.EAGAIN):
+			refused++
+		case err != nil:
+			t.Fatalf("SendMsg to association %d: %v", id, err)
+		default:
+			queued[id]++
+			refused = 0
+		}
+	}
+	return queued
+}
+
+// fillEndpointStable is fillSendBufferStable for an Endpoint: it fills the
+// endpoint's send buffer with messages to every association of peers, each
+// peer being the one-to-one Conn at the other end of one, waits until
+// every peer has closed its receive window and the endpoint has taken in
+// the SACK that says so (awaitClosedWindow), and fills the room those
+// SACKs freed. From then on nothing frees room until a peer reads. It
+// returns how many messages were queued in all.
+func fillEndpointStable(t testing.TB, e *Endpoint, peers map[AssocID]*Conn, payload []byte) int {
+	t.Helper()
+	ids := slices.Sorted(maps.Keys(peers))
+	total := 0
+	count := func(q map[AssocID]int) {
+		for _, n := range q {
+			total += n
+		}
+	}
+	first := fillEndpoint(t, e, ids, payload)
+	for _, id := range ids {
+		if first[id] == 0 {
+			t.Fatalf("the send buffer filled before association %d took a message", id)
+		}
+	}
+	count(first)
+	for _, id := range ids {
+		awaitClosedWindow(t, peers[id], func() uint64 { return endpointStats(t, e, id).SACKsIn })
+	}
+	count(fillEndpoint(t, e, ids, payload))
+	return total
 }
 
 // TestEndpointFragmentsHandlerReentryAndMissingRcvInfo: a message longer
@@ -1467,17 +1541,18 @@ func TestEndpointCloseGracefullyEndsEveryAssociation(t *testing.T) {
 
 // stalledEndpoint connects e to two one-to-one peers, opened with
 // peerCfg, that do not read, and fills e's send buffer with messages to
-// both, so that neither SHUTDOWN can complete while the peers do not read:
-// each waits behind data the peer's zero window will not take (RFC 9260
-// §9.2). It returns the two peers and their listeners, which are closed
-// on cleanup unless the test closes them first.
+// both for good (fillEndpointStable), so that neither SHUTDOWN can
+// complete while the peers do not read: each waits behind data the peer's
+// zero window will not take (RFC 9260 §9.2), and no send can find room.
+// It returns the two peers and their listeners, which are closed on
+// cleanup unless the test closes them first.
 func stalledEndpoint(t *testing.T, e *Endpoint, peerCfg *Config) ([]*Conn, []*Listener) {
 	t.Helper()
 	var (
 		peers     []*Conn
 		listeners []*Listener
-		ids       []AssocID
 	)
+	byID := map[AssocID]*Conn{}
 	for range 2 {
 		l := mustListen(t, peerCfg, "sctp4", loopback4(0))
 		listeners = append(listeners, l)
@@ -1491,24 +1566,9 @@ func stalledEndpoint(t *testing.T, e *Endpoint, peerCfg *Config) ([]*Conn, []*Li
 		}
 		t.Cleanup(func() { _ = c.Abort() })
 		awaitCommUp(t, e)
-		peers, ids = append(peers, c), append(ids, id)
+		peers, byID[id] = append(peers, c), c
 	}
-	payload := fill(512)
-	full := 0
-	for i := 0; full < len(ids) && i < 1<<16; i++ {
-		_, err := e.SendMsg(ids[i%len(ids)], payload, SendOptions{NoWait: true})
-		switch {
-		case errors.Is(err, syscall.EAGAIN):
-			full++
-		case err != nil:
-			t.Fatalf("SendMsg: %v", err)
-		default:
-			full = 0
-		}
-	}
-	if full < len(ids) {
-		t.Fatal("the send buffer never filled")
-	}
+	fillEndpointStable(t, e, byID, fill(512))
 	return peers, listeners
 }
 
@@ -1584,12 +1644,10 @@ func TestEndpointCloseTimeoutBoundsTheWait(t *testing.T) {
 func TestEndpointCloseDrainsBackpressuredAssociations(t *testing.T) {
 	const grace = 5 * time.Second
 	e := openEndpoint(t, &Config{CloseTimeout: grace, WriteBuffer: new(1 << 20)}, "sctp4", loopback4(0))
-	// Peers with a receive window large enough that reading reopens it at
-	// once (Linux announces a reopened window only once it has grown by
-	// the larger of the path MTU, 65535 bytes on loopback, and a part of
-	// the receive buffer: net/sctp/associola.c, sctp_peer_needs_update),
-	// and a send buffer larger than both windows.
-	peers, _ := stalledEndpoint(t, e, nil)
+	// Peers with a receive window small enough for the messages to close
+	// and large enough that reading reopens it at once
+	// (closingReadBuffer), and a send buffer larger than both windows.
+	peers, _ := stalledEndpoint(t, e, &Config{ReadBuffer: new(closingReadBuffer)})
 	ids, err := e.AssocIDs()
 	if err != nil || len(ids) != 2 {
 		t.Fatalf("AssocIDs = %v, %v", ids, err)

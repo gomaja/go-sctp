@@ -1,0 +1,18 @@
+# A checkout on Windows without core.autocrlf set to "input" (the
+# default is "true", which converts working-tree line endings to CRLF)
+# would otherwise turn every file below into CRLF text, which breaks two
+# different things in two different ways: a shell script's shebang line
+# (#!/usr/bin/env bash) with a trailing \r is not the line the kernel's
+# script loader recognizes, so testdata/docker/*.sh and testdata/wire/*.sh
+# fail to run at all; and testdata/api.golden, compared line by line
+# against TestExportedAPI's own output (api_test.go, which tolerates CRLF
+# itself as a second line of defense), would otherwise carry a stray \r
+# api_test.go never wrote.
+*.go text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+
+# Never text-normalized at all, on any platform: this file's lines are
+# compared verbatim, one name per line, against the package's own
+# exported API (TestExportedAPI, api_test.go).
+testdata/api.golden -text

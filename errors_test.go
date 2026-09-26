@@ -133,16 +133,82 @@ func closedPipeRawConnError(t *testing.T) error {
 	return got
 }
 
-// TestOpErrorNoDoubleWrap pins that opError never double-wraps: an error
-// already a *net.OpError is returned unchanged.
+// TestOpErrorNoDoubleWrap pins that opError never double-wraps a
+// *net.OpError that already describes exactly this operation: the same
+// Op, Net, Source and Addr (by their String() forms), including the case
+// where Source and Addr are both nil, which sameAddr must equate without
+// calling String() on either.
 func TestOpErrorNoDoubleWrap(t *testing.T) {
-	inner := &net.OpError{Op: "read", Net: "sctp", Err: syscall.ECONNRESET}
-	got := opError("write", "sctp4", &net.IPAddr{}, &net.IPAddr{}, inner)
-	if got != inner {
-		t.Errorf("opError(*net.OpError) returned %#v, want the same value %#v unchanged", got, inner)
+	for _, tc := range []struct {
+		name           string
+		source, addr   net.Addr
+		matchingSource net.Addr
+		matchingAddr   net.Addr
+	}{
+		{"nil Source and Addr", nil, nil, nil, nil},
+		{"non-nil Source and Addr", &net.IPAddr{IP: net.IPv4(127, 0, 0, 1)}, &net.IPAddr{IP: net.IPv4(127, 0, 0, 2)},
+			&net.IPAddr{IP: net.IPv4(127, 0, 0, 1)}, &net.IPAddr{IP: net.IPv4(127, 0, 0, 2)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := &net.OpError{Op: "read", Net: "sctp", Source: tc.matchingSource, Addr: tc.matchingAddr, Err: syscall.ECONNRESET}
+			got := opError("read", "sctp", tc.source, tc.addr, inner)
+			if got != inner {
+				t.Errorf("opError(matching *net.OpError) returned %#v, want the same value %#v unchanged", got, inner)
+			}
+		})
 	}
-	if opErr, ok := got.(*net.OpError); !ok || opErr.Op != "read" {
-		t.Errorf("opError changed the wrapped *net.OpError's Op; got %#v", got)
+}
+
+// TestOpErrorWrapsMismatchedOpError pins the other half: a *net.OpError
+// that does not already describe this exact operation — a different Op,
+// Net, Source or Addr, such as one a Config.Control hook or a
+// NotificationHandler returned from some other call entirely — is
+// wrapped as this operation's cause like any other error, so the Op and
+// Net a caller reads always name this call; errors.Is and errors.As
+// still reach the foreign error's own cause through it.
+func TestOpErrorWrapsMismatchedOpError(t *testing.T) {
+	source := &net.IPAddr{IP: net.IPv4(127, 0, 0, 1)}
+	other := &net.IPAddr{IP: net.IPv4(10, 0, 0, 9)}
+	// baseline already matches op("read", "sctp4", source, source) in
+	// every field; each case below changes exactly one of them away from
+	// a match, so a sameOpError that dropped any single comparison would
+	// wrongly call that one case a match and fail it.
+	baseline := func() *net.OpError {
+		return &net.OpError{Op: "read", Net: "sctp4", Source: source, Addr: source, Err: syscall.ECONNRESET}
+	}
+	for _, tc := range []struct {
+		name    string
+		foreign *net.OpError
+	}{
+		{"different Op", &net.OpError{Op: "setsockopt", Net: "sctp4", Source: source, Addr: source, Err: syscall.ECONNRESET}},
+		{"different Net", &net.OpError{Op: "read", Net: "tcp", Source: source, Addr: source, Err: syscall.ECONNRESET}},
+		{"different Source", func() *net.OpError { o := baseline(); o.Source = other; return o }()},
+		{"different Addr", func() *net.OpError { o := baseline(); o.Addr = other; return o }()},
+		{"nil Source where one is wanted", func() *net.OpError { o := baseline(); o.Source = nil; return o }()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := opError("read", "sctp4", source, source, tc.foreign)
+			if got == tc.foreign {
+				t.Fatalf("opError(mismatched *net.OpError) returned it unchanged: %#v", got)
+			}
+			opErr, ok := got.(*net.OpError)
+			if !ok {
+				t.Fatalf("opError result is %T, want *net.OpError", got)
+			}
+			if opErr.Op != "read" || opErr.Net != "sctp4" || !sameAddr(opErr.Source, source) || !sameAddr(opErr.Addr, source) {
+				t.Errorf("opError(mismatched) = %#v, want Op read, Net sctp4, Source and Addr %v", opErr, source)
+			}
+			if !errors.Is(got, syscall.ECONNRESET) {
+				t.Errorf("errors.Is(got, syscall.ECONNRESET) is false for %v; the foreign error's own cause must still be reachable", got)
+			}
+			// The foreign *net.OpError is opErr.Err itself, one level down
+			// (errors.As would match got at depth 0, before ever looking:
+			// both are *net.OpError, so it cannot distinguish the outer
+			// wrap from the foreign one it names in an Errorf here).
+			if unwrapped := errors.Unwrap(got); unwrapped != tc.foreign {
+				t.Errorf("opError's cause is %#v, want the foreign error %#v itself, unwrapped exactly once", unwrapped, tc.foreign)
+			}
+		})
 	}
 }
 
@@ -338,5 +404,74 @@ func TestIOOpError(t *testing.T) {
 	}
 	if ioOpError("read", "sctp", nil, nil, io.EOF) != io.EOF {
 		t.Error("ioOpError wrapped io.EOF")
+	}
+}
+
+// TestOpErrorForeignClosedNotCollapsed pins that a foreign *net.OpError
+// whose own cause happens to match net.ErrClosed is wrapped as given,
+// not collapsed to a bare net.ErrClosed: the collapse in opError
+// (errors.go) is for a cause this package's own code reports directly,
+// not for deciding what a foreign error's cause was. Collapsing it would
+// discard the foreign error's own Op and Net, and errors.As could no
+// longer reach it.
+func TestOpErrorForeignClosedNotCollapsed(t *testing.T) {
+	foreign := &net.OpError{Op: "dial", Net: "tcp", Err: net.ErrClosed}
+	got := opError("read", "sctp4", nil, nil, foreign)
+	opErr, ok := got.(*net.OpError)
+	if !ok || opErr.Op != "read" || opErr.Net != "sctp4" {
+		t.Fatalf("opError(foreign closed) = %#v, want a *net.OpError with Op read, Net sctp4", got)
+	}
+	if opErr.Err != foreign {
+		t.Errorf("opError's cause is %#v, want the foreign *net.OpError %#v itself, not collapsed", opErr.Err, foreign)
+	}
+	if !errors.Is(got, net.ErrClosed) {
+		t.Errorf("errors.Is(got, net.ErrClosed) is false for %v; the foreign error's own cause must still be reachable", got)
+	}
+}
+
+// TestJoinAbortCause pins joinAbortCause's three cases: a nil Abort
+// result joins nothing; one matching net.ErrClosed joins the bare
+// sentinel; any other *net.OpError joins its own cause, never the
+// *net.OpError itself, which is what keeps abortInterrupted
+// (recv_linux.go) and abortInterruptedNotification (endpoint_linux.go)
+// from chaining two wraps into whatever they return.
+func TestJoinAbortCause(t *testing.T) {
+	base := errors.New("interrupted")
+
+	if got := joinAbortCause(base, nil); got != base {
+		t.Errorf("joinAbortCause(base, nil) = %v, want base itself unchanged", got)
+	}
+
+	closedCases := []error{
+		net.ErrClosed,
+		&net.OpError{Op: "close", Net: "sctp", Err: net.ErrClosed},
+	}
+	for _, aerr := range closedCases {
+		got := joinAbortCause(base, aerr)
+		if !errors.Is(got, base) || !errors.Is(got, net.ErrClosed) {
+			t.Errorf("joinAbortCause(base, %v) = %v, want it to join base and net.ErrClosed", aerr, got)
+		}
+		if _, ok := aerr.(*net.OpError); ok {
+			var opErr *net.OpError
+			if errors.As(got, &opErr) && opErr == aerr {
+				t.Errorf("joinAbortCause(base, %v) = %v, joined the *net.OpError itself, not the bare sentinel", aerr, got)
+			}
+		}
+	}
+
+	root := errors.New("abort failed")
+	aerr := &net.OpError{Op: "close", Net: "sctp", Err: root}
+	got := joinAbortCause(base, aerr)
+	if !errors.Is(got, base) || !errors.Is(got, root) {
+		t.Errorf("joinAbortCause(base, %v) = %v, want it to join base and the abort's own cause %v", aerr, got, root)
+	}
+	var opErr *net.OpError
+	if errors.As(got, &opErr) {
+		t.Errorf("joinAbortCause(base, %v) = %v, joined the *net.OpError %#v itself rather than its cause", aerr, got, opErr)
+	}
+
+	other := errors.New("something else")
+	if got := joinAbortCause(base, other); !errors.Is(got, base) || !errors.Is(got, other) {
+		t.Errorf("joinAbortCause(base, %v) = %v, want it to join base and other", other, got)
 	}
 }
