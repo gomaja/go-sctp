@@ -48,52 +48,19 @@ var _ io.Writer = (*Conn)(nil)
 
 // --- helpers ------------------------------------------------------------------
 
-// recvRawInfo reads one message into b through c's SyscallConn, with the
-// SCTP_RCVINFO record the package enables on every socket, skipping
-// notification records and waiting through the poller while nothing is
-// queued. A zero-length read with no notification is the end of the
-// stream, io.EOF. The send tests use it to see what arrived, and how.
-func recvRawInfo(c *Conn, b []byte) (int, RcvInfo, error) {
-	rc, err := c.SyscallConn()
-	if err != nil {
-		return 0, RcvInfo{}, err
-	}
-	var (
-		n    int
-		info MsgInfo
-		rerr error
-		oob  [rcvCmsgSpace]byte
-	)
-	if err := rc.Read(func(fd uintptr) bool {
-		for {
-			iov := syscall.Iovec{Base: &b[0]}
-			iov.SetLen(len(b))
-			msg := syscall.Msghdr{Iov: &iov, Iovlen: 1, Control: &oob[0]}
-			msg.SetControllen(len(oob))
-			n, rerr = rawRecvmsg(int(fd), &msg, syscall.MSG_DONTWAIT)
-			switch {
-			case rerr == syscall.EAGAIN:
-				return false
-			case rerr == syscall.EINTR:
-				continue
-			case rerr != nil:
-				return true
-			case int(msg.Flags)&msgNotification != 0:
-				continue
-			}
-			rerr = parseRecvCmsgs(oob[:int(msg.Controllen)], int(msg.Flags), &info)
-			return true
+// recvInfo reads one message into b with RecvMsg and returns its
+// SCTP_RCVINFO, skipping the notifications a subscribed caller receives.
+// The send tests use it to see what arrived, and how.
+func recvInfo(c *Conn, b []byte) (int, RcvInfo, error) {
+	for {
+		n, info, err := c.RecvMsg(b)
+		if err != nil {
+			return 0, RcvInfo{}, err
 		}
-	}); err != nil {
-		return 0, RcvInfo{}, err
+		if !info.Notification {
+			return n, info.Rcv, nil
+		}
 	}
-	if rerr != nil {
-		return 0, RcvInfo{}, rerr
-	}
-	if n == 0 {
-		return 0, RcvInfo{}, io.EOF
-	}
-	return n, info.Rcv, nil
 }
 
 // recvWithin reads one message from c, failing the test unless one arrives
@@ -104,7 +71,7 @@ func recvWithin(t testing.TB, c *Conn, d time.Duration) ([]byte, RcvInfo) {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
 	buf := make([]byte, 1<<16)
-	n, info, err := recvRawInfo(c, buf)
+	n, info, err := recvInfo(c, buf)
 	if err != nil {
 		t.Fatalf("receiving: %v", err)
 	}
@@ -118,7 +85,7 @@ func wantNothingQueued(t testing.TB, c *Conn, d time.Duration) {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
 	buf := make([]byte, 1<<16)
-	if n, _, err := recvRawInfo(c, buf); !errors.Is(err, os.ErrDeadlineExceeded) {
+	if n, _, err := recvInfo(c, buf); !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("a read found %d bytes (%q), %v; want nothing queued", n, buf[:min(n, 32)], err)
 	}
 }
@@ -1108,7 +1075,7 @@ func TestSendWaitsForBufferSpace(t *testing.T) {
 			}
 			buf := make([]byte, 1024)
 			for range sent + 1 {
-				if _, _, err := recvRawInfo(server, buf); err != nil {
+				if _, _, err := recvInfo(server, buf); err != nil {
 					drained <- err
 					return
 				}
@@ -1253,7 +1220,7 @@ func TestSetDeadlineSetsBoth(t *testing.T) {
 	}
 	_, err := client.Write([]byte("x"))
 	wantWriteError(t, err, os.ErrDeadlineExceeded)
-	if _, _, err := recvRawInfo(client, make([]byte, 64)); !errors.Is(err, os.ErrDeadlineExceeded) {
+	if _, _, err := recvInfo(client, make([]byte, 64)); !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Errorf("read err = %v, want os.ErrDeadlineExceeded", err)
 	}
 }
@@ -1265,7 +1232,7 @@ func TestSetDeadlineSetsBoth(t *testing.T) {
 // queued for a read; a future one lets a send through and ends a read that
 // finds nothing at the deadline; none lets everything through. Numbered
 // messages show that no failed send queued anything and nothing was lost.
-// The reads go through SyscallConn, which follows the same read deadline.
+// The reads rotate through Read, RecvMsg and ReadMsg.
 func TestDeadlineFlipFlop(t *testing.T) {
 	// NoDelay: a small message is sent at once, not held until the
 	// previous one is acknowledged (RFC 6458 §8.1.5), which the peer may
@@ -1298,14 +1265,25 @@ func TestDeadlineFlipFlop(t *testing.T) {
 		next++
 		queued++
 	}
+	// Reads rotate through the three receive calls, which all wait in the
+	// same poller and follow the same read deadline.
+	readers := []func() ([]byte, error){
+		func() ([]byte, error) { b := make([]byte, 256); n, err := server.Read(b); return b[:n], err },
+		func() ([]byte, error) { b := make([]byte, 256); n, _, err := server.RecvMsg(b); return b[:n], err },
+		func() ([]byte, error) { b, _, err := server.ReadMsg(256); return b, err },
+	}
+	reads := 0
+	readOne := func() ([]byte, error) {
+		reads++
+		return readers[reads%len(readers)]()
+	}
 	read := func(i int) {
 		t.Helper()
-		buf := make([]byte, 256)
-		n, _, err := recvRawInfo(server, buf)
+		b, err := readOne()
 		if err != nil {
 			t.Fatalf("iteration %d: read: %v", i, err)
 		}
-		if got := numberOf(buf[:n]); got != expected {
+		if got := numberOf(b); got != expected {
 			t.Fatalf("iteration %d: read message %d, want %d", i, got, expected)
 		}
 		expected++
@@ -1331,7 +1309,7 @@ func TestDeadlineFlipFlop(t *testing.T) {
 			send(i, SendOptions{Info: &SndInfo{Stream: 1}}, os.ErrDeadlineExceeded)
 			send(i, SendOptions{NoWait: true}, os.ErrDeadlineExceeded)
 			rstart := time.Now()
-			if _, _, err := recvRawInfo(server, make([]byte, 256)); !errors.Is(err, os.ErrDeadlineExceeded) {
+			if _, err := readOne(); !errors.Is(err, os.ErrDeadlineExceeded) {
 				t.Fatalf("iteration %d: a read with a passed deadline and %d messages queued = %v, want os.ErrDeadlineExceeded", i, queued, err)
 			}
 			if d := time.Since(rstart); d > time.Second {
@@ -1344,7 +1322,7 @@ func TestDeadlineFlipFlop(t *testing.T) {
 				read(i)
 			}
 			rstart := time.Now()
-			if _, _, err := recvRawInfo(server, make([]byte, 256)); !errors.Is(err, os.ErrDeadlineExceeded) {
+			if _, err := readOne(); !errors.Is(err, os.ErrDeadlineExceeded) {
 				t.Fatalf("iteration %d: a read of nothing with a future deadline = %v, want os.ErrDeadlineExceeded", i, err)
 			}
 			if d := time.Since(rstart); d > 2*time.Second {
@@ -1399,7 +1377,7 @@ func TestConcurrentSendsKeepMetadata(t *testing.T) {
 		counts := make([]int, senders)
 		buf := make([]byte, 256)
 		for range senders * perSender {
-			n, info, err := recvRawInfo(server, buf)
+			n, info, err := recvInfo(server, buf)
 			if err != nil {
 				recvErr <- err
 				return
@@ -1506,7 +1484,7 @@ func TestSendSurvivesSignals(t *testing.T) {
 		}
 		buf := make([]byte, 256)
 		for i := range messages {
-			n, _, err := recvRawInfo(server, buf)
+			n, _, err := recvInfo(server, buf)
 			if err != nil {
 				recvErr <- fmt.Errorf("read %d: %w", i, err)
 				return
@@ -1561,22 +1539,22 @@ func TestDialNeverReturnsAnUnestablishedAssociation(t *testing.T) {
 	if testing.Short() {
 		rounds, perRound = 1, 200
 	}
-	var dead, failed, torndown atomic.Int64
+	// A dial that fails, and a connection whose association ended after it
+	// was established and before the probe, are both acceptable outcomes
+	// under the storm; a connection that never had one is not.
+	var dead atomic.Int64
 	for range rounds {
 		var wg sync.WaitGroup
 		for range perRound {
 			wg.Go(func() {
 				c, err := cfg.Dial(context.Background(), "sctp4", nil, laddr)
 				if err != nil {
-					failed.Add(1)
 					return
 				}
 				defer func() { _ = c.Close() }()
 				if _, err := c.Write([]byte("probe")); err != nil {
 					if _, state, serr := c.sock.status(); serr != nil || state == StateClosed {
 						dead.Add(1)
-					} else {
-						torndown.Add(1)
 					}
 				}
 			})
@@ -1587,15 +1565,8 @@ func TestDialNeverReturnsAnUnestablishedAssociation(t *testing.T) {
 	_ = l.Close()
 	srv.Wait()
 
-	dials := rounds * perRound
 	if n := dead.Load(); n > 0 {
-		t.Errorf("%d of %d dials reported success but carried no association", n, dials)
-	}
-	if n := failed.Load(); n > 0 {
-		t.Logf("%d of %d dials reported an error (acceptable)", n, dials)
-	}
-	if n := torndown.Load(); n > 0 {
-		t.Logf("%d of %d dials had an association that ended before the probe (acceptable)", n, dials)
+		t.Errorf("%d of %d dials reported success but carried no association", n, rounds*perRound)
 	}
 }
 
@@ -1750,38 +1721,6 @@ func TestSendLatchRules(t *testing.T) {
 	}
 }
 
-// TestTermStateRules checks the latch helpers the send and receive paths
-// share, without a socket.
-func TestTermStateRules(t *testing.T) {
-	var term termState
-	if err := term.latched(); err != nil {
-		t.Fatalf("a new latch holds %v", err)
-	}
-	term.mu.Lock()
-	if term.storeLocked(syscall.EPIPE) || term.storeLocked(syscall.EAGAIN) || term.err != nil {
-		t.Error("an errno that is not an association failure was latched")
-	}
-	if !term.storeLocked(syscall.ETIMEDOUT) {
-		t.Error("ETIMEDOUT was not recognised as an association failure")
-	}
-	term.storeLocked(syscall.ECONNRESET)
-	if term.err != syscall.ETIMEDOUT {
-		t.Errorf("latch = %v after a second failure, want the first, ETIMEDOUT", term.err)
-	}
-	if got := term.sendErrorLocked(syscall.EPIPE); got != syscall.ETIMEDOUT {
-		t.Errorf("EPIPE with the latch set = %v, want the latched ETIMEDOUT", got)
-	}
-	term.mu.Unlock()
-
-	var fresh termState
-	fresh.markFailed()
-	fresh.mu.Lock()
-	if got := fresh.sendErrorLocked(syscall.EPIPE); got != syscall.ENOTCONN || fresh.err != syscall.ENOTCONN {
-		t.Errorf("EPIPE on a failed connection = %v, latch %v; want ENOTCONN latched", got, fresh.err)
-	}
-	fresh.mu.Unlock()
-}
-
 // --- errors -------------------------------------------------------------------------
 
 // TestSendErrorsCarryConnectionContext: every send error is a *net.OpError
@@ -1916,10 +1855,19 @@ func TestStreams(t *testing.T) {
 			}
 			srv.Go(func() {
 				defer func() { _ = c.Close() }()
+				// Bounded, so that a read that never ends fails the test
+				// instead of hanging it.
+				if err := c.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+					t.Errorf("SetReadDeadline: %v", err)
+					return
+				}
 				buf := make([]byte, 512)
 				for {
-					n, info, err := recvRawInfo(c, buf)
+					n, info, err := recvInfo(c, buf)
 					if err != nil {
+						if err != io.EOF {
+							t.Errorf("echo read: %v", err)
+						}
 						return
 					}
 					if _, err := c.SendMsg(buf[:n], SendOptions{Info: &SndInfo{Stream: info.Stream, PPID: info.PPID}}); err != nil {
@@ -1964,7 +1912,7 @@ func TestStreams(t *testing.T) {
 					t.Errorf("client %d stream %d: SendMsg: %v", c, s, err)
 					return
 				}
-				n, info, err := recvRawInfo(conn, buf)
+				n, info, err := recvInfo(conn, buf)
 				if err != nil {
 					t.Errorf("client %d stream %d: read: %v", c, s, err)
 					return

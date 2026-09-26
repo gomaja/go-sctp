@@ -94,10 +94,7 @@ type sendState struct {
 // defaults cannot be read from, such as one whose association ended
 // before Accept, starts with zero defaults.
 func (s *sendState) init(c *Conn) {
-	s.term = &c.term
-	s.fn = s.attempt
-	s.msg.Iov = &s.iov
-	s.msg.Iovlen = 1
+	s.bind(&c.term)
 	_ = c.sock.control(func(fd int) error {
 		snd, err := getDefaultSndInfo(fd)
 		if err != nil {
@@ -110,6 +107,15 @@ func (s *sendState) init(c *Conn) {
 		s.defSnd, s.defPR = snd, pr
 		return nil
 	})
+}
+
+// bind points s at the connection's latch and binds the attempt callback,
+// the part of init that needs no socket.
+func (s *sendState) bind(term *termState) {
+	s.term = term
+	s.fn = s.attempt
+	s.msg.Iov = &s.iov
+	s.msg.Iovlen = 1
 }
 
 // SendMsg sends b as one message, with the per-message parameters in opts

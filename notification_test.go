@@ -1585,3 +1585,60 @@ func FuzzNotificationAccumulator(f *testing.F) {
 		}
 	})
 }
+
+// TestNotificationAccumulatorPeekAndKeep checks the helpers a reader uses
+// to decide, as a record arrives in pieces, whether to retain it: peekType
+// names the type once the header is complete, counting a piece add has not
+// seen yet; keep starts retention from the bytes already in prefix while
+// the record has not outgrown it, and refuses afterwards; head shows what
+// has arrived of the record's start.
+func TestNotificationAccumulatorPeekAndKeep(t *testing.T) {
+	rec := notifSized(EventRemoteError, sizeRemoteError+40, sizeRemoteError+40, 0x5c)
+
+	for split := 1; split < notificationHeaderSize; split++ {
+		var a notificationAccumulator
+		if _, ok := a.peekType(rec[:split]); ok {
+			t.Fatalf("split %d: peekType reported a type before the header was complete", split)
+		}
+		a.add(rec[:split])
+		typ, ok := a.peekType(rec[split:])
+		if !ok || typ != EventRemoteError {
+			t.Fatalf("split %d: peekType = %v, %t; want EventRemoteError", split, typ, ok)
+		}
+		if !a.keep() {
+			t.Fatalf("split %d: keep refused a record still within prefix", split)
+		}
+		a.add(rec[split:])
+		got, err := a.finish()
+		if err != nil || !bytes.Equal(got, rec) {
+			t.Fatalf("split %d: finish = %d bytes, %v; want the whole record", split, len(got), err)
+		}
+		if !bytes.Equal(a.head(), rec[:sizeAssocChange]) {
+			t.Fatalf("split %d: head = % x, want the record's first %d bytes", split, a.head(), sizeAssocChange)
+		}
+	}
+
+	var late notificationAccumulator
+	late.add(rec[:sizeAssocChange+1])
+	if late.keep() {
+		t.Error("keep accepted a record that had outgrown prefix; its earlier bytes are lost")
+	}
+	late.add(rec[sizeAssocChange+1:])
+	if got, err := late.finish(); err != nil || len(got) != 0 {
+		t.Errorf("an unretained record's finish = %d bytes, %v; want none and no error", len(got), err)
+	}
+
+	var failed notificationAccumulator
+	failed.add(notifSized(EventRemoteError, 4, notificationHeaderSize, 0)) // declares less than its header
+	if failed.keep() {
+		t.Error("keep accepted a record an error has already stopped")
+	}
+
+	var empty notificationAccumulator
+	if len(empty.head()) != 0 {
+		t.Errorf("head of an empty accumulator = % x", empty.head())
+	}
+	if typ, ok := empty.peekType(rec); !ok || typ != EventRemoteError {
+		t.Errorf("peekType of a whole first piece = %v, %t", typ, ok)
+	}
+}

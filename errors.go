@@ -29,8 +29,11 @@ var (
 	ErrMessageTooLong = errors.New("sctp: message exceeds the requested maximum")
 
 	// ErrMessageInterrupted is ReadMsg's report that it could not reach the
-	// end of a record because the association aborted partway through.
-	ErrMessageInterrupted = errors.New("sctp: could not reach end of record: association aborted")
+	// end of a message: the association ended, a deadline passed or the
+	// connection was closed partway through. ReadMsg returns what it read,
+	// and aborts the connection, whose receive queue could otherwise be
+	// misread from there.
+	ErrMessageInterrupted = errors.New("sctp: could not reach end of message")
 
 	// ErrNotificationTooLong is ParseNotification's report that a
 	// notification's declared length exceeds NotificationReassemblyLimit.
@@ -182,6 +185,20 @@ func opError(op, network string, source, addr net.Addr, err error) error {
 		err = net.ErrClosed
 	}
 	return &net.OpError{Op: op, Net: network, Source: source, Addr: addr, Err: err}
+}
+
+// ioOpError is opError for an error that may join several causes, such as
+// an interrupted read's ErrMessageInterrupted and the reason for it: an
+// error implementing Unwrap() []error is wrapped whole, without the
+// collapse of a closed descriptor's errors into net.ErrClosed, which would
+// discard the other causes. Its parts must already be normalised, a closed
+// descriptor's error replaced by net.ErrClosed, when they are joined.
+// Anything else is wrapped as opError wraps it.
+func ioOpError(op, network string, source, addr net.Addr, err error) error {
+	if _, joined := err.(interface{ Unwrap() []error }); joined {
+		return &net.OpError{Op: op, Net: network, Source: source, Addr: addr, Err: err}
+	}
+	return opError(op, network, source, addr, err)
 }
 
 // optError wraps a socket-option failure: a *net.OpError with Op "get" or

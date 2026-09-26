@@ -496,12 +496,12 @@ func TestAcceptAfterPeerClosedWithData(t *testing.T) {
 				t.Fatalf("SetReadDeadline: %v", err)
 			}
 			buf := make([]byte, 64)
-			n, err := recvRaw(server, buf)
+			n, err := server.Read(buf)
 			if err != nil || string(buf[:n]) != string(msg) {
 				t.Fatalf("the queued message: read %q, %v; want %q", buf[:n], err, msg)
 			}
 			if !abort {
-				if _, err := recvRaw(server, buf); err != io.EOF {
+				if _, err := server.Read(buf); err != io.EOF {
 					t.Errorf("read after the message = %v, want io.EOF", err)
 				}
 			}
@@ -1251,7 +1251,7 @@ func TestMultihomedAssociationExchangesAddresses(t *testing.T) {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
 	buf := make([]byte, 256)
-	if n, err := recvRaw(server, buf); err != nil || string(buf[:n]) != msg {
+	if n, err := server.Read(buf); err != nil || string(buf[:n]) != msg {
 		t.Errorf("read %q, %v; want %q", buf[:n], err, msg)
 	}
 }
@@ -1298,13 +1298,13 @@ func TestMultihomedListenerAcceptsEveryBoundAddress(t *testing.T) {
 				t.Fatalf("send: %v", err)
 			}
 			buf := make([]byte, 64)
-			if n, err := recvRaw(server, buf); err != nil || string(buf[:n]) != string(want) {
+			if n, err := server.Read(buf); err != nil || string(buf[:n]) != string(want) {
 				t.Fatalf("server read %q, %v; want %q", buf[:n], err, want)
 			}
 			if err := sendRaw(server, want); err != nil {
 				t.Fatalf("reply: %v", err)
 			}
-			if n, err := recvRaw(client, buf); err != nil || string(buf[:n]) != string(want) {
+			if n, err := client.Read(buf); err != nil || string(buf[:n]) != string(want) {
 				t.Fatalf("client read %q, %v; want %q", buf[:n], err, want)
 			}
 		})
@@ -1346,7 +1346,7 @@ func TestMultihomedListenerServesManyPeers(t *testing.T) {
 				defer func() { _ = c.Close() }()
 				buf := make([]byte, 4096)
 				for {
-					n, err := recvRaw(c, buf)
+					n, err := c.Read(buf)
 					if err != nil {
 						return
 					}
@@ -1386,7 +1386,7 @@ func TestMultihomedListenerServesManyPeers(t *testing.T) {
 					errs <- fmt.Errorf("peer %d send %d: %w", id, j, err)
 					return
 				}
-				n, err := recvRaw(c, buf)
+				n, err := c.Read(buf)
 				if err != nil || string(buf[:n]) != want {
 					errs <- fmt.Errorf("peer %d msg %d: got %q, %v; want %q", id, j, buf[:n], err, want)
 					return

@@ -42,6 +42,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -307,12 +308,15 @@ func localBindAddrs(family int, laddr *Addr) ([]byte, error) {
 
 // netAddr turns a possibly nil *Addr into a net.Addr that is nil when a is,
 // so that a *net.OpError built from it never carries a non-nil interface
-// holding a nil pointer.
+// holding a nil pointer. Otherwise it returns a copy of a with IPs of its
+// own: the caller may keep and change what it gets, and neither the
+// snapshot a Conn or Listener holds nor an address a caller passed in
+// changes with it.
 func netAddr(a *Addr) net.Addr {
 	if a == nil {
 		return nil
 	}
-	return a
+	return &Addr{IPs: slices.Clone(a.IPs), Port: a.Port}
 }
 
 // adoptFile duplicates the descriptor f holds, close-on-exec, checks that

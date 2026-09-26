@@ -18,17 +18,17 @@ import (
 //
 // Every method of Conn may be called from several goroutines at once.
 //
-//lint:ignore U1000 the fields are set and read by the Linux code that opens a Conn and sends and receives on it
+//lint:ignore U1000 only the Linux code opens, reads and sends on a Conn; on other platforms the fields stay unused
 type Conn struct {
 	sock     socket
 	kind     connKind
 	assoc    AssocID // fixed at creation; 0 when the association ended before Accept
 	peerPort uint16
 
-	// laddr and raddr are the snapshots LocalAddr and RemoteAddr return: the
+	// laddr and raddr are the snapshots LocalAddr and RemoteAddr copy: the
 	// association's local and peer address sets, taken when it is
 	// established. A refresh stores a new *Addr and never modifies the old
-	// one, so a reader gets one whole set, and the caller may keep it.
+	// one, so a reader gets one whole set. Callers only ever get copies.
 	laddr atomic.Pointer[Addr]
 	raddr atomic.Pointer[Addr]
 
@@ -43,8 +43,10 @@ type Conn struct {
 	// subs is the caller's logical subscription set, an eventSet (config.go)
 	// widened to fit an atomic word. It decides which notification records
 	// reach the caller; the kernel-side SCTP_ASSOC_CHANGE subscription the
-	// package keeps for itself does not depend on it.
-	subs atomic.Uint32
+	// package keeps for itself does not depend on it. subMu serialises
+	// Subscribe, so that the kernel subscription and subs change together.
+	subs  atomic.Uint32
+	subMu sync.Mutex
 
 	life lifecycle // the close state machine (close.go)
 	send sendState
@@ -104,4 +106,13 @@ type termState struct {
 	err    error // the latched errno: ECONNRESET, ETIMEDOUT, ECONNABORTED or ENOTCONN
 	failed bool  // an AssocCommLost record was seen
 	ended  bool  // an AssocShutdownComplete record was seen
+
+	// drained is set once a read has found nothing more queued after the
+	// association failed and returned err: from then on reads return err
+	// without a system call. Until then they make one, so that what Linux
+	// queued before the error, data and the records that report the end,
+	// is still read, as Linux orders it (net/sctp/socket.c:
+	// sctp_skb_recv_datagram dequeues before it looks at the socket
+	// error).
+	drained bool
 }

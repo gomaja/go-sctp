@@ -45,12 +45,13 @@ import (
 type sockCloseOps struct {
 	sock *socket
 	kind connKind
+	term *termState // the connection's association-error latch; nil for a socket that has none
 	closeClock
 }
 
 // newCloseOps returns the steps that close c's descriptor.
 func (c *Conn) newCloseOps() *sockCloseOps {
-	return &sockCloseOps{sock: &c.sock, kind: c.kind}
+	return &sockCloseOps{sock: &c.sock, kind: c.kind, term: &c.term}
 }
 
 // assocGone asks SCTP_STATUS (RFC 6458 §8.2.1) whether the association
@@ -88,7 +89,7 @@ func (o *sockCloseOps) assocGone() (bool, error) {
 // space, so the send never waits.
 func (o *sockCloseOps) startShutdown() error {
 	if o.kind == kindPeeled {
-		return o.sock.control(sendEOF)
+		return o.sock.control(o.sendEOF)
 	}
 	err := o.sock.control(func(fd int) error { return syscall.Shutdown(fd, syscall.SHUT_WR) })
 	if err != nil && !errors.Is(err, net.ErrClosed) {
@@ -98,21 +99,56 @@ func (o *sockCloseOps) startShutdown() error {
 }
 
 // sendEOF makes the empty SCTP_EOF send of a peeled socket's graceful
-// shutdown: one SCTP_SNDINFO control message with SCTP_EOF set (RFC 6458
-// §5.3.4), and no payload at all, which is what sctp_sendmsg_parse
-// requires of an SCTP_EOF send (net/sctp/socket.c). rawSendmsg passes the
-// empty iovec through as it is. MSG_NOSIGNAL keeps a send to an
-// association that is already gone from raising SIGPIPE.
-func sendEOF(fd int) error {
+// shutdown through the connection's latch, as every send does: the send is
+// made while the latch mutex is held, so that an association error it
+// takes from the socket, which Linux hands to the first send to find the
+// association gone (net/sctp/socket.c: sctp_error), is latched for every
+// later read and send. Once the latch holds an error, the association has
+// failed, there is nothing to shut down, and that error is returned
+// without a system call.
+func (o *sockCloseOps) sendEOF(fd int) error {
+	if o.term == nil {
+		return eofSendError(rawSendEOF(fd))
+	}
+	o.term.mu.Lock()
+	defer o.term.mu.Unlock()
+	if err := o.term.err; err != nil {
+		return err
+	}
+	err := rawSendEOF(fd)
+	if err != nil {
+		err = o.term.sendErrorLocked(err)
+	}
+	return eofSendError(err)
+}
+
+// eofSendError wraps the errno of an SCTP_EOF send.
+func eofSendError(err error) error {
+	if err != nil {
+		return os.NewSyscallError("sendmsg", err)
+	}
+	return nil
+}
+
+// rawSendEOF makes the send itself: one SCTP_SNDINFO control message with
+// SCTP_EOF set (RFC 6458 §5.3.4), and no payload at all, which is what
+// sctp_sendmsg_parse requires of an SCTP_EOF send (net/sctp/socket.c).
+// rawSendmsg passes the empty iovec through as it is. MSG_NOSIGNAL keeps a
+// send to an association that is already gone from raising SIGPIPE. The
+// error is the bare errno.
+func rawSendEOF(fd int) error {
 	var cbuf [sndCmsgSpace]byte
 	n := appendSendCmsgs(cbuf[:0], &SndInfo{Flags: sndFlagEOF}, 0, nil, nil)
 	var msg syscall.Msghdr
 	msg.Control = &cbuf[0]
 	msg.SetControllen(n)
-	if _, err := rawSendmsg(fd, &msg, syscall.MSG_DONTWAIT|syscall.MSG_NOSIGNAL); err != nil {
-		return os.NewSyscallError("sendmsg", err)
+	flags := syscall.MSG_DONTWAIT | syscall.MSG_NOSIGNAL
+	if hook := testHookSendmsg; hook != nil {
+		_, err := hook(fd, &msg, flags)
+		return err
 	}
-	return nil
+	_, err := rawSendmsg(fd, &msg, flags)
+	return err
 }
 
 // abortive ends the association with an ABORT (RFC 9260 §§9.1, 11.1.4) and
@@ -157,8 +193,12 @@ func (o *sockCloseOps) release() error {
 }
 
 // closeError wraps an error of Close, CloseWithTimeout, Abort or Shutdown
-// once, with Op "close" and the connection's network and addresses.
+// once, with Op "close" and the connection's network and addresses; nil
+// stays nil, without copying the addresses.
 func (c *Conn) closeError(err error) error {
+	if err == nil {
+		return nil
+	}
 	return opError("close", c.sock.network, c.LocalAddr(), c.RemoteAddr(), err)
 }
 

@@ -8,6 +8,7 @@ package sctp
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -17,23 +18,29 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
 
 // The helper-process peer. testing.AllocsPerRun counts the allocations of
-// every goroutine in the process, so a peer reading in the same process
-// would be counted against the sender being measured. The peer therefore
-// runs in a process of its own: the test binary started again with
+// every goroutine in the process, so a peer in the same process would be
+// counted against the call being measured. The peer therefore runs in a
+// process of its own: the test binary started again with
 // -test.run=^TestHelperPeer$ and helperPeerEnv set, which makes
-// TestHelperPeer listen, report its port on standard output, accept one
-// association and read and discard everything until the association ends.
+// TestHelperPeer listen and report its port on standard output. In the
+// default mode it accepts one association and reads and discards
+// everything until the association ends, for measuring sends. In the
+// sending mode it accepts helperPeerConnsEnv associations, one after the
+// other, and on each answers every request "count size" with count
+// messages of size bytes, until the association ends, for measuring
+// receives.
 const (
 	helperPeerEnv        = "SCTP_HELPER_PEER"         // "1" selects the helper
 	helperPeerNetworkEnv = "SCTP_HELPER_PEER_NETWORK" // "sctp4" or "sctp6"
 	helperPeerAddrEnv    = "SCTP_HELPER_PEER_ADDR"    // the address to listen on
 	helperPeerAuthEnv    = "SCTP_HELPER_PEER_AUTH"    // "1": AUTH on, DATA authenticated
+	helperPeerModeEnv    = "SCTP_HELPER_PEER_MODE"    // "send" selects the sending mode
+	helperPeerConnsEnv   = "SCTP_HELPER_PEER_CONNS"   // associations the sending mode serves
 	helperPeerPortPrefix = "SCTP_HELPER_PEER_PORT="
 
 	// helperPeerLifetime bounds how long a helper outlives a parent that
@@ -65,10 +72,14 @@ func runHelperPeer(stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "helper peer: ResolveAddr: %v\n", err)
 		return 1
 	}
+	sending := os.Getenv(helperPeerModeEnv) == "send"
 	cfg := &Config{}
 	if os.Getenv(helperPeerAuthEnv) == "1" {
 		cfg.Authentication = new(true)
 		cfg.AuthChunks = []uint8{chunkTypeDataForAuth}
+	}
+	if sending {
+		cfg.NoDelay = new(true)
 	}
 	l, err := cfg.Listen(network, laddr)
 	if err != nil {
@@ -76,62 +87,70 @@ func runHelperPeer(stdout, stderr io.Writer) int {
 		return 1
 	}
 	_, _ = fmt.Fprintf(stdout, "%s%d\n", helperPeerPortPrefix, l.Addr().(*Addr).Port)
-
 	time.AfterFunc(helperPeerLifetime, func() { os.Exit(2) })
-	c, err := l.AcceptSCTP()
-	_ = l.Close()
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "helper peer: AcceptSCTP: %v\n", err)
-		return 1
+
+	conns := 1
+	if sending {
+		if conns, err = strconv.Atoi(os.Getenv(helperPeerConnsEnv)); err != nil || conns < 1 {
+			_, _ = fmt.Fprintf(stderr, "helper peer: %s=%q\n", helperPeerConnsEnv, os.Getenv(helperPeerConnsEnv))
+			return 1
+		}
 	}
-	defer func() { _ = c.Abort() }()
-	_ = drainUntilEnd(c)
+	for range conns {
+		c, err := l.AcceptSCTP()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "helper peer: AcceptSCTP: %v\n", err)
+			return 1
+		}
+		if sending {
+			err = answerRequests(c)
+		} else {
+			err = drainUntilEnd(c)
+		}
+		_ = c.Abort()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "helper peer: %v\n", err)
+			return 1
+		}
+	}
+	_ = l.Close()
 	return 0
 }
 
-// drainUntilEnd reads and discards everything c receives, through its
-// SyscallConn, until the association ends: a read of zero bytes after the
-// peer's SHUTDOWN, an error, or an SCTP_ASSOC_CHANGE record reporting
-// AssocShutdownComplete or AssocCommLost (the package keeps that
-// notification subscribed on every socket). The record is the only sign of
-// a graceful end when the peer's SHUTDOWN arrived before Accept: the
-// association is then handed over still shutting down and the socket
-// ESTABLISHED (net/sctp/socket.c: sctp_sock_migrate), RCV_SHUTDOWN is set
-// only on the transition out of an ESTABLISHED socket, which happened
-// before (net/sctp/sm_sideeffect.c: sctp_cmd_new_state), and once the
-// association is gone recvmsg answers EAGAIN for ever.
+// drainUntilEnd reads and discards everything c receives until the
+// association ends, and returns nil then, whether the end was graceful or
+// not.
 func drainUntilEnd(c *Conn) error {
-	rc, err := c.SyscallConn()
-	if err != nil {
-		return err
-	}
 	buf := make([]byte, 1<<16)
-	var rerr error
-	if err := rc.Read(func(fd uintptr) bool {
-		for {
-			n, _, flags, _, err := syscall.Recvmsg(int(fd), buf, nil, syscall.MSG_DONTWAIT)
-			switch {
-			case err == syscall.EAGAIN:
-				return false
-			case err == syscall.EINTR:
-				continue
-			case err != nil:
-				rerr = err
-				return true
-			case flags&msgNotification != 0:
-				if nt, perr := ParseNotification(buf[:n]); perr == nil {
-					if ac, ok := nt.(*AssocChange); ok && (ac.State == AssocShutdownComplete || ac.State == AssocCommLost) {
-						return true
-					}
-				}
-			case n == 0:
-				return true
+	for {
+		if _, err := c.Read(buf); err != nil {
+			return nil
+		}
+	}
+}
+
+// answerRequests serves the sending mode's requests on c until the
+// association ends: each "count size" is answered with count messages of
+// size bytes, the first four of each holding its number.
+func answerRequests(c *Conn) error {
+	buf := make([]byte, 64)
+	for {
+		n, err := c.Read(buf)
+		if err != nil {
+			return nil
+		}
+		var count, size int
+		if _, err := fmt.Sscanf(string(buf[:n]), "%d %d", &count, &size); err != nil || size < 4 {
+			return fmt.Errorf("bad request %q", buf[:n])
+		}
+		msg := make([]byte, size)
+		for i := range count {
+			binary.BigEndian.PutUint32(msg, uint32(i))
+			if _, err := c.Write(msg); err != nil {
+				return nil
 			}
 		}
-	}); err != nil {
-		return err
 	}
-	return rerr
 }
 
 // helperPeer is a running helper process.
@@ -147,6 +166,20 @@ type helperPeer struct {
 // association the test sets up with it ends; cleanup waits for that, and
 // kills it if it does not come.
 func startHelperPeer(t testing.TB, network, address string, auth bool) *Addr {
+	t.Helper()
+	return startHelper(t, network, address, auth, 0)
+}
+
+// startHelperSender starts a helper peer in the sending mode, serving
+// conns associations one after the other, and returns the address to dial.
+func startHelperSender(t testing.TB, network, address string, conns int) *Addr {
+	t.Helper()
+	return startHelper(t, network, address, false, conns)
+}
+
+// startHelper starts a helper peer, in the sending mode when conns is not
+// zero.
+func startHelper(t testing.TB, network, address string, auth bool, conns int) *Addr {
 	t.Helper()
 	laddr, err := ResolveAddr(network, address)
 	if err != nil {
@@ -165,6 +198,9 @@ func startHelperPeer(t testing.TB, network, address string, auth bool) *Addr {
 	)
 	if auth {
 		p.cmd.Env = append(p.cmd.Env, helperPeerAuthEnv+"=1")
+	}
+	if conns > 0 {
+		p.cmd.Env = append(p.cmd.Env, helperPeerModeEnv+"=send", helperPeerConnsEnv+"="+strconv.Itoa(conns))
 	}
 	p.cmd.Stderr = &p.stderr
 	stdout, err := p.cmd.StdoutPipe()
