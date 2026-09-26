@@ -155,56 +155,38 @@ multi-homing, streams, buffer sizes and notifications.
 
 ## Kernel requirements
 
-The package never checks a kernel version. It uses an option when a call
-needs it, and a kernel without the option returns its own error for that
-call; nothing else is affected. Each row gives the first upstream Linux
-release whose UAPI header defines the facility (from the headers of every
-release from 2.6.31 to 6.12; no facility disappears in a later release):
+The package needs Linux 5.0 or later: every constructor subscribes to
+association changes with `SCTP_EVENT`, first in 5.0, and a kernel without
+it refuses the constructor with an error matching `syscall.ENOPROTOOPT`.
+Every facility of earlier releases is therefore always present. A few
+features need a newer kernel. The package never checks a version number:
+a call that needs a facility the kernel lacks returns the kernel's own
+error for that call, and nothing else is affected. Each row gives the
+first upstream Linux release whose UAPI header defines the facility
+(checked against the headers of every release up to 6.12; no facility
+disappears in a later release):
 
 | Upstream Linux | Facility | API that needs it |
 |---|---|---|
-| 2.6.31 | `SCTP_SOCKOPT_CONNECTX3` and the base RFC 6458 options | `Dial`, `Listen`, and every option not listed below |
-| 2.6.33 | `SCTP_SACK_IMMEDIATELY` | `SendSACKImmediately` |
-| 3.0 | `SCTP_GET_ASSOC_ID_LIST`, `SCTP_SENDER_DRY_EVENT` | `Endpoint.AssocIDs`, `EventSenderDry` |
-| 3.1 | `SCTP_AUTO_ASCONF` | `AutoASCONF`, `SetAutoASCONF` |
-| 3.8 | `SCTP_GET_ASSOC_STATS` | `Stats` |
-| 3.17 | `SCTP_RECVRCVINFO`, `SCTP_RECVNXTINFO`, `SCTP_DEFAULT_SNDINFO`, the `SNDINFO`/`RCVINFO`/`NXTINFO` messages | every socket: receive metadata is always on |
-| 4.8 | `SCTP_PR_SUPPORTED`, `SCTP_DEFAULT_PRINFO`, `SCTP_PR_ASSOC_STATUS` | `Config.PartialReliability`, `PRSupported`, `DefaultPrInfo`, `PRAssocStatus` |
-| 4.11 | `MSG_MORE` for SCTP | `SendOptions.More` |
-| 4.11 | `SCTP_ENABLE_STREAM_RESET`, `SCTP_RESET_STREAMS`, `SCTP_RESET_ASSOC`, `SCTP_ADD_STREAMS`, `SCTP_STREAM_RESET_EVENT` | stream reconfiguration, `EventStreamReset` |
-| 4.12 | `SCTP_RECONFIG_SUPPORTED`, `SCTP_PR_STREAM_STATUS`, the association-reset and stream-change events | `Config.StreamReconfiguration`, `ReconfigSupported`, `PRStreamStatus`, `EventAssocReset`, `EventStreamChange` |
-| 4.13 | `SCTP_SOCKOPT_PEELOFF_FLAGS` | `Endpoint.PeelOff` |
-| 4.15 | `SCTP_STREAM_SCHEDULER`, `SCTP_STREAM_SCHEDULER_VALUE` (FCFS, priority, round-robin) | `StreamScheduler`, `SchedFCFS`, `SchedPrio`, `SchedRR` |
-| 4.16 | `SCTP_INTERLEAVING_SUPPORTED` | `Config.MessageInterleaving`, `InterleavingSupported` |
-| 4.17 | `SCTP_AUTH_DEACTIVATE_KEY`, the per-message `PRINFO` and `AUTHINFO` messages | `DeactivateAuthKey`, `SendOptions.PR`, `SendOptions.AuthKey` |
-| 4.19 | `SCTP_REUSE_PORT` | `Config.ReusePort` |
-| **5.0** | `SCTP_EVENT` | **every socket**: the package subscribes to `EventAssocChange` on each, which is how it sees an association end; `Config.Notifications`, `Subscribe`, `Subscribed` |
+| **5.0** | `SCTP_EVENT`, and everything earlier releases define: `SCTP_SOCKOPT_CONNECTX3`, the RFC 6458 options, the `SNDINFO`/`RCVINFO`/`NXTINFO` messages, PR-SCTP, stream reconfiguration, `SCTP_SOCKOPT_PEELOFF_FLAGS`, the FCFS, priority and round-robin schedulers, message interleaving, `SCTP_REUSE_PORT` and `MSG_MORE` | **every socket**, and every API not listed below |
 | 5.4 | `SCTP_ASCONF_SUPPORTED`, `SCTP_AUTH_SUPPORTED`, `SCTP_ECN_SUPPORTED` | `Config.DynamicAddressReconfiguration`, `Config.Authentication`, `Config.ExperimentalECN`, their getters, and `InstallAuthKey`/`ActivateAuthKey` |
 | 5.5 | `SCTP_PEER_ADDR_THLDS_V2`, `SCTP_EXPOSE_POTENTIALLY_FAILED_STATE`, `SCTP_SEND_FAILED_EVENT` | `PathThresholds`, `PFExposure`, `AddrPotentiallyFailed`, `EventSendFailed` |
 | 5.11 | `SCTP_REMOTE_UDP_ENCAPS_PORT` | `RemoteUDPEncapsPort` |
 | 5.14 | `SCTP_PLPMTUD_PROBE_INTERVAL` | `PLPMTUDProbeInterval` |
 | 6.4 | the FC and WFQ stream schedulers (`SCTP_SS_FC`, `SCTP_SS_WFQ`) | `SchedFC`, `SchedWFQ` |
 
-In practice: 5.0 for any socket, since every constructor subscribes with
-`SCTP_EVENT`, and a kernel without it refuses the constructor with an error
-matching `syscall.ENOPROTOOPT`.
 Before 5.5 there is no send-failure notification at all, since the package
-does not use the deprecated `SCTP_SEND_FAILED`, and `SchedFC` and `SchedWFQ`
-are the only facilities that need a kernel newer than 5.14.
+does not use the deprecated `SCTP_SEND_FAILED`, and `SchedFC` and
+`SchedWFQ` are the only facilities that need a kernel newer than 5.14.
 
-Vendor kernels count by facility, not by version number. The RHEL 8 kernel
-is 4.18; the CentOS Stream 8 source at 4.18.0-448.el8 (January 2023) has
-every facility above except the FC and WFQ schedulers, including the
-backported `SCTP_EVENT`, `SCTP_PEER_ADDR_THLDS_V2` and
-`SCTP_SEND_FAILED_EVENT`. Earlier RHEL 8 kernels were not checked.
-
-Some behaviour also depends on `net.sctp` sysctls, and the calls concerned
-say so: `MessageInterleaving` needs `net.sctp.intl_enable`, PR-SCTP is
-offered only while `net.sctp.prsctp_enable` is on, and UDP encapsulation
-needs `net.sctp.udp_port`. Where SCTP is a module, the kernel loads it on
-the first SCTP socket; where it is absent and cannot be loaded, the
-constructors fail with an error matching both `sctp.ErrUnsupported` and the
-kernel's `EPROTONOSUPPORT` (or `ESOCKTNOSUPPORT`).
+Vendor kernels count by facility, not by version number. The Rocky Linux 9
+(RHEL 9) kernel is 5.14; its 5.14.0-687.52.1.el9_8 headers define every
+facility above, the FC and WFQ schedulers included. On RHEL-family
+distributions the SCTP module ships in `kernel-modules-extra` and is
+blacklisted by default (`/etc/modprobe.d/sctp-blacklist.conf`): install
+the package, remove or override the blacklist entry, and load the module
+(`modprobe sctp`) before opening a socket. Until then every constructor
+fails with an error matching `ErrUnsupported`.
 
 ## Platforms
 
