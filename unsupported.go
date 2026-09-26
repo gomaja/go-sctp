@@ -81,6 +81,9 @@ func InstallAuthKey(syscall.RawConn, uint16, []byte) error { return ErrUnsupport
 // ActivateAuthKey reports ErrUnsupported: SCTP sockets exist only on Linux.
 func ActivateAuthKey(syscall.RawConn, uint16) error { return ErrUnsupported }
 
+// Accept reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (l *Listener) Accept() (net.Conn, error) { return nil, ErrUnsupported }
+
 // AcceptSCTP reports ErrUnsupported: SCTP sockets exist only on Linux.
 func (l *Listener) AcceptSCTP() (*Conn, error) { return nil, ErrUnsupported }
 
@@ -164,3 +167,18 @@ func (c *Conn) DefaultPrInfo() (*PrInfo, error) { return nil, ErrUnsupported }
 
 // SetDefaultPrInfo reports ErrUnsupported: SCTP sockets exist only on Linux.
 func (c *Conn) SetDefaultPrInfo(*PrInfo) error { return ErrUnsupported }
+
+// Read reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) Read([]byte) (int, error) { return 0, ErrUnsupported }
+
+// RecvMsg reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) RecvMsg([]byte) (int, MsgInfo, error) { return 0, MsgInfo{}, ErrUnsupported }
+
+// ReadMsg reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) ReadMsg(int) ([]byte, RcvInfo, error) { return nil, RcvInfo{}, ErrUnsupported }
+
+// Subscribe reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) Subscribe(EventType, bool) error { return ErrUnsupported }
+
+// Subscribed reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) Subscribed(EventType) (bool, error) { return false, ErrUnsupported }

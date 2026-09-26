@@ -309,3 +309,34 @@ func TestErrorVariablesAreDistinct(t *testing.T) {
 		}
 	}
 }
+
+// TestIOOpError pins ioOpError: a joined error is wrapped whole, once,
+// keeping every cause, net.ErrClosed among them, where opError would
+// collapse it to net.ErrClosed alone; anything else is wrapped exactly as
+// opError wraps it.
+func TestIOOpError(t *testing.T) {
+	joined := errors.Join(ErrMessageInterrupted, net.ErrClosed)
+	err := ioOpError("read", "sctp4", nil, nil, joined)
+	opErr, ok := err.(*net.OpError)
+	if !ok || opErr.Op != "read" || opErr.Net != "sctp4" || opErr.Err != joined {
+		t.Fatalf("ioOpError(joined) = %#v, want a read *net.OpError around the joined error", err)
+	}
+	for _, target := range []error{ErrMessageInterrupted, net.ErrClosed} {
+		if !errors.Is(err, target) {
+			t.Errorf("ioOpError(joined) does not match %v", target)
+		}
+	}
+	if collapsed := opError("read", "sctp4", nil, nil, joined); errors.Is(collapsed, ErrMessageInterrupted) {
+		t.Error("opError kept the joined causes; ioOpError would then be unnecessary")
+	}
+
+	for _, in := range []error{nil, io.EOF, os.ErrClosed, syscall.ECONNRESET, &net.OpError{Op: "read", Err: syscall.EIO}} {
+		got, want := ioOpError("read", "sctp", nil, nil, in), opError("read", "sctp", nil, nil, in)
+		if (got == nil) != (want == nil) || (got != nil && got.Error() != want.Error()) {
+			t.Errorf("ioOpError(%v) = %v, opError gives %v", in, got, want)
+		}
+	}
+	if ioOpError("read", "sctp", nil, nil, io.EOF) != io.EOF {
+		t.Error("ioOpError wrapped io.EOF")
+	}
+}

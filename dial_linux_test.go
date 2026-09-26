@@ -241,7 +241,7 @@ func TestDialContextSucceeds(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 	buf := make([]byte, 64)
-	n, err := recvRaw(server, buf)
+	n, err := server.Read(buf)
 	if err != nil || string(buf[:n]) != string(want) {
 		t.Fatalf("read %q, %v; want %q", buf[:n], err, want)
 	}
@@ -264,7 +264,7 @@ func TestDialContextReturnsPollableDescriptor(t *testing.T) {
 	})
 	got := make(chan error, 1)
 	go func() {
-		_, err := recvRaw(client, make([]byte, 64))
+		_, err := client.Read(make([]byte, 64))
 		got <- err
 	}()
 	select {
@@ -284,7 +284,7 @@ func TestDialContextReturnsPollableDescriptor(t *testing.T) {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
 	start := time.Now()
-	_, err := recvRaw(client, make([]byte, 64))
+	_, err := client.Read(make([]byte, 64))
 	elapsed := time.Since(start)
 	if !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("idle read = %v, want os.ErrDeadlineExceeded", err)
@@ -335,7 +335,7 @@ func TestDialEstablishedThenEndedBeforeItLooks(t *testing.T) {
 	if err := c.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
-	if _, err := recvRaw(c, make([]byte, 64)); err != io.EOF {
+	if _, err := c.Read(make([]byte, 64)); err != io.EOF {
 		t.Errorf("read = %v, want io.EOF", err)
 	}
 	if err := c.Close(); err != nil {

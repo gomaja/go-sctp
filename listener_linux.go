@@ -155,6 +155,17 @@ func (l *Listener) network() string {
 	return l.sock.network
 }
 
+// Accept waits for the next association and returns it as a net.Conn: the
+// *Conn AcceptSCTP returns, and never a non-nil net.Conn holding a nil
+// *Conn. Errors are *net.OpError with Op "accept".
+func (l *Listener) Accept() (net.Conn, error) {
+	c, err := l.AcceptSCTP()
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
 // AcceptSCTP waits for the next association and returns it as a *Conn,
 // as net.TCPListener.AcceptTCP does. The accepted socket is created
 // non-blocking and close-on-exec (accept4 with SOCK_NONBLOCK and
@@ -206,7 +217,8 @@ func (l *Listener) accept() (*Conn, error) {
 // Addr returns an *Addr holding every address the listener is bound to: a
 // snapshot, taken when it starts listening and replaced as a whole after a
 // successful BindAdd or BindRemove. For a wildcard bind it lists every
-// address in the network namespace. It stays readable after Close.
+// address in the network namespace. Each call returns a copy of its own,
+// which the caller may keep and change. It stays readable after Close.
 func (l *Listener) Addr() net.Addr {
 	if l == nil {
 		return nil
@@ -222,7 +234,10 @@ func (l *Listener) Close() error {
 	if l == nil || l.sock.file == nil {
 		return opError("close", l.network(), nil, nil, net.ErrClosed)
 	}
-	return opError("close", l.network(), nil, l.Addr(), l.sock.file.Close())
+	if err := l.sock.file.Close(); err != nil {
+		return opError("close", l.network(), nil, l.Addr(), err)
+	}
+	return nil
 }
 
 // SetDeadline sets the deadline for Accept and AcceptSCTP: a call waiting
@@ -232,7 +247,10 @@ func (l *Listener) SetDeadline(t time.Time) error {
 	if l == nil || l.sock.file == nil {
 		return opError("set", l.network(), nil, nil, net.ErrClosed)
 	}
-	return opError("set", l.network(), nil, l.Addr(), l.sock.file.SetDeadline(t))
+	if err := l.sock.file.SetDeadline(t); err != nil {
+		return opError("set", l.network(), nil, l.Addr(), err)
+	}
+	return nil
 }
 
 // BindAdd adds ips to the listening endpoint (RFC 6458 §9.1, sctp_bindx
@@ -294,7 +312,10 @@ func (l *Listener) SyscallConn() (syscall.RawConn, error) {
 type listenerRawConn struct{ l *Listener }
 
 func (r *listenerRawConn) Control(f func(fd uintptr)) error {
-	return opError("raw-control", r.l.network(), nil, r.l.Addr(), r.l.sock.raw.Control(f))
+	if err := r.l.sock.raw.Control(f); err != nil {
+		return opError("raw-control", r.l.network(), nil, r.l.Addr(), err)
+	}
+	return nil
 }
 
 func (r *listenerRawConn) Read(func(fd uintptr) bool) error  { return syscall.EINVAL }

@@ -9,9 +9,10 @@ import (
 )
 
 // Listener is a one-to-one SCTP socket (RFC 6458 §4) listening for
-// associations, which AcceptSCTP returns as *Conn values, as
-// net.TCPListener.AcceptTCP does. Addr returns an *Addr holding every
-// bound address, which a single net.TCPAddr-style value cannot express.
+// associations, which Accept returns as net.Conn values and AcceptSCTP as
+// *Conn values, as net.TCPListener's Accept and AcceptTCP do. *Listener
+// implements net.Listener. Addr returns an *Addr holding every bound
+// address, which a single net.TCPAddr-style value cannot express.
 //
 // Accepted connections inherit the listening socket's settings. That
 // covers the kernel-side options, which the kernel copies into the accepted
@@ -37,7 +38,7 @@ type Listener struct {
 	sock socket
 	prep *prepared // the Config snapshot every accepted Conn is built from
 
-	// addr is the snapshot Addr returns: the endpoint's bound addresses,
+	// addr is the snapshot Addr copies: the endpoint's bound addresses,
 	// replaced as a whole after a successful BindAdd or BindRemove.
 	addr atomic.Pointer[Addr]
 

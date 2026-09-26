@@ -5,11 +5,15 @@
 
 // term_linux.go holds the association-error latch the send and receive
 // paths share (termState, conn.go): the errors Linux reports once for a
-// failed association, kept for every later call.
+// failed association, kept for every later call, and the rules by which
+// reads and sends see the end of an association.
 
 package sctp
 
-import "syscall"
+import (
+	"io"
+	"syscall"
+)
 
 // isAssocFailure reports whether err is one of the errors Linux sets on a
 // one-to-one or peeled socket when its association fails: ECONNRESET after
@@ -82,4 +86,79 @@ func (t *termState) sendErrorLocked(err error) error {
 	default:
 		return err
 	}
+}
+
+// observe latches err when it is an association failure, and returns what
+// the call that got err reports: the latched error once the latch is set,
+// whichever call set it, and err otherwise. t.mu must be held, and have
+// been held around the system call that returned err.
+func (t *termState) observe(err error) error {
+	if t.storeLocked(err) || t.err != nil {
+		return t.err
+	}
+	return err
+}
+
+// readErrorLocked applies the latch's rules to what one recvmsg found when
+// it found no data and no notification: its errno, or io.EOF for a
+// zero-length result, which Linux gives once the socket is shut for
+// reading. t.mu must be held, and have been held around the recvmsg.
+//
+// An association failure is latched, and once the latch is set it is what
+// the read reports: EAGAIN then means that another call took the error
+// Linux set, and a zero-length result that the association failed after
+// the socket was shut for reading. When the latch is empty but an
+// AssocCommLost record has been seen (failed), the error Linux set for the
+// failure is out of reach: something outside the package took it, for
+// example by reading SO_ERROR through SyscallConn, or the association
+// failed before Accept and Linux set it on the listening socket
+// (net/sctp/socket.c: sctp_sock_migrate); EAGAIN or the end of the stream
+// then becomes ENOTCONN, which is latched. After an AssocShutdownComplete
+// record (ended) nothing more can arrive, and EAGAIN is the end of the
+// stream, io.EOF. Otherwise EAGAIN is left for the caller to wait on, and
+// io.EOF is the graceful end of the stream.
+//
+// Whenever the read reports the latch, the receive queue was empty
+// (sctp_skb_recv_datagram looks at the socket error and the shutdown flags
+// only once the queue is empty), so every later read reports it without a
+// system call.
+func (t *termState) readErrorLocked(err error) error {
+	err = t.observe(err)
+	switch {
+	case t.err == nil && t.failed && (err == syscall.EAGAIN || err == io.EOF):
+		t.err = syscall.ENOTCONN
+		err = t.err
+	case t.err == nil && t.ended && err == syscall.EAGAIN:
+		err = io.EOF
+	}
+	if t.err != nil {
+		t.drained = true
+	}
+	return err
+}
+
+// hasEnded reports whether an AssocShutdownComplete record has been seen.
+func (t *termState) hasEnded() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.ended
+}
+
+// readEnd returns what a read reports without a system call, or nil when
+// it must make one: io.EOF once an AssocShutdownComplete record has been
+// seen, since Linux marks nothing on the socket after a local shutdown or
+// on a peeled socket (net/sctp/sm_sideeffect.c: sctp_cmd_new_state sets
+// RCV_SHUTDOWN only on a one-to-one socket, when the peer's SHUTDOWN
+// arrives on an ESTABLISHED one), and the latched error once a read has
+// found nothing more after the association failed.
+func (t *termState) readEnd() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch {
+	case t.drained:
+		return t.err
+	case t.ended:
+		return io.EOF
+	}
+	return nil
 }

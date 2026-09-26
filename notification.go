@@ -686,6 +686,45 @@ func (a *notificationAccumulator) add(fragment []byte) {
 	}
 }
 
+// peekType returns the type of the record in progress once its header is
+// complete, counting next, a fragment add has not seen yet, and reports
+// false while the header is still incomplete. It lets a caller decide
+// whether to retain a record before the fragment that completes its
+// header is added, without allocating.
+func (a *notificationAccumulator) peekType(next []byte) (EventType, bool) {
+	if a.total+len(next) < notificationHeaderSize {
+		return 0, false
+	}
+	var hdr [notificationHeaderSize]byte
+	k := copy(hdr[:], a.prefix[:a.prefixBytes])
+	copy(hdr[k:], next)
+	return EventType(binary.NativeEndian.Uint16(hdr[notificationTypeOff:])), true
+}
+
+// keep switches retention on for the record in progress, starting data
+// with the bytes add has already seen, which are all still in prefix while
+// the record has not outgrown it. It reports whether the record is
+// retained: false when the record has outgrown prefix, so that bytes seen
+// earlier are lost, or when an error has already stopped it.
+func (a *notificationAccumulator) keep() bool {
+	if a.retain {
+		return true
+	}
+	if a.err != nil || a.total > a.prefixBytes {
+		return false
+	}
+	a.retain = true
+	a.data = append(a.data, a.prefix[:a.prefixBytes]...)
+	return true
+}
+
+// head returns the start of the record in progress: its first
+// sizeAssocChange bytes, or as many as have arrived, which is what
+// assocChangeInfo reads. It aliases the accumulator.
+func (a *notificationAccumulator) head() []byte {
+	return a.prefix[:a.prefixBytes]
+}
+
 // finish returns the reassembled record once add has seen exactly its
 // declared length, or the error that stopped it short. The returned slice
 // aliases data: it is valid only until the next add or reset, either of

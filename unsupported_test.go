@@ -12,11 +12,19 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net"
 	"net/netip"
 	"os"
 	"sort"
 	"testing"
 	"time"
+)
+
+// A Conn is a net.Conn and a Listener a net.Listener on every platform,
+// so code written against them compiles everywhere.
+var (
+	_ net.Conn     = (*Conn)(nil)
+	_ net.Listener = (*Listener)(nil)
 )
 
 // unsupportedStubCase is one function or method stubbed in unsupported.go,
@@ -62,6 +70,7 @@ func unsupportedStubCases() []unsupportedStubCase {
 		{name: "Config.FileListener", call: func() error { _, err := cfg.FileListener(os.Stdin); return err }},
 		{name: "InstallAuthKey", call: func() error { return InstallAuthKey(nil, 1, []byte("k")) }},
 		{name: "ActivateAuthKey", call: func() error { return ActivateAuthKey(nil, 1) }},
+		{name: "Listener.Accept", call: func() error { _, err := l.Accept(); return err }},
 		{name: "Listener.AcceptSCTP", call: func() error { _, err := l.AcceptSCTP(); return err }},
 		{name: "Listener.Addr", value: true, call: func() error {
 			if a := l.Addr(); a != nil {
@@ -110,6 +119,11 @@ func unsupportedStubCases() []unsupportedStubCase {
 		{name: "Conn.SetDefaultSndInfo", call: func() error { return c.SetDefaultSndInfo(&SndInfo{}) }},
 		{name: "Conn.DefaultPrInfo", call: func() error { _, err := c.DefaultPrInfo(); return err }},
 		{name: "Conn.SetDefaultPrInfo", call: func() error { return c.SetDefaultPrInfo(&PrInfo{}) }},
+		{name: "Conn.Read", call: func() error { _, err := c.Read(make([]byte, 1)); return err }},
+		{name: "Conn.RecvMsg", call: func() error { _, _, err := c.RecvMsg(make([]byte, 1)); return err }},
+		{name: "Conn.ReadMsg", call: func() error { _, _, err := c.ReadMsg(1); return err }},
+		{name: "Conn.Subscribe", call: func() error { return c.Subscribe(EventShutdown, true) }},
+		{name: "Conn.Subscribed", call: func() error { _, err := c.Subscribed(EventShutdown); return err }},
 	}
 }
 

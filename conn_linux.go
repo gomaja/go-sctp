@@ -65,6 +65,7 @@ func newConn(s socket, kind connKind, p *prepared) (*Conn, error) {
 
 // init reads what newConn fixes for the life of the Conn.
 func (c *Conn) init(p *prepared) error {
+	c.recv.init(c)
 	subs := p.subscribed
 	if p.adopted {
 		// Whoever set the descriptor up chose its subscriptions, and the
@@ -162,10 +163,11 @@ func (c *Conn) AssocID() AssocID {
 // in the namespace. The snapshot is taken when the association is
 // established and replaced as a whole after a successful BindAdd or
 // BindRemove, so a concurrent caller gets the old set or the new one,
-// never a mix; the returned *Addr is never modified afterwards. It stays
-// readable after Close, and does not follow changes made with ASCONF by
-// the peer; LocalAddrs does. It holds no IPs when the association ended
-// before Accept.
+// never a mix. Each call returns a copy of its own, which the caller may
+// keep and change without affecting later calls or the addresses errors
+// carry. It stays readable after Close, and does not follow changes made
+// with ASCONF by the peer; LocalAddrs does. It holds no IPs when the
+// association ended before Accept.
 func (c *Conn) LocalAddr() net.Addr {
 	if c == nil {
 		return nil
@@ -174,8 +176,10 @@ func (c *Conn) LocalAddr() net.Addr {
 }
 
 // RemoteAddr returns a snapshot of the peer's addresses, as an *Addr,
-// taken and refreshed the way LocalAddr's is. PeerAddrs follows changes
-// the peer makes with ASCONF; this snapshot does not.
+// taken and refreshed the way LocalAddr's is. Each call returns a copy of
+// its own, which the caller may keep and change without affecting later
+// calls or the addresses errors carry. PeerAddrs follows changes the peer
+// makes with ASCONF; this snapshot does not.
 func (c *Conn) RemoteAddr() net.Addr {
 	if c == nil {
 		return nil
@@ -343,14 +347,19 @@ func (c *Conn) setDeadline(t time.Time, set func(*os.File, time.Time) error) err
 	if c == nil || c.sock.file == nil {
 		return opError("set", c.network(), nil, nil, net.ErrClosed)
 	}
-	return opError("set", c.network(), nil, c.LocalAddr(), set(c.sock.file, t))
+	if err := set(c.sock.file, t); err != nil {
+		return opError("set", c.network(), nil, c.LocalAddr(), err)
+	}
+	return nil
 }
 
 // SyscallConn returns raw access to the connection's descriptor, for
 // socket options the package does not type, for example. Read and Write
 // wait through the runtime poller and follow the connection's deadlines;
-// once the descriptor has been released, every call returns an error
-// matching net.ErrClosed without running the callback.
+// Read also takes the connection's receive lock, so that it never runs in
+// the middle of one of the package's reads, such as a ReadMsg between two
+// pieces of a message. Once the descriptor has been released, every call
+// returns an error matching net.ErrClosed without running the callback.
 func (c *Conn) SyscallConn() (syscall.RawConn, error) {
 	if !c.opened() {
 		return nil, opError("syscallconn", c.network(), nil, c.LocalAddr(), net.ErrClosed)
@@ -361,18 +370,31 @@ func (c *Conn) SyscallConn() (syscall.RawConn, error) {
 // connRawConn is the syscall.RawConn SyscallConn returns: the descriptor's
 // own, with errors wrapped the way net's raw connections wrap them
 // (net/rawconn.go), so that a released descriptor reports net.ErrClosed.
+// The addresses an error carries are copied only when there is an error:
+// a call that succeeds allocates nothing.
 type connRawConn struct{ c *Conn }
 
 func (r *connRawConn) Control(f func(fd uintptr)) error {
-	return opError("raw-control", r.c.network(), nil, r.c.LocalAddr(), r.c.sock.raw.Control(f))
+	if err := r.c.sock.raw.Control(f); err != nil {
+		return opError("raw-control", r.c.network(), nil, r.c.LocalAddr(), err)
+	}
+	return nil
 }
 
 func (r *connRawConn) Read(f func(fd uintptr) bool) error {
-	return opError("raw-read", r.c.network(), r.c.LocalAddr(), r.c.RemoteAddr(), r.c.sock.raw.Read(f))
+	r.c.recv.mu.Lock()
+	defer r.c.recv.mu.Unlock()
+	if err := r.c.sock.raw.Read(f); err != nil {
+		return opError("raw-read", r.c.network(), r.c.LocalAddr(), r.c.RemoteAddr(), err)
+	}
+	return nil
 }
 
 func (r *connRawConn) Write(f func(fd uintptr) bool) error {
-	return opError("raw-write", r.c.network(), r.c.LocalAddr(), r.c.RemoteAddr(), r.c.sock.raw.Write(f))
+	if err := r.c.sock.raw.Write(f); err != nil {
+		return opError("raw-write", r.c.network(), r.c.LocalAddr(), r.c.RemoteAddr(), err)
+	}
+	return nil
 }
 
 // FileConn returns a Conn for the SCTP association on the descriptor f

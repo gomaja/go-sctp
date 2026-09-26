@@ -202,7 +202,7 @@ func TestCloseAfterCompletedHandshakeGivesPeerEOF(t *testing.T) {
 		}
 		buf := make([]byte, 512)
 		for range 4 {
-			if _, err := recvRaw(server, buf); err != nil {
+			if _, err := server.Read(buf); err != nil {
 				t.Fatalf("round %d: drain: %v", i, err)
 			}
 		}
@@ -212,7 +212,7 @@ func TestCloseAfterCompletedHandshakeGivesPeerEOF(t *testing.T) {
 		if err := server.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 			t.Fatalf("SetReadDeadline: %v", err)
 		}
-		_, err := recvRaw(server, buf)
+		_, err := server.Read(buf)
 		if errors.Is(err, syscall.ECONNRESET) {
 			t.Errorf("round %d: the peer saw ECONNRESET after a graceful Close", i)
 		} else if err != io.EOF {
@@ -302,7 +302,7 @@ func TestShutdownThenClose(t *testing.T) {
 	if err := server.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
-	if _, err := recvRaw(server, make([]byte, 64)); err != io.EOF {
+	if _, err := server.Read(make([]byte, 64)); err != io.EOF {
 		t.Errorf("peer read after Shutdown = %v, want io.EOF", err)
 	}
 	// The association goes away once the peer's kernel has answered.
@@ -504,7 +504,7 @@ func TestAbortWithParkedReaderResetsThePeer(t *testing.T) {
 	if err := server.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
-	if _, err := recvRaw(server, make([]byte, 64)); !errors.Is(err, syscall.ECONNRESET) {
+	if _, err := server.Read(make([]byte, 64)); !errors.Is(err, syscall.ECONNRESET) {
 		t.Errorf("the peer's read after Abort = %v, want ECONNRESET", err)
 	}
 }
@@ -686,7 +686,7 @@ func TestSyscallConnWriteWaitsForWritability(t *testing.T) {
 		<-begin
 		buf := make([]byte, 1<<16)
 		for range sent {
-			if _, err := recvRaw(server, buf); err != nil {
+			if _, err := server.Read(buf); err != nil {
 				return
 			}
 		}
@@ -939,7 +939,7 @@ func TestSyscallConnConcurrent(t *testing.T) {
 			if err := server.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
 				return
 			}
-			if _, err := recvRaw(server, buf); err != nil {
+			if _, err := server.Read(buf); err != nil {
 				if errors.Is(err, os.ErrDeadlineExceeded) {
 					continue
 				}

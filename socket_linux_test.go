@@ -135,44 +135,6 @@ func sendRawOnce(c *Conn, b []byte) error {
 	return serr
 }
 
-// recvRaw reads one message into b through c's SyscallConn, skipping
-// notification records (the package keeps SCTP_ASSOC_CHANGE subscribed, so
-// every association queues some), and waiting through the poller while
-// nothing is queued. A zero-length read with no notification is the end
-// of the stream, io.EOF.
-func recvRaw(c *Conn, b []byte) (int, error) {
-	rc, err := c.SyscallConn()
-	if err != nil {
-		return 0, err
-	}
-	var (
-		n    int
-		rerr error
-	)
-	if err := rc.Read(func(fd uintptr) bool {
-		for {
-			var flags int
-			n, _, flags, _, rerr = syscall.Recvmsg(int(fd), b, nil, syscall.MSG_DONTWAIT)
-			if rerr == syscall.EAGAIN {
-				return false
-			}
-			if rerr == nil && flags&msgNotification != 0 {
-				continue
-			}
-			return true
-		}
-	}); err != nil {
-		return 0, err
-	}
-	if rerr != nil {
-		return 0, rerr
-	}
-	if n == 0 {
-		return 0, io.EOF
-	}
-	return n, nil
-}
-
 // fill returns n bytes of a repeating pattern.
 func fill(n int) []byte {
 	b := make([]byte, n)
