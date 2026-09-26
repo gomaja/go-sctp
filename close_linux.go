@@ -133,15 +133,35 @@ func eofSendError(err error) error {
 // rawSendEOF makes the send itself: one SCTP_SNDINFO control message with
 // SCTP_EOF set (RFC 6458 §5.3.4), and no payload at all, which is what
 // sctp_sendmsg_parse requires of an SCTP_EOF send (net/sctp/socket.c).
-// rawSendmsg passes the empty iovec through as it is. MSG_NOSIGNAL keeps a
-// send to an association that is already gone from raising SIGPIPE. The
-// error is the bare errno.
+// The error is the bare errno.
 func rawSendEOF(fd int) error {
+	return rawSendEnd(fd, sndFlagEOF, 0, nil)
+}
+
+// rawSendEnd makes an end-of-association send: one SCTP_SNDINFO control
+// message carrying flag, SCTP_EOF or SCTP_ABORT, for association assoc (RFC
+// 6458 §§3.1.5, 5.3.4), which a one-to-one or peeled socket ignores, with
+// cause as the payload: none for SCTP_EOF, which sctp_sendmsg_parse
+// requires (net/sctp/socket.c), and for SCTP_ABORT the cause-specific
+// information of the ABORT's User-Initiated Abort error cause
+// (sctp_make_abort_user). rawSendmsg passes an empty iovec through as it
+// is. Neither send ever waits for buffer space: sctp_sendmsg_check_sflags
+// acts on the flag and returns before sctp_sendmsg_to_asoc, the only path
+// that waits. MSG_NOSIGNAL keeps a send to an association that is already
+// gone from raising SIGPIPE. The error is the bare errno.
+func rawSendEnd(fd int, flag uint16, assoc AssocID, cause []byte) error {
 	var cbuf [sndCmsgSpace]byte
-	n := appendSendCmsgs(cbuf[:0], &SndInfo{Flags: sndFlagEOF}, 0, nil, nil)
+	n := appendSendCmsgs(cbuf[:0], &SndInfo{Flags: SendFlags(flag)}, assoc, nil, nil)
 	var msg syscall.Msghdr
 	msg.Control = &cbuf[0]
 	msg.SetControllen(n)
+	var iov syscall.Iovec
+	if len(cause) > 0 {
+		iov.Base = &cause[0]
+		iov.SetLen(len(cause))
+		msg.Iov = &iov
+		msg.Iovlen = 1
+	}
 	flags := syscall.MSG_DONTWAIT | syscall.MSG_NOSIGNAL
 	if hook := testHookSendmsg; hook != nil {
 		_, err := hook(fd, &msg, flags)

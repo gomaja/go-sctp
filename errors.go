@@ -49,10 +49,12 @@ var (
 	// read in full.
 	ErrControlTruncated = errors.New("sctp: ancillary data truncated")
 
-	// ErrInvalidRcvInfo reports that SCTP_RCVINFO named a reserved scope
-	// selector (SCTP_FUTURE_ASSOC, SCTP_CURRENT_ASSOC, SCTP_ALL_ASSOC)
-	// instead of a real association id.
-	ErrInvalidRcvInfo = errors.New("sctp: SCTP_RCVINFO names a scope selector, not an association")
+	// ErrInvalidRcvInfo reports that the SCTP_RCVINFO record of a message
+	// an Endpoint received cannot name one association: it names a
+	// reserved scope selector (SCTP_FUTURE_ASSOC, SCTP_CURRENT_ASSOC,
+	// SCTP_ALL_ASSOC) instead of a real association id, or it is short,
+	// repeated or malformed.
+	ErrInvalidRcvInfo = errors.New("sctp: SCTP_RCVINFO names no association")
 
 	// ErrMissingRcvInfo reports that data arrived on an Endpoint without
 	// SCTP_RCVINFO, so RecvMsg cannot report which association it belongs

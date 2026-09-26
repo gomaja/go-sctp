@@ -42,7 +42,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -50,17 +49,25 @@ import (
 )
 
 // newSocket creates a one-to-one SCTP socket (SOCK_STREAM, RFC 6458 §4) of
-// family and wraps it. SOCK_NONBLOCK hands every wait to the runtime
-// poller, and SOCK_CLOEXEC keeps the descriptor out of any child a
-// concurrent fork starts: both are set atomically by socket(2), so there
-// is no window between creating the descriptor and marking it.
+// family and wraps it, as openSocket does.
+func newSocket(family int, network string) (socket, error) {
+	return openSocket(family, syscall.SOCK_STREAM, network)
+}
+
+// openSocket creates an SCTP socket of family and type typ, SOCK_STREAM
+// for a one-to-one socket (RFC 6458 §4) or SOCK_SEQPACKET for a
+// one-to-many one (RFC 6458 §3.1.1), and wraps it. SOCK_NONBLOCK hands
+// every wait to the runtime poller, and SOCK_CLOEXEC keeps the descriptor
+// out of any child a concurrent fork starts: both are set atomically by
+// socket(2), so there is no window between creating the descriptor and
+// marking it.
 //
 // When the kernel has no SCTP, inet_create (net/ipv4/af_inet.c) answers
 // EPROTONOSUPPORT, or ESOCKTNOSUPPORT, once it cannot load the module;
 // that becomes unsupportedErr, which matches both ErrUnsupported and the
 // errno.
-func newSocket(family int, network string) (socket, error) {
-	fd, err := syscall.Socket(family, syscall.SOCK_STREAM|syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC, ipprotoSCTP)
+func openSocket(family, typ int, network string) (socket, error) {
+	fd, err := syscall.Socket(family, typ|syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC, ipprotoSCTP)
 	if err != nil {
 		return socket{}, socketError(err)
 	}
@@ -338,15 +345,6 @@ func socketFamily(network string, laddr, raddr *Addr) (int, error) {
 	return family, nil
 }
 
-// canonicalName is network with "" spelled "sctp": the name a socket and
-// every error it produces carry.
-func canonicalName(network string) string {
-	if network == "" {
-		return "sctp"
-	}
-	return network
-}
-
 // localBindAddrs packs laddr for sctp_bindx on a socket of family. A
 // wildcard laddr (no IPs) binds the family's unspecified address, so that
 // the port it names is kept.
@@ -359,19 +357,6 @@ func localBindAddrs(family int, laddr *Addr) ([]byte, error) {
 		wild = netip.IPv6Unspecified()
 	}
 	return encodeAddrs(family, []netip.Addr{wild}, laddr.Port)
-}
-
-// netAddr turns a possibly nil *Addr into a net.Addr that is nil when a is,
-// so that a *net.OpError built from it never carries a non-nil interface
-// holding a nil pointer. Otherwise it returns a copy of a with IPs of its
-// own: the caller may keep and change what it gets, and neither the
-// snapshot a Conn or Listener holds nor an address a caller passed in
-// changes with it.
-func netAddr(a *Addr) net.Addr {
-	if a == nil {
-		return nil
-	}
-	return &Addr{IPs: slices.Clone(a.IPs), Port: a.Port}
 }
 
 // adoptFile duplicates the descriptor f holds, close-on-exec, checks that

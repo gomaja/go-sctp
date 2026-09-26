@@ -96,17 +96,24 @@ type closeOps interface {
 	// sctp_getsockopt_sctp_status refuses the query once it does not). An
 	// error is a query that failed for another reason, and is not evidence
 	// that the shutdown completed.
+	//
+	// For an Endpoint it is compound: it reports whether every
+	// association of the one-to-many socket is gone, reading the
+	// association list (RFC 6458 §8.2.6), and, since associations can end
+	// and appear while it waits, it also starts the shutdown of any that
+	// appeared since the last look (endpointCloseOps).
 	assocGone() (bool, error)
 
 	// startShutdown starts the graceful shutdown (RFC 9260 §9.2) with one
 	// call that returns at once: shutdown(2) with SHUT_WR on a one-to-one
 	// socket (RFC 6458 §4.1.7), or an empty send with SCTP_EOF on a peeled
 	// one, where Linux ignores shutdown(2) (net/sctp/socket.c:
-	// sctp_shutdown returns at once unless the socket is one-to-one). The
-	// SCTP_EOF send cannot wait for buffer space: sctp_sendmsg_check_sflags
-	// starts the SHUTDOWN primitive and returns before
-	// sctp_sendmsg_to_asoc, the only path that waits. An error means the
-	// association is already gone or already shutting down.
+	// sctp_shutdown returns at once unless the socket is one-to-one), and
+	// one such send for each association of an Endpoint. The SCTP_EOF
+	// send cannot wait for buffer space: sctp_sendmsg_check_sflags starts
+	// the SHUTDOWN primitive and returns before sctp_sendmsg_to_asoc, the
+	// only path that waits. An error means the association is already gone
+	// or already shutting down.
 	startShutdown() error
 
 	// abortive ends the association with an ABORT (RFC 9260 §§9.1, 11.1.4)

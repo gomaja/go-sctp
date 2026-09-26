@@ -432,20 +432,41 @@ func parkWrite(c *Conn, parked chan<- struct{}) <-chan error {
 // at the end of its grace period and releases the descriptor, and both
 // parked calls return with net.ErrClosed within a second of Close
 // returning. Afterwards the descriptor count is back where it started. It
-// runs on a dialed and on an accepted connection.
+// runs on a dialed, an accepted and a peeled connection.
 func TestCloseReleasesParkedReaderAndWriter(t *testing.T) {
-	for _, side := range []string{"dialed", "accepted"} {
+	for _, side := range []string{"dialed", "accepted", "peeled"} {
 		t.Run(side, func(t *testing.T) {
 			before := openFds(t)
 			cfg := &Config{CloseTimeout: 300 * time.Millisecond}
-			l, err := cfg.Listen("sctp4", loopback4(0))
-			if err != nil {
-				t.Fatalf("Listen: %v", err)
-			}
-			client, server := dialAccept(t, cfg, l)
-			c := client
-			if side == "accepted" {
+			var (
+				c, client, server *Conn
+				release           func()
+			)
+			if side == "peeled" {
+				e, err := cfg.ListenEndpoint("sctp4", loopback4(0))
+				if err != nil {
+					t.Fatalf("ListenEndpoint: %v", err)
+				}
+				client, err = Dial(testContext(t, 10*time.Second), "sctp4", nil, endpointAddr(t, e))
+				if err != nil {
+					t.Fatalf("Dial: %v", err)
+				}
+				if server, err = e.PeelOff(onlyAssoc(t, e)); err != nil {
+					t.Fatalf("PeelOff: %v", err)
+				}
 				c = server
+				release = func() { _ = e.Abort() }
+			} else {
+				l, err := cfg.Listen("sctp4", loopback4(0))
+				if err != nil {
+					t.Fatalf("Listen: %v", err)
+				}
+				client, server = dialAccept(t, cfg, l)
+				c = client
+				if side == "accepted" {
+					c = server
+				}
+				release = func() { _ = l.Close() }
 			}
 			fillSendBuffer(t, c, fill(512))
 
@@ -475,7 +496,7 @@ func TestCloseReleasesParkedReaderAndWriter(t *testing.T) {
 			}
 			_ = client.Abort()
 			_ = server.Abort()
-			_ = l.Close()
+			release()
 			if after := openFds(t); after != before {
 				t.Errorf("descriptor count went %d -> %d", before, after)
 			}

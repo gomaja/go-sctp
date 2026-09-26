@@ -16,6 +16,8 @@ import (
 	"net/netip"
 	"os"
 	"sort"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -55,6 +57,7 @@ func unsupportedStubCases() []unsupportedStubCase {
 		cfg Config
 		l   Listener
 		c   Conn
+		e   Endpoint
 	)
 	ctx := context.Background()
 	raddr := &Addr{IPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}, Port: 9}
@@ -68,6 +71,10 @@ func unsupportedStubCases() []unsupportedStubCase {
 		{name: "Config.FileConn", call: func() error { _, err := cfg.FileConn(os.Stdin); return err }},
 		{name: "FileListener", call: func() error { _, err := FileListener(os.Stdin); return err }},
 		{name: "Config.FileListener", call: func() error { _, err := cfg.FileListener(os.Stdin); return err }},
+		{name: "ListenEndpoint", call: func() error { _, err := ListenEndpoint("sctp", nil); return err }},
+		{name: "Config.ListenEndpoint", call: func() error { _, err := cfg.ListenEndpoint("sctp", nil); return err }},
+		{name: "OpenEndpoint", call: func() error { _, err := OpenEndpoint("sctp", nil); return err }},
+		{name: "Config.OpenEndpoint", call: func() error { _, err := cfg.OpenEndpoint("sctp", nil); return err }},
 		{name: "InstallAuthKey", call: func() error { return InstallAuthKey(nil, 1, []byte("k")) }},
 		{name: "ActivateAuthKey", call: func() error { return ActivateAuthKey(nil, 1) }},
 		{name: "Listener.Accept", call: func() error { _, err := l.Accept(); return err }},
@@ -196,6 +203,102 @@ func unsupportedStubCases() []unsupportedStubCase {
 		{name: "Conn.SetStreamSchedulerValue", call: func() error { return c.SetStreamSchedulerValue(1, 7) }},
 		{name: "Conn.PRStreamStatus", call: func() error { _, err := c.PRStreamStatus(1, PRTTL); return err }},
 		{name: "Conn.PRAssocStatus", call: func() error { _, err := c.PRAssocStatus(PRTTL); return err }},
+		{name: "Endpoint.Connect", call: func() error { _, err := e.Connect(raddr); return err }},
+		{name: "Endpoint.SendMsg", call: func() error { _, err := e.SendMsg(3, []byte("x"), SendOptions{}); return err }},
+		{name: "Endpoint.RecvMsg", call: func() error { _, _, err := e.RecvMsg(make([]byte, 1)); return err }},
+		{name: "Endpoint.PeelOff", call: func() error { _, err := e.PeelOff(3); return err }},
+		{name: "Endpoint.CloseAssoc", call: func() error { return e.CloseAssoc(3) }},
+		{name: "Endpoint.AbortAssoc", call: func() error { return e.AbortAssoc(3, nil) }},
+		{name: "Endpoint.AssocIDs", call: func() error { _, err := e.AssocIDs(); return err }},
+		{name: "Endpoint.AssocCount", call: func() error { _, err := e.AssocCount(); return err }},
+		{name: "Endpoint.LocalAddrs", call: func() error { _, err := e.LocalAddrs(3); return err }},
+		{name: "Endpoint.PeerAddrs", call: func() error { _, err := e.PeerAddrs(3); return err }},
+		{name: "Endpoint.AutoClose", call: func() error { _, err := e.AutoClose(); return err }},
+		{name: "Endpoint.SetAutoClose", call: func() error { return e.SetAutoClose(time.Second) }},
+		{name: "Endpoint.Addr", value: true, call: func() error {
+			if a := e.Addr(); a != nil {
+				return zeroValueErr(a)
+			}
+			return nil
+		}},
+		{name: "Endpoint.BindAdd", call: func() error { return e.BindAdd(ip) }},
+		{name: "Endpoint.BindRemove", call: func() error { return e.BindRemove(ip) }},
+		{name: "Endpoint.SetDeadline", call: func() error { return e.SetDeadline(time.Now()) }},
+		{name: "Endpoint.SetReadDeadline", call: func() error { return e.SetReadDeadline(time.Now()) }},
+		{name: "Endpoint.SetWriteDeadline", call: func() error { return e.SetWriteDeadline(time.Now()) }},
+		{name: "Endpoint.Close", call: e.Close},
+		{name: "Endpoint.Abort", call: e.Abort},
+		{name: "Endpoint.SyscallConn", call: func() error { _, err := e.SyscallConn(); return err }},
+	}
+}
+
+// TestUnsupportedConstructorsCheckConfigFirst: every constructor that takes
+// a Config checks it as it would on Linux before it reports
+// ErrUnsupported, so that a mistake in a Config is reported on every
+// platform, as a refusal matching syscall.EINVAL that names the field, in
+// the *net.OpError Linux reports it in, with the same Op, network and
+// addresses; only a Config Linux would accept reaches ErrUnsupported (v1
+// TestSocketConfigPreAssociationUnsupportedParity).
+func TestUnsupportedConstructorsCheckConfigFirst(t *testing.T) {
+	ctx := context.Background()
+	laddr := &Addr{IPs: []netip.Addr{netip.MustParseAddr("127.0.0.2")}, Port: 7}
+	raddr := &Addr{IPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}, Port: 9}
+	type call struct {
+		run            func() error
+		op, net        string
+		source, remote string // the addresses the error names, "" for none
+	}
+	calls := func(cfg *Config) map[string]call {
+		return map[string]call{
+			"Dial":           {func() error { _, err := cfg.Dial(ctx, "sctp4", laddr, raddr); return err }, "dial", "sctp4", laddr.String(), raddr.String()},
+			"Listen":         {func() error { _, err := cfg.Listen("", laddr); return err }, "listen", "sctp", "", laddr.String()},
+			"ListenEndpoint": {func() error { _, err := cfg.ListenEndpoint("sctp6", laddr); return err }, "listen", "sctp6", "", laddr.String()},
+			"OpenEndpoint":   {func() error { _, err := cfg.OpenEndpoint("sctp", nil); return err }, "listen", "sctp", "", ""},
+		}
+	}
+	addrString := func(a net.Addr) string {
+		if a == nil {
+			return ""
+		}
+		return a.String()
+	}
+	valid := &Config{
+		FragmentsDisabled:  new(true),
+		FragmentInterleave: new(InterleaveAssocs),
+		RTOInfo:            &RTOInfo{Initial: 500 * time.Millisecond, Max: 2 * time.Second, Min: 200 * time.Millisecond},
+		DelayedSACK:        &DelayedSACK{Delay: 200 * time.Millisecond, Frequency: 2},
+	}
+	for name, c := range calls(valid) {
+		if err := c.run(); !errors.Is(err, ErrUnsupported) || !errors.Is(err, errors.ErrUnsupported) {
+			t.Errorf("%s with a valid Config = %v, want ErrUnsupported", name, err)
+		}
+	}
+	invalid := &Config{DelayedSACK: &DelayedSACK{Delay: 501 * time.Millisecond}}
+	for name, c := range calls(invalid) {
+		err := c.run()
+		if !errors.Is(err, syscall.EINVAL) || !strings.Contains(err.Error(), "Config.DelayedSACK.Delay") {
+			t.Errorf("%s with an invalid Config = %v, want the refusal naming Config.DelayedSACK.Delay", name, err)
+		}
+		if errors.Is(err, ErrUnsupported) {
+			t.Errorf("%s with an invalid Config reached ErrUnsupported: %v", name, err)
+		}
+		var opErr *net.OpError
+		if !errors.As(err, &opErr) || opErr.Op != c.op || opErr.Net != c.net || addrString(opErr.Source) != c.source || addrString(opErr.Addr) != c.remote {
+			t.Errorf("%s with an invalid Config = %#v, want a *net.OpError with Op %s, Net %s, Source %q and Addr %q", name, err, c.op, c.net, c.source, c.remote)
+		}
+	}
+	for name, run := range map[string]func() error{
+		"FileConn":     func() error { _, err := (&Config{NoDelay: new(true)}).FileConn(os.Stdin); return err },
+		"FileListener": func() error { _, err := (&Config{NoDelay: new(true)}).FileListener(os.Stdin); return err },
+	} {
+		err := run()
+		if !errors.Is(err, syscall.EINVAL) || errors.Is(err, ErrUnsupported) {
+			t.Errorf("%s with a Config it cannot take = %v, want the refusal matching EINVAL", name, err)
+		}
+		var opErr *net.OpError
+		if !errors.As(err, &opErr) || opErr.Op != "file" || opErr.Net != "sctp" {
+			t.Errorf("%s with a Config it cannot take = %#v, want a *net.OpError with Op file", name, err)
+		}
 	}
 }
 
