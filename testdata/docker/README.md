@@ -1,7 +1,8 @@
 # Linux socket test suite (Docker)
 
-SCTP does not exist on macOS: `sctp.ListenSCTP`-style calls fail with
-"SCTP is unsupported on darwin/arm64", so every socket-backed test has to
+SCTP does not exist on macOS: `sctp.Listen` and the other constructors
+return an error matching `sctp.ErrUnsupported` there, and the socket-backed
+tests, in the `*_linux_test.go` files, are not even built, so they have to
 run against a real Linux SCTP stack. `linux-suite.sh` runs the package's
 tests inside a `--privileged` `golang:1.26.5-bookworm` container (falling
 back to the newest `golang:1.26.*-bookworm` tag it can find if that exact

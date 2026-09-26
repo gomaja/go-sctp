@@ -688,6 +688,14 @@ func TestAcceptAfterPeerClosedWithData(t *testing.T) {
 					t.Errorf("read after the message = %v, want io.EOF", err)
 				}
 			}
+			// Linux handed the socket over closed, and answers shutdown(2)
+			// on a closed socket with ENOTCONN (net/ipv4/af_inet.c:
+			// inet_shutdown).
+			if err := server.Shutdown(); !errors.Is(err, syscall.ENOTCONN) {
+				t.Errorf("Shutdown = %v, want an error matching ENOTCONN", err)
+			} else if opErr, ok := err.(*net.OpError); !ok || opErr.Op != "close" {
+				t.Errorf("Shutdown's error = %#v, want a *net.OpError with Op close", err)
+			}
 			start := time.Now()
 			if err := server.Close(); err != nil {
 				t.Errorf("Close = %v, want nil", err)

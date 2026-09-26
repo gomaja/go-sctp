@@ -672,9 +672,11 @@ func TestSelfConnectedDetection(t *testing.T) {
 		// sctp_v6_from_addr_param, whose every caller passes iif 0), so
 		// it decodes without a zone.
 		{"link-local peer without the local zone", addrOf(9, "::1", "fe80::1%eth0"), addrOf(9, "::1", "fe80::1"), true},
-		// The other way round does not arise — a local link-local address
-		// always carries its interface index — so a zoned peer address
-		// must match a local address exactly.
+		// The other way round does not arise on a dialed association, the
+		// only kind selfConnected is asked about: its local link-local
+		// addresses always carry their interface index
+		// (sctp_v6_copy_addrlist), so a zoned peer address must match a
+		// local address exactly.
 		{"zoned peer, zone-less local", addrOf(9, "fe80::1"), addrOf(9, "fe80::1%eth0"), false},
 	} {
 		if got := conn(tc.l, tc.r).selfConnected(); got != tc.want {
@@ -686,9 +688,9 @@ func TestSelfConnectedDetection(t *testing.T) {
 	}
 }
 
-// TestDialRefusesSelfConnectWithLinkLocalAddresses: on an AF_INET6 socket
-// bound to the wildcard, the association's local set holds the host's
-// link-local addresses with their zones, while the peer set of a
+// TestDialRefusesSelfConnectWithLinkLocalAddresses: on a dialed AF_INET6
+// socket bound to the wildcard, the association's local set holds the
+// host's link-local addresses with their zones, while the peer set of a
 // self-connection, which the socket learns from its own INIT and INIT ACK
 // address parameters, holds the same addresses without one (net/sctp/ipv6.c:
 // sctp_v6_from_addr_param stores scope id 0, its iif argument at every

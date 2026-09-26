@@ -86,7 +86,13 @@ func (s socketStyle) String() string {
 // Notifications. Typed settings therefore win over anything Control wrote.
 // Then the socket is bound, and connected or put in listening state.
 type Config struct {
-	// Control is called with the new socket before any typed setting is applied.
+	// Control is called with the new socket before any typed setting is
+	// applied. As for net.Dialer and net.ListenConfig, network is the
+	// network the call names ("sctp" for an empty one), and address is the
+	// remote address for Dial and the local one for Listen, ListenEndpoint
+	// and OpenEndpoint, "" when there is none. c supports Control only: its Read and Write return
+	// syscall.EINVAL, since nothing can be sent or received yet. An error
+	// Control returns ends the constructor, which closes the socket.
 	Control func(network, address string, c syscall.RawConn) error
 
 	// NotificationHandler, when set, receives every notification before a read
@@ -377,9 +383,9 @@ func unsupportedField(field, why string) error {
 
 // prepare validates c for style and returns the immutable snapshot a
 // constructor applies to a real socket. A nil c is treated as a zero
-// Config, so that a nil-receiver Config method — none exist in this file
-// yet, but Dial, Listen, ListenEndpoint and OpenEndpoint will all reach
-// prepare this way — never has to special-case it separately. Every
+// Config, so that a Config method called on a nil *Config, which is how
+// Dial, Listen, ListenEndpoint, OpenEndpoint, FileConn and FileListener
+// reach it, never has to special-case it separately. Every
 // refusal is built with invalidArg (matching syscall.EINVAL) and names the
 // Config field it refused, except FragmentInterleave set to
 // InterleaveStreams, which Linux cannot deliver and which prepare refuses

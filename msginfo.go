@@ -21,8 +21,11 @@
 // lchunk->sinfo.sinfo_ppid"), and the receive side copies the wire value
 // back out just as directly (net/sctp/ulpqueue.c: sctp_ulpq_tail_data sets
 // event->ppid straight from chunk->subh.data_hdr->ppid;
-// net/sctp/ulpevent.c: sctp_ulpevent_read_rcvinfo, sctp_ulpevent_read_nxtinfo
-// copy it again into rcv_ppid/nxt_ppid). appendSendCmsgs and parseRecvCmsgs
+// net/sctp/stream_interleave.c: sctp_ulpevent_idata does the same for an
+// I-DATA chunk's first fragment, "event->ppid =
+// chunk->subh.idata_hdr->ppid"; net/sctp/ulpevent.c:
+// sctp_ulpevent_read_rcvinfo, sctp_ulpevent_read_nxtinfo copy it again
+// into rcv_ppid/nxt_ppid). appendSendCmsgs and parseRecvCmsgs
 // are where this package performs the htonl/ntohl the RFC leaves to the
 // user. Nothing here calls sendmsg or recvmsg itself, so the file carries
 // no build tag and is exercised on every platform the package builds for.
@@ -59,10 +62,11 @@ type SendOptions struct {
 	// socket Linux honours the destination address alone). The zero value
 	// means the kernel's choice, normally the primary path. The address must
 	// be one of PeerAddrs; Linux refuses any other with EADDRNOTAVAIL
-	// (sctp_sendmsg_new_asoc). Path is accepted on connections from Dial and
-	// Accept only. SendMsg refuses it on an Endpoint (where the kernel would
-	// look the association up by address, not by id) and on a connection from
-	// Endpoint.PeelOff (where Linux silently ignores the destination).
+	// (sctp_sendmsg_new_asoc). Path is accepted on the one-to-one sockets:
+	// connections from Dial, Accept and FileConn. SendMsg refuses it on an
+	// Endpoint (where the kernel would look the association up by address,
+	// not by id) and on a connection from Endpoint.PeelOff (where Linux
+	// silently ignores the destination).
 	//
 	// A link-local Path without a zone, the form PeerAddrs reports a peer
 	// address in when the peer listed it in its INIT or INIT ACK, gets its
@@ -87,7 +91,10 @@ type SendOptions struct {
 
 	// NoWait makes a single attempt (MSG_DONTWAIT) instead of waiting for
 	// send-buffer space. A refusal returns an error matching syscall.EAGAIN,
-	// and guarantees that nothing of the message was queued: Linux waits for
+	// whose net.Error Timeout method reports true, as syscall.EAGAIN's own
+	// does: tell a refusal from a passed deadline with errors.Is, against
+	// syscall.EAGAIN or os.ErrDeadlineExceeded. A refusal also
+	// guarantees that nothing of the message was queued: Linux waits for
 	// or refuses buffer space before it builds the message, so it queues a
 	// message whole or not at all. The message may therefore be resent without
 	// risk of duplication. It affects only this call, not other writers on the
@@ -114,13 +121,14 @@ type SendOptions struct {
 	NoWait bool
 }
 
-type SndInfo struct { // struct sctp_sndinfo
-	Stream  uint16
-	Flags   SendFlags // as a default (DefaultSndInfo), SendUnordered only; see below
-	PPID    uint32
-	Context uint32 // returned in SendFailed if the message is not delivered
-}
-
+// SndInfo is struct sctp_sndinfo (RFC 6458 §5.3.4): the stream, flags,
+// payload protocol identifier and context of one message sent, in
+// SendOptions.Info, or of every message sent without one, as the socket's
+// default. PPID is in host byte order; the package converts it to the
+// network byte order the peer receives (RFC 6458 §5.3.4 leaves that to the
+// application). The association id travels as Endpoint.SendMsg's own
+// argument.
+//
 // As a socket default (Config.DefaultSndInfo, Conn.SetDefaultSndInfo),
 // Flags may hold only SendUnordered. Linux refuses SendSACKImmediately there
 // with EINVAL (sctp_setsockopt_default_sndinfo), so the package refuses it
@@ -128,8 +136,25 @@ type SndInfo struct { // struct sctp_sndinfo
 // default flags, and setting SCTP_DEFAULT_SNDINFO overwrites it. The package
 // restores the default PrInfo after every default SndInfo it sets, so the
 // two defaults stay independent, as their two setters suggest.
+//
+// There is no end-of-record flag: RFC 6458 Verified Erratum 6111 adds
+// SCTP_EOR for explicit end-of-record marking, which Linux does not
+// implement (include/uapi/linux/sctp.h defines neither SCTP_EOR nor
+// SCTP_EXPLICIT_EOR), so every send is one whole message.
+type SndInfo struct {
+	Stream  uint16
+	Flags   SendFlags // as a default, SendUnordered only
+	PPID    uint32
+	Context uint32 // returned in SendFailed if the message is not delivered
+}
 
-type PrInfo struct { // struct sctp_prinfo, RFC 7496
+// PrInfo is struct sctp_prinfo (RFC 6458 §5.3.7): a message's PR-SCTP
+// policy (RFC 3758) and its value, in SendOptions.PR, or the socket's
+// default (Config.DefaultPrInfo, Conn.SetDefaultPrInfo). PRTTL takes a
+// lifetime in whole milliseconds; PRRtx a retransmission count and PRPrio a
+// priority, 0 highest (RFC 7496 §4.2). PR-SCTP must have been negotiated
+// (Config.PartialReliability) for a policy to take effect.
+type PrInfo struct {
 	Policy PRPolicy
 	TTL    time.Duration // PRTTL: lifetime
 	Value  uint32        // PRRtx: retransmission limit; PRPrio: priority
@@ -144,7 +169,15 @@ type MsgInfo struct {
 	HasNxt       bool    // ReceiveNxtInfo is on and another message is queued
 }
 
-type RcvInfo struct { // struct sctp_rcvinfo, RFC 6458 §5.3.5
+// RcvInfo is struct sctp_rcvinfo (RFC 6458 §5.3.5): what the kernel
+// reports about a message received, in MsgInfo.Rcv. PPID is in host byte
+// order. Context is the association's receive context (SetDefaultContext).
+// SSN is the stream sequence number of the DATA chunk (RFC 9260 §3.3.1);
+// under I-DATA (RFC 8260), which numbers messages with a 32-bit MID
+// instead, Linux fills it from part of the MID, with which it shares
+// storage (include/net/sctp/ulpevent.h: struct sctp_ulpevent), so it is not
+// a sequence number there.
+type RcvInfo struct {
 	Stream    uint16
 	SSN       uint16
 	Unordered bool
@@ -155,7 +188,11 @@ type RcvInfo struct { // struct sctp_rcvinfo, RFC 6458 §5.3.5
 	AssocID   AssocID
 }
 
-type NxtInfo struct { // struct sctp_nxtinfo, RFC 6458 §5.3.6
+// NxtInfo is struct sctp_nxtinfo (RFC 6458 §5.3.6): what the kernel
+// reports about the next message queued, in MsgInfo.Nxt, when
+// ReceiveNxtInfo is on. PPID is in host byte order. Notification says that
+// the next message is a notification.
+type NxtInfo struct {
 	Stream       uint16
 	Unordered    bool
 	Notification bool
@@ -188,10 +225,10 @@ func validateSendOptions(opts *SendOptions) error {
 
 	// The policy and TTL checks themselves live in validatePrInfo
 	// (options.go), shared with Config.DefaultPrInfo's validation: RFC
-	// 6458 §5.3.7's "In the case of SCTP_PR_SCTP_TTL, the lifetime is
-	// provided in pr_value" and RFC 7496 §4.2's table ("SCTP_PR_SCTP_TTL |
-	// Lifetime in ms") apply the same way to a default as to a per-message
-	// send.
+	// 6458 §5.3.7's pr_value ("In the case of SCTP_PR_SCTP_TTL, the
+	// lifetime in milliseconds is specified.") and RFC 7496 §4.2's table
+	// ("SCTP_PR_SCTP_TTL | Lifetime in ms") apply the same way to a
+	// default as to a per-message send.
 	if pr := opts.PR; pr != nil {
 		if err := validatePrInfo("SendOptions.PR", pr); err != nil {
 			return err
@@ -324,16 +361,16 @@ func appendSendCmsgs(dst []byte, snd *SndInfo, assoc AssocID, pr *PrInfo, key *u
 // data recvmsg() returned (kernel order, whatever mix of records it chose
 // to attach) and flags is the msg_flags it returned alongside it. It walks
 // oob structurally the way for_each_cmsghdr/__cmsg_nxthdr do
-// (include/linux/socket.h, v6.12, lines 132-164), but a header whose
-// declared length does not fit the remaining bytes simply ends the walk
-// here, rather than failing it. That is deliberately different from the
-// send side: sctp_msghdr_parse (net/sctp/socket.c) treats the same CMSG_OK
-// failure as -EINVAL, because there it is validating a buffer a caller
-// built by hand. Here oob is what the kernel's own put_cmsg
-// (net/core/scm.c) produced from a real recvmsg(), and put_cmsg's own
-// truncation already sets MSG_CTRUNC, checked below, when it runs out of
-// room; a short trailing record is exactly what that produces, not a sign
-// the buffer is malformed.
+// (include/linux/socket.h, v6.12, lines 132-164). oob is what the kernel's
+// own put_cmsg (net/core/scm.c) wrote, and when put_cmsg runs out of room
+// it sets MSG_CTRUNC, checked below, and clamps the record it is writing:
+// cmsg_len becomes the room that was left, so the record still fits oob but
+// carries less payload than its struct. The per-type length checks below
+// skip such a record rather than read past its payload. A header whose
+// declared length does not fit the remaining bytes, which put_cmsg never
+// writes, ends the walk rather than failing it; the send side's
+// sctp_msghdr_parse (net/sctp/socket.c) refuses the same thing with EINVAL
+// because there it validates a buffer a caller built by hand.
 //
 // EOR comes from MSG_EOR and Notification from MSG_NOTIFICATION. RCVINFO
 // fills Rcv, unless Notification is set, in which case Rcv stays zero even
@@ -466,14 +503,9 @@ func cmsgSpace(n int) int { return sizeCmsghdr + cmsgAlign(n) }
 // "#define CMSG_LEN(len) (sizeof(struct cmsghdr) + (len))"): the exact
 // cmsg_len a control message of payload length n declares. Unlike
 // cmsgSpace it is not rounded up — cmsg_len covers only the header and the
-// real payload — and sctp_msghdr_parse (net/sctp/socket.c) rejects any
-// other value for every SCTP cmsg type it checks the length of, which is
-// every one this package sends or parses. The two exceptions,
-// SCTP_DSTADDRV4 and SCTP_DSTADDRV6, accept any cmsg_len at all
-// (sctp_msghdr_parse's own case for them sets cmsgs->addrs_msg with no
-// length check); this package does not use either, so that exception never
-// applies to anything cmsgLen is called for here (abi.go's own comment on
-// why they are unused).
+// real payload. sctp_msghdr_parse (net/sctp/socket.c) refuses, with EINVAL,
+// an SCTP_SNDINFO, SCTP_PRINFO or SCTP_AUTHINFO record, the three the
+// package sends, whose cmsg_len is anything else.
 func cmsgLen(n int) int { return sizeCmsghdr + n }
 
 // sndCmsgSpace is the worst case for one send's SNDINFO, PRINFO and

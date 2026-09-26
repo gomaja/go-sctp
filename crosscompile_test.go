@@ -73,11 +73,13 @@ var crossCompileSmokeTargets = []struct{ goos, goarch, why string }{
 // only detector for "does it build on platform X" is building it for
 // platform X.
 //
-// js/wasm, wasip1/wasm and plan9/* are deliberately absent. Their syscall
-// packages define neither RawSockaddrInet4 nor AF_INET, which Addr's
-// exported encoding needs, and no version of this package has ever built
-// for them. Supporting them would mean moving exported API behind a build
-// tag, which is a larger promise than the one made here.
+// plan9 is deliberately absent: its syscall package has no Errno type,
+// which the error values of the portable files use, so the package does
+// not build there. js/wasm and wasip1/wasm build, since the Linux
+// sockaddr layouts are encoded byte by byte rather than through the host's
+// syscall types, and report ErrUnsupported like any other platform
+// without SCTP; they are left out so as not to make a build promise for
+// targets nobody has asked for.
 func TestCrossCompileSmoke(t *testing.T) {
 	if testing.Short() {
 		t.Skip("cross-compiling every target takes longer than a unit test")

@@ -151,8 +151,8 @@ func TestParseNotificationRejectsTruncated(t *testing.T) {
 }
 
 // TestParseNotificationZeroAndUnderHeaderLength covers the hostile lengths a
-// declared field can hold below any type's fixed part, including zero
-// (JDK-8067846): every one is ErrShortNotification, never a decoded value.
+// declared field can hold below any type's fixed part, including zero:
+// every one is ErrShortNotification, never a decoded value.
 func TestParseNotificationZeroAndUnderHeaderLength(t *testing.T) {
 	for _, declared := range []int{0, 1, 4, 7} {
 		b := notifSized(EventAssocChange, declared, 64, 0xFF)
@@ -675,6 +675,35 @@ func TestParseNotificationSendFailed(t *testing.T) {
 	}
 }
 
+// TestParseNotificationLongerThanAnyFixedStruct: an SCTP_SEND_FAILED_EVENT
+// carrying the undelivered payload is as long as its header declares,
+// beyond the 148-byte union sctp_notification and beyond
+// NotificationMaxSize, and parses whole. JDK-8067846 is the defect of
+// bounding an event by a fixed struct size instead: a send-failed
+// notification with 101 bytes of payload was rejected as impossible.
+func TestParseNotificationLongerThanAnyFixedStruct(t *testing.T) {
+	for _, payload := range []int{101, NotificationMaxSize + 1} {
+		b := notif(EventSendFailed, sizeSendFailedEvent+payload)
+		for i := sendFailedEventDataOff; i < len(b); i++ {
+			b[i] = byte(i)
+		}
+		n, err := ParseNotification(b)
+		if err != nil {
+			t.Errorf("%d-byte payload, %d-byte event: %v", payload, len(b), err)
+			continue
+		}
+		sf, ok := n.(*SendFailed)
+		if !ok {
+			t.Errorf("%d-byte payload: got %T, want *SendFailed", payload, n)
+			continue
+		}
+		if !bytes.Equal(sf.Data, b[sendFailedEventDataOff:]) {
+			t.Errorf("%d-byte payload: Data holds %d bytes, not the %d the event carries",
+				payload, len(sf.Data), payload)
+		}
+	}
+}
+
 // TestParseNotificationSendFailedUnsent checks the unset case: ssf_flags
 // carrying SCTP_DATA_UNSENT (0) decodes to Sent == false.
 func TestParseNotificationSendFailedUnsent(t *testing.T) {
@@ -1094,14 +1123,15 @@ func TestSendFailedErrorIsDecodedFromNetworkOrder(t *testing.T) {
 // laid out the way a little-endian kernel and a big-endian kernel each
 // actually produce them, rather than against fixtures this host's own
 // NativeEndian built (which only ever proves a decoder agrees with itself
-// on whichever order this test happens to run on). causeFromU16 needs no
-// order parameter — sac_error's bytes are always the network form, on any
-// host — but causeFromU32Order, assocChangeInfoOrder and
-// decodePeerAddrChangeOrder each take one explicitly, so every subtest
-// below calls one of those three package functions, never
-// encoding/binary's LittleEndian/BigEndian directly: the property under
-// test is that this package's own decoding is correct for either order,
-// not that the standard library is.
+// on whichever order this test happens to run on). causeFromU16, which
+// decodes sac_error and sre_error, needs no order parameter: those two
+// 16-bit fields hold the cause in network byte order on any host. The
+// other three decoders, causeFromU32Order (ssf_error, a 32-bit field),
+// assocChangeInfoOrder and decodePeerAddrChangeOrder, each take the order
+// explicitly. Every subtest below calls one of these four package
+// functions, never encoding/binary's LittleEndian/BigEndian directly: the
+// property under test is that this package's own decoding is correct for
+// either order, not that the standard library is.
 func TestCauseDecodingBothKernelByteOrders(t *testing.T) {
 	t.Run("sac_error 00 0c is CauseUserAbort on any host", func(t *testing.T) {
 		if got := ErrorCause(causeFromU16([]byte{0x00, 0x0c})); got != CauseUserAbort {
@@ -1387,6 +1417,10 @@ func TestNotificationAccumulator(t *testing.T) {
 	})
 
 	t.Run("reset drops a buffer larger than the drop cap instead of keeping it", func(t *testing.T) {
+		// Memory held to reassemble one record is not kept past it
+		// beyond the cap. JDK-8261601 is the native form of the same
+		// hazard: OpenJDK's receive path leaked the buffer it allocated
+		// for an oversized notification when it returned early.
 		big := notif(EventAssocChange, sizeAssocChange+notificationDataDropCap+1)
 		var acc notificationAccumulator
 		acc.retain = true
@@ -1420,11 +1454,10 @@ func TestNotificationAccumulator(t *testing.T) {
 	})
 
 	t.Run("reset reuses storage across records without leaking stale bytes", func(t *testing.T) {
-		// JDK-8261601: a per-connection accumulator reused for the next
-		// record must not let the new, shorter record read back any trace
-		// of the old, longer one. Unlike replacing the value outright,
-		// reset must also keep data's capacity, which the allocation check
-		// below pins.
+		// A per-connection accumulator reused for the next record must
+		// not let the new, shorter record read back any trace of the old,
+		// longer one. Unlike replacing the value outright, reset must also
+		// keep data's capacity, which the allocation check below pins.
 		// Poisoned from right after the 8-byte header onward — through
 		// sac_state/sac_error/sac_outbound_streams/sac_inbound_streams/
 		// sac_assoc_id and into sac_info — so a leak is detectable in the

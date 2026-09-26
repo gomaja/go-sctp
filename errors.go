@@ -13,14 +13,17 @@ import (
 	"syscall"
 )
 
-// The ten error variables. Each is returned unwrapped by the call that
-// documents it; callers compare with errors.Is.
+// The ten error variables. A call that reports one of them wraps it, in the
+// *net.OpError of the call or with detail of its own, so compare with
+// errors.Is, never with ==.
 var (
-	// ErrUnsupported is returned by socket-backed entry points on a platform
-	// without SCTP: a non-Linux GOOS, or Linux with the SCTP module absent.
-	// It wraps errors.ErrUnsupported, so errors.Is(err, errors.ErrUnsupported)
-	// holds for it directly; a socket creation failure additionally matching
-	// the kernel's own errno uses unsupportedErr, below, not this variable.
+	// ErrUnsupported is what socket-backed calls report on a platform
+	// without SCTP: a non-Linux GOOS, or Linux with the SCTP module absent
+	// and not loadable, where the error also matches the kernel's
+	// EPROTONOSUPPORT or ESOCKTNOSUPPORT. It wraps errors.ErrUnsupported, so
+	// errors.Is(err, errors.ErrUnsupported) holds too. Config.FragmentInterleave
+	// and SetFragmentInterleave also report it, for InterleaveStreams, the
+	// level Linux cannot keep.
 	ErrUnsupported = fmt.Errorf("sctp: socket operation unsupported: %w", errors.ErrUnsupported)
 
 	// ErrMessageTooLong is ReadMsg's report that a message exceeded the
@@ -235,7 +238,8 @@ func sameAddr(a, b net.Addr) bool {
 // abortInterruptedNotification, endpoint_linux.go) whose result is
 // itself about to be wrapped once by opError/ioOpError. aerr is never
 // joined in as the *net.OpError it already is: Abort's own error is
-// already a *net.OpError with Op "close" (Conn.Close's doc), and joining
+// already a *net.OpError with Op "close" (Conn.closeError, close_linux.go),
+// and joining
 // it whole would put that *net.OpError inside the read's own joined
 // error, which the read's later single wrap would then carry as its
 // cause — two *net.OpError values in one chain from a path that never

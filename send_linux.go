@@ -99,9 +99,15 @@ type sendState struct {
 // from its endpoint when it was set up (net/sctp/associola.c:
 // sctp_association_init), after Config was applied or, for an accepted,
 // peeled or adopted socket, as whoever set it up left them; reading them
-// back rather than copying Config also captures what Control set. A
-// socket the defaults cannot be read from, such as one whose association
-// ended before Accept, starts with zero defaults.
+// back rather than copying Config also captures what Control set. On a
+// socket whose association ended before Accept, no association is left to
+// ask, and Linux answers with the socket's own defaults, which the
+// accepted socket copied from the listener (net/sctp/socket.c:
+// sctp_getsockopt_default_sndinfo and sctp_getsockopt_default_prinfo fall
+// back to them on a one-to-one socket; sctp_sock_migrate copies them with
+// sctp_copy_descendant): the defaults the association started with. A
+// socket the defaults cannot be read from at all starts with zero
+// defaults.
 func (s *sendState) init(c *Conn) {
 	s.bind(&c.term)
 	s.readDefaults(&c.sock)

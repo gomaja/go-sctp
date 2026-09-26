@@ -827,7 +827,8 @@ func (c *Conn) SetDelayedSACK(d *DelayedSACK) error {
 // AdaptationLayer reports the adaptation layer indication this side
 // announced in its INIT or INIT ACK (SCTP_ADAPTATION_LAYER, RFC 6458
 // §8.1.10; RFC 5061 §4.2.6): Config.AdaptationLayer, or, on an accepted
-// connection, its listener's. The peer's arrives as an AdaptationEvent.
+// connection, its listener's. The peer's arrives as an
+// AdaptationIndication notification (EventAdaptationIndication).
 func (c *Conn) AdaptationLayer() (uint32, error) {
 	var b [sizeSetAdaptation]byte
 	if _, err := c.getOpt(optAdaptationLayer, b[:]); err != nil {

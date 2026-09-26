@@ -117,8 +117,10 @@ jobs:
       - name: Build the test environment
         run: sudo testdata/docker/setup-env.sh 1 1
       - name: go test -gcflags=all=-d=checkptr
-        # checkptr instruments every unsafe.Pointer conversion in the
-        # files that import "unsafe" (grep -l '"unsafe"' *.go): abi.go,
+        # checkptr instruments every unsafe.Pointer conversion the build
+        # compiles, the tests' included. The package's own are in the
+        # non-test files that import "unsafe"
+        # (grep -l '"unsafe"' *.go | grep -v _test.go): abi.go,
         # config_linux.go, dial_linux.go, endpoint_linux.go,
         # options_linux.go, send_linux.go, socket_linux.go,
         # syscall_linux_386.go and syscall_linux_other.go. It catches a

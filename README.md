@@ -2,425 +2,308 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- This file includes modifications by gomaja. -->
 
-Stream Control Transmission Protocol (SCTP)
-----
+# go-sctp
 
-A Go binding for the Linux kernel's SCTP stack.
+SCTP sockets for Go on Linux: a binding for the kernel's implementation of
+the Stream Control Transmission Protocol ([RFC 9260](https://www.rfc-editor.org/rfc/rfc9260.html))
+and of its sockets API ([RFC 6458](https://www.rfc-editor.org/rfc/rfc6458.html)).
 
-This package does not implement SCTP. Chunk handling, association setup,
-retransmission, congestion control, path management and checksums are all the
-kernel's; what is here is the socket API around them — `net.Conn` and
-`net.Listener` implementations, the `sctp_*` socket options, ancillary data, and
-the notifications the kernel delivers on the data stream.
+The package does not implement SCTP. The kernel owns the protocol: the
+association state machine, chunks, retransmission, congestion control, path
+management and checksums. The package owns the Go API around it: `net.Conn`
+and `net.Listener` implementations over one-to-one sockets, a one-to-many
+`Endpoint`, message metadata, typed socket options, parsed notifications,
+`net/netip` addresses and a uniform error contract.
 
-Installing
-----
+The package documentation is the reference for every call:
+[pkg.go.dev/github.com/gomaja/go-sctp](https://pkg.go.dev/github.com/gomaja/go-sctp).
 
-The package requires Go 1.21 or newer:
+## Installing
 
 ```
-go get github.com/gomaja/go-sctp
+go get github.com/gomaja/go-sctp@main
 ```
 
-Standards and kernel boundary
-----
+The package needs Go 1.26 or later, and uses the standard library only.
 
-[RFC 9260](https://www.rfc-editor.org/rfc/rfc9260.html) is the current SCTP
-base protocol. It obsoletes RFC 4960 and the changes formerly published as
-RFCs 4460, 6096, 7053 and 8540. [RFC 6458](https://www.rfc-editor.org/rfc/rfc6458.html)
-is the current sockets API. Neither document, by itself, is the complete
-baseline: applicable extension RFCs, updates and errata are recorded in
-[STANDARDS.md](STANDARDS.md), together with links to both the RFC Editor and
-the IETF Datatracker. Recheck those authorities before changing a
-standards-governed subsystem.
+There are no releases: the module is followed on its `main` branch, and Go
+records each commit you get as a pseudo-version. The API documented here
+replaced v1 (v1.0.0 to v1.0.6) under the same module path, with no
+compatibility layer; [MIGRATION.md](MIGRATION.md) maps every v1 identifier
+to its successor. Because both APIs share one module path, and a build uses
+one version of a module, every module in a build must move to the current
+API together.
 
-This distinction matters for conformance claims. The package owns the Go API,
-Linux socket ABI, ancillary-data encoding and notification parsing. The Linux
-kernel owns the RFC 9260 state machine and wire protocol. Tests can therefore
-prove that the wrapper requests an option correctly and that a particular
-kernel produces the expected packets; they cannot make a non-conforming kernel
-conform or establish that every supported kernel implements every extension.
+Use `@main`, not `@latest`, to get the package and to update it. One tag
+above v1.0.6, made on the commit where the current API reached `main`, holds
+the retraction of v1.0.0 to v1.0.6 in its `go.mod` (Go reads retractions
+only from the newest version) and keeps `main`'s pseudo-versions sorting
+above every v1 version; no other tag follows it. Once that tag exists,
+`@latest`, and any tool that follows releases, resolves to it, the commit
+where the current API landed, and v1.0.0 to v1.0.6 show as retracted;
+before it exists, `@latest` resolves to v1.0.6, the old API. Later commits
+are reached only with `@main` or a commit hash, and `go get -u` does not
+move a module from one `main` commit to a newer one.
 
-Four current limitations are explicit:
+## Quick start
 
-- RFC 9653 §7.1 names `SCTP_ACCEPT_ZERO_CHECKSUM`. Current Linux UAPI does
-  not expose that option or the Error Detection Method identifiers, so the
-  package does not invent an option number. RFC 9653 zero-checksum negotiation
-  is unsupported until the kernel publishes an ABI for it.
-- Linux exposes `SCTP_ECN_SUPPORTED`, but RFC 9260 §1.7 records that the old
-  SCTP ECN specification was removed. The option is Linux-specific and
-  experimental, not evidence of support for a current SCTP ECN standard.
-- RFC 6458 §8.1.20 defines a distinct fragment-interleave level 2. Current
-  Linux stores this option as a boolean and reads a level-2 request back as
-  level 1. The wrapper detects that clamp and returns an error matching
-  `errors.ErrUnsupported`; RFC 8260 I-DATA negotiation does not restore the
-  missing receive semantics.
-- RFC 9260 §6.2 recommends a SACK for at least every second SCTP packet and
-  within 200 ms of unacknowledged DATA; a configured delay must not exceed
-  500 ms. `SackTimer` exposes the Linux setting; changing it can deliberately
-  depart from an RFC `SHOULD`, which applications should document.
+A server that echoes every message, and a client, over one-to-one sockets
+used as `net.Listener` and `net.Conn`:
 
-Platforms
-----
+```go
+package main
 
-This package provides a socket-backed SCTP implementation on targets selected
-by Go's `linux` build tag, including Android and Linux/386. The 386 build uses
-Linux's `socketcall` ABI for the socket operations that Go's `syscall` package
-does not expose as separate calls there. On other targets with a real `syscall`
-package — the BSDs, darwin, windows, solaris, illumos and aix — the package
-still compiles, and entry points that need an SCTP socket return
-`ErrUnsupported`, which wraps `errors.ErrUnsupported`:
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/gomaja/go-sctp"
+)
+
+func main() {
+	laddr, err := sctp.ResolveAddr("sctp", "127.0.0.1:0")
+	if err != nil {
+		log.Fatal(err)
+	}
+	ln, err := sctp.Listen("sctp", laddr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				buf := make([]byte, 64<<10)
+				for {
+					n, err := conn.Read(buf) // one message, or its first part
+					if err != nil {
+						return
+					}
+					if _, err := conn.Write(buf[:n]); err != nil { // one message
+						return
+					}
+				}
+			}()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := sctp.Dial(ctx, "sctp", nil, ln.Addr().(*sctp.Addr))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+
+	// SendMsg and RecvMsg carry the SCTP metadata: the stream, the payload
+	// protocol identifier (PPID), and whether a read ended the message.
+	opts := sctp.SendOptions{Info: &sctp.SndInfo{Stream: 0, PPID: 46}}
+	if _, err := conn.SendMsg([]byte("hello"), opts); err != nil {
+		log.Fatal(err)
+	}
+	buf := make([]byte, 64<<10)
+	n, info, err := conn.RecvMsg(buf)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%q, stream %d, complete %v\n", buf[:n], info.Rcv.Stream, info.EOR)
+}
+```
+
+[`example/`](example) is a complete echo server and client, with
+multi-homing, streams, buffer sizes and notifications.
+
+## Overview
+
+- **One-to-one sockets.** `Dial` sets up an association and returns a
+  `*Conn`; `Listen` returns a `*Listener`. `*Conn` implements `net.Conn`,
+  where each `Write` sends one message.
+- **One-to-many sockets.** `ListenEndpoint` and `OpenEndpoint` return an
+  `*Endpoint` carrying many associations, each named by an `AssocID`, and
+  `Endpoint.PeelOff` moves one onto a `*Conn` of its own.
+- **Configuration.** Everything decided before an association exists, the
+  streams and extensions offered in the INIT, socket buffers, defaults and
+  notification subscriptions, is a field of `Config`, whose methods are the
+  constructors. Optional settings are pointers: `NoDelay: new(true)`.
+- **Messages.** `SendMsg` takes a `SendOptions`: stream, PPID and flags,
+  a PR-SCTP policy, an AUTH key, the peer address to send to, and a
+  single-attempt mode (`NoWait`). `RecvMsg` reports each read's metadata,
+  and `ReadMsg` reassembles whole messages. A successful `SendMsg`, and a
+  `RecvMsg` or `Read` of data, make no allocation.
+- **Notifications.** Subscribe with `Config.Notifications` or
+  `Conn.Subscribe`; a `NotificationHandler` receives parsed values such as
+  `*AssocChange` and `*SendFailed`.
+- **The end of an association.** Reads end with `io.EOF` after a graceful
+  end on every kind of connection, and after a failure every read and send
+  returns the same error (`ECONNRESET`, `ETIMEDOUT` or `ECONNABORTED`)
+  instead of hanging.
+- **Errors.** The errors of socket calls are `*net.OpError` values that
+  name the call; test them with `errors.Is`. A refused argument matches `syscall.EINVAL` and
+  names the field, and an option the kernel lacks matches
+  `syscall.ENOPROTOOPT`.
+
+## Kernel requirements
+
+The package never checks a kernel version. It uses an option when a call
+needs it, and a kernel without the option returns its own error for that
+call; nothing else is affected. Each row gives the first upstream Linux
+release whose UAPI header defines the facility (from the headers of every
+release from 2.6.31 to 6.12; no facility disappears in a later release):
+
+| Upstream Linux | Facility | API that needs it |
+|---|---|---|
+| 2.6.31 | `SCTP_SOCKOPT_CONNECTX3` and the base RFC 6458 options | `Dial`, `Listen`, and every option not listed below |
+| 2.6.33 | `SCTP_SACK_IMMEDIATELY` | `SendSACKImmediately` |
+| 3.0 | `SCTP_GET_ASSOC_ID_LIST`, `SCTP_SENDER_DRY_EVENT` | `Endpoint.AssocIDs`, `EventSenderDry` |
+| 3.1 | `SCTP_AUTO_ASCONF` | `AutoASCONF`, `SetAutoASCONF` |
+| 3.8 | `SCTP_GET_ASSOC_STATS` | `Stats` |
+| 3.17 | `SCTP_RECVRCVINFO`, `SCTP_RECVNXTINFO`, `SCTP_DEFAULT_SNDINFO`, the `SNDINFO`/`RCVINFO`/`NXTINFO` messages | every socket: receive metadata is always on |
+| 4.8 | `SCTP_PR_SUPPORTED`, `SCTP_DEFAULT_PRINFO`, `SCTP_PR_ASSOC_STATUS` | `Config.PartialReliability`, `PRSupported`, `DefaultPrInfo`, `PRAssocStatus` |
+| 4.11 | `MSG_MORE` for SCTP | `SendOptions.More` |
+| 4.11 | `SCTP_ENABLE_STREAM_RESET`, `SCTP_RESET_STREAMS`, `SCTP_RESET_ASSOC`, `SCTP_ADD_STREAMS`, `SCTP_STREAM_RESET_EVENT` | stream reconfiguration, `EventStreamReset` |
+| 4.12 | `SCTP_RECONFIG_SUPPORTED`, `SCTP_PR_STREAM_STATUS`, the association-reset and stream-change events | `Config.StreamReconfiguration`, `ReconfigSupported`, `PRStreamStatus`, `EventAssocReset`, `EventStreamChange` |
+| 4.13 | `SCTP_SOCKOPT_PEELOFF_FLAGS` | `Endpoint.PeelOff` |
+| 4.15 | `SCTP_STREAM_SCHEDULER`, `SCTP_STREAM_SCHEDULER_VALUE` (FCFS, priority, round-robin) | `StreamScheduler`, `SchedFCFS`, `SchedPrio`, `SchedRR` |
+| 4.16 | `SCTP_INTERLEAVING_SUPPORTED` | `Config.MessageInterleaving`, `InterleavingSupported` |
+| 4.17 | `SCTP_AUTH_DEACTIVATE_KEY`, the per-message `PRINFO` and `AUTHINFO` messages | `DeactivateAuthKey`, `SendOptions.PR`, `SendOptions.AuthKey` |
+| 4.19 | `SCTP_REUSE_PORT` | `Config.ReusePort` |
+| **5.0** | `SCTP_EVENT` | **every socket**: the package subscribes to `EventAssocChange` on each, which is how it sees an association end; `Config.Notifications`, `Subscribe`, `Subscribed` |
+| 5.4 | `SCTP_ASCONF_SUPPORTED`, `SCTP_AUTH_SUPPORTED`, `SCTP_ECN_SUPPORTED` | `Config.DynamicAddressReconfiguration`, `Config.Authentication`, `Config.ExperimentalECN`, their getters, and `InstallAuthKey`/`ActivateAuthKey` |
+| 5.5 | `SCTP_PEER_ADDR_THLDS_V2`, `SCTP_EXPOSE_POTENTIALLY_FAILED_STATE`, `SCTP_SEND_FAILED_EVENT` | `PathThresholds`, `PFExposure`, `AddrPotentiallyFailed`, `EventSendFailed` |
+| 5.11 | `SCTP_REMOTE_UDP_ENCAPS_PORT` | `RemoteUDPEncapsPort` |
+| 5.14 | `SCTP_PLPMTUD_PROBE_INTERVAL` | `PLPMTUDProbeInterval` |
+| 6.4 | the FC and WFQ stream schedulers (`SCTP_SS_FC`, `SCTP_SS_WFQ`) | `SchedFC`, `SchedWFQ` |
+
+In practice: 5.0 for any socket, since every constructor subscribes with
+`SCTP_EVENT`, and a kernel without it refuses the constructor with an error
+matching `syscall.ENOPROTOOPT`.
+Before 5.5 there is no send-failure notification at all, since the package
+does not use the deprecated `SCTP_SEND_FAILED`, and `SchedFC` and `SchedWFQ`
+are the only facilities that need a kernel newer than 5.14.
+
+Vendor kernels count by facility, not by version number. The RHEL 8 kernel
+is 4.18; the CentOS Stream 8 source at 4.18.0-448.el8 (January 2023) has
+every facility above except the FC and WFQ schedulers, including the
+backported `SCTP_EVENT`, `SCTP_PEER_ADDR_THLDS_V2` and
+`SCTP_SEND_FAILED_EVENT`. Earlier RHEL 8 kernels were not checked.
+
+Some behaviour also depends on `net.sctp` sysctls, and the calls concerned
+say so: `MessageInterleaving` needs `net.sctp.intl_enable`, PR-SCTP is
+offered only while `net.sctp.prsctp_enable` is on, and UDP encapsulation
+needs `net.sctp.udp_port`. Where SCTP is a module, the kernel loads it on
+the first SCTP socket; where it is absent and cannot be loaded, the
+constructors fail with an error matching both `sctp.ErrUnsupported` and the
+kernel's `EPROTONOSUPPORT` (or `ESOCKTNOSUPPORT`).
+
+## Platforms
+
+Sockets work on Linux, on every architecture Go supports, and on Android,
+which Go builds with the `linux` tag. On `linux/386` the socket calls go
+through `socketcall(2)`, and a 32-bit program on a 64-bit kernel uses the
+kernel's 64-bit layout for the options whose layout depends on the word
+size.
+
+On the other platforms, the BSDs, macOS, Windows, Solaris, illumos and AIX
+among them, the package compiles, `ResolveAddr` and `ParseNotification` work,
+and the constructors return a `*net.OpError` that wraps `sctp.ErrUnsupported`,
+which wraps `errors.ErrUnsupported`:
 
 ```go
 if errors.Is(err, errors.ErrUnsupported) {
-        // no SCTP on this platform
+	// no SCTP on this platform
 }
 ```
 
-Two qualifications, both measured rather than assumed.
+`js/wasm` and `wasip1/wasm` compile the same way. `plan9` does not: its
+`syscall` package has no `Errno` type.
 
-`plan9`, `js/wasm` and `wasip1/wasm` do **not** compile: their `syscall`
-packages have no `RawSockaddrInet4`, which address marshalling needs. They have
-no sockets to speak of either, so this is a statement of scope rather than a
-plan.
+What continuous integration runs on each target:
 
-Not every entry point is socket-bound. `ResolveSCTPAddr` is pure Go, compiles
-everywhere, and does its ordinary job, so the `errors.Is` gate above does not
-apply to address resolution.
+| Target | What runs |
+|---|---|
+| `linux/amd64` | The whole suite against the runner's SCTP stack, with Go 1.26 and the latest Go, in both sysctl states (below); again under `-race`, and under `-gcflags=all=-d=checkptr` |
+| `linux/386` | The whole suite, natively on the x86_64 runner, so the `socketcall` path and the 32-bit layouts run against a real kernel; and the raw system-call tests again with the goroutine stack moved at every function call |
+| `linux/s390x` | The tests that need no socket, under qemu: byte order, structure layouts, control messages and addresses on a big-endian machine. qemu's user-mode emulation cannot pass SCTP socket options through, so the socket tests cannot run there |
+| `linux/arm`, `linux/mips`, `linux/386`, `linux/s390x` | `go vet` |
+| 13 targets across Linux, Android, macOS, Windows, FreeBSD and AIX | A build of each (`TestCrossCompileSmoke`) |
+| `darwin`, `windows` | The tests, with `-short` |
+| Two Linux hosts | The wire harness (below) |
 
-`TestCrossCompileSmoke` samples the relevant syscall, word-size, byte-order and
-Linux-build-tag axes during the ordinary suite.
+## Testing
 
-### What each target is actually tested on
-
-Compiling is not running, and this package does fixed-offset reads over kernel
-structures and marshals addresses by hand, so the distinction is worth stating
-rather than leaving to inference.
-
-| Target | What CI exercises |
-| --- | --- |
-| `linux/amd64` | The whole suite against a real SCTP stack, with and without `-race`. |
-| `linux/386` | The whole suite against a real SCTP stack. The runner is x86_64, so a static 32-bit binary executes natively and the `socketcall` wrappers actually run. |
-| `linux/s390x` | Compilation via `TestCrossCompileSmoke` and cross-vet only; public CI has no runtime big-endian execution. |
-| `linux/arm`, `linux/mips` | Compilation and `go vet` only. `mips` is 32-bit big-endian, so it carries both axes and is the least exercised of the set. |
-
-Android is covered by the `linux` build tag and is not separately tested.
-
-Examples
-----
-
-See `example/sctp.go`
-
-```go
-$ cd example
-$ go build
-$ # run example SCTP server
-$ ./example -server -port 1000 -ip 10.10.0.1,10.20.0.1
-$ # run example SCTP client
-$ ./example -port 1000 -ip 10.10.0.1,10.20.0.1
+```
+go test ./...
 ```
 
-Reading messages
-----
+On a machine without SCTP, such as macOS, this runs only the tests that
+need no socket: the socket-backed ones, in the `*_linux_test.go` files, are
+not built there, and a green run proves nothing about them. They run
+against a Linux kernel in Docker:
 
-SCTP is message-oriented, so a read returns either a whole message or part of
-one, and `SCTPRead` gives no way to tell those apart — a message larger than the
-buffer is split, and the remainder arrives looking like a fresh message. Use
-either
-
-- `ReadMsg`, which reassembles a whole message, or
-- `SCTPReadFlags`, testing the returned flags for `MSG_EOR`.
-
-With no `NotificationHandler`, `SCTPReadFlags` also reports
-`MSG_NOTIFICATION`, which distinguishes an event from application data. A
-configured handler consumes notifications before that method returns. Ordinary
-`Read` and `ReadMsg` always skip them. Handler reassembly and notifications
-queued while `ReadMsg` finishes an application record are bounded by
-`NotificationReassemblyLimit`; malformed or oversized events are drained to a
-record boundary and reported. `SCTPReadMsg` performs one raw `recvmsg` and
-exposes payload, caller-sized ancillary data, `MSG_CTRUNC`, framing flags, and
-notifications without applying package policy.
-
-Connection semantics
-----
-
-`SCTPConn` implements Go's [`net.Conn`](https://pkg.go.dev/net#Conn) contract.
-Multiple goroutines may invoke its methods concurrently. Ordinary `Read` and
-`Write`, and listener `Accept`, use Go's runtime network poller:
-
-- `Write` applies backpressure until the complete SCTP message is accepted or
-  an error occurs. `SCTPWrite` and `SCTPWriteInfo` are message-oriented escape
-  hatches: with no write deadline they retain their non-blocking `EAGAIN`
-  behaviour when the send buffer is full; with a deadline they wait through the
-  runtime poller until the message is accepted or the deadline expires.
-- Deadlines are absolute, apply to pending as well as future operations, and
-  may be moved or cleared by another goroutine. Timeout errors satisfy
-  `errors.Is(err, os.ErrDeadlineExceeded)`.
-- `Close` interrupts blocked reads and writes. Operations after close return an
-  error satisfying `errors.Is(err, net.ErrClosed)`.
-- `LocalAddr`, `RemoteAddr` and listener `Addr` remain available after close
-  and return independent snapshots.
-- A connection's `SyscallConn` pins the descriptor only for the duration of
-  each `Control`, `Read` or `Write` callback. A listener's raw connection is
-  Control-only; its `Read` and `Write` return `EINVAL`. No callback may retain
-  the numeric descriptor.
-
-`SCTPListener.SetDeadline` provides the corresponding deadline for pending and
-future `Accept` calls, and listener `Close` interrupts a blocked `Accept`.
-
-`DialContext` releases a non-established attempt promptly when the context is
-done. Its default release path is abortive for compatibility. Protocols that
-must treat timeout or cancellation as a quiet local abandon can opt in
-explicitly:
-
-```go
-conn, err := socketConfig.DialContextWithAbandonPolicy(
-        ctx,
-        "sctp4",
-        nil,
-        peer,
-        sctp.DialAbandonQuiet,
-)
+```
+testdata/docker/linux-suite.sh [-race] [-sysctl on|off] [-run REGEX]
 ```
 
-Pre-association socket configuration
-----
+It runs the whole suite in a privileged `golang:1.26.5-bookworm` container,
+with the environment the tests need: extra loopback addresses, a dummy link
+that silently drops packets to one address, a link with known link-local
+addresses, and the SCTP sysctls. Run it in both sysctl states, `-sysctl on`
+and `-sysctl off` (`net.sctp.auth_enable` and `net.sctp.intl_enable`
+together), since some tests need each; a test that needs the other state
+skips and says so. [testdata/docker/README.md](testdata/docker/README.md)
+explains each step. CI builds the same environment with the same script,
+`testdata/docker/setup-env.sh`.
 
-`SocketConfig.WithPreAssociation` snapshots typed SCTP options that are applied
-after `Control` and `InitMsg`, but before bind, connect, or listen. The
-configuration is validated before a descriptor is opened, so a dependency or
-range error does not call `Control` and cannot leak a socket. A nil
-`*SocketConfig` is safe and behaves like its zero value.
+Some claims can only be proven between two hosts, from the packets
+themselves: that an `Abort` puts an ABORT chunk on the wire at once, that
+`SendSACKImmediately` sets the I bit, that a refused `NoWait` send leaves no
+DATA behind. The wire harness runs the package's own test binary in two
+privileged containers joined by two networks, captures the traffic with
+`tshark`, and checks every claim from the capture:
 
-Boolean options use `SocketOptionDefault`, `SocketOptionEnable`, and
-`SocketOptionDisable`; zero therefore means "leave the kernel default alone",
-not "disable". Numeric options carry an explicit `Set` bit, and delayed SACK
-uses a pointer so nil is unambiguously unset:
-
-```go
-socketConfig := sctp.SocketConfig{
-        InitMsg: sctp.InitMsg{NumOstreams: 32, MaxInstreams: 32},
-}
-cfg := socketConfig.WithPreAssociation(sctp.PreAssociationConfig{
-                PartialReliability:    sctp.SocketOptionEnable,
-                StreamReconfiguration: sctp.SocketOptionEnable,
-                StreamResetMask: sctp.OptionalUint32{
-                        Set: true,
-                        Value: sctp.SCTPEnableResetStreamReq |
-                                sctp.SCTPEnableChangeAssocReq,
-                },
-                Authentication: sctp.SocketOptionEnable,
-                HMACIdentifiers: []uint16{
-                        sctp.SCTPAuthHmacIDSHA256,
-                        sctp.SCTPAuthHmacIDSHA1, // mandatory in RFC 4895
-                },
-                AuthenticatedChunks: []uint8{0}, // DATA
-                FragmentInterleave: sctp.OptionalInt{
-                        Set: true, Value: sctp.SCTPFragmentInterleaveOther,
-                },
-                ReceiveRcvInfo: sctp.SocketOptionEnable,
-                RTOInfo: &sctp.RtoInfo{
-                        Initial: 500, Max: 2000, Min: 200,
-                },
-                DelayedSACK: &sctp.DelayedSACKConfig{
-                        Delay: 200, Frequency: 2,
-                },
-                Notifications: []sctp.NotificationSubscription{{
-                        Type: sctp.SCTP_ASSOC_CHANGE,
-                        State: sctp.SocketOptionEnable,
-                }},
-})
-conn, err := cfg.DialContext(ctx, "sctp4", nil, peer)
+```
+testdata/wire/run.sh [-race] [-run REGEX] [-only wire|twohost]
 ```
 
-Dependencies fail before socket creation: ASCONF requires AUTH; a non-zero
-stream-reset mask requires stream reconfiguration; HMAC identifiers and
-authenticated chunks require AUTH; and RFC 6458 fragment-interleave level 2
-requires `SCTP_RCVINFO` or the deprecated data-I/O event. HMAC lists must
-include SHA-1, and RFC 4895 forbids INIT, INIT-ACK, SHUTDOWN-COMPLETE, and AUTH
-in the authenticated-chunk list. Shared-key bytes and active-key selection stay
-in `Control`, avoiding long-lived secrets in a reusable configuration value.
+It needs only Docker, runs unattended, and its exit status is the verdict.
+CI runs it too; see [testdata/wire/README.md](testdata/wire/README.md).
 
-`RTOInfo` maps to `SCTP_RTOINFO` for `SCTP_FUTURE_ASSOC` (RFC 6458 §8.1.1).
-It lets callers set initial retransmission timeout policy before an
-association exists without wrapping or retaining the raw descriptor. The
-`AssocID` field must be zero or `SCTP_FUTURE_ASSOC`; the kernel interprets
-zero `Initial`, `Max`, or `Min` fields as "leave unchanged".
+## Standards
 
-Current Linux stores `SCTP_FRAGMENT_INTERLEAVE` as a boolean. Requests for
-levels 0 and 1 read back exactly; level 2 reads back as 1, so both
-`PreAssociationConfig` and `SetFragmentInterleave` return an error satisfying
-`errors.Is(err, errors.ErrUnsupported)` instead of claiming level-2 semantics.
-RFC 8260 I-DATA negotiation is separate: `MessageInterleaving` requires a
-non-zero fragment level and the `net.sctp.intl_enable` sysctl, but it does not
-turn a level-1 readback into RFC 6458 level 2.
+The package follows RFC 9260 and RFC 6458 with their verified errata, and
+the extensions Linux implements: RFC 3758, 4895, 5061, 6525, 6951 (updated
+by RFC 8899), 7496, 7829, 8260 and 8899. Each call's documentation names the
+section it implements. [STANDARDS.md](STANDARDS.md) records the status of
+each document in the RFC Editor and the IETF Datatracker, its errata and how
+each is treated, the Internet-Drafts in progress, and where Linux differs
+from the documents. Among those differences:
 
-`DelayedSACKConfig.Delay` is milliseconds. RFC 9260 §6.2 says an implementation
-MUST NOT allow its maximum configured delay to exceed 500 ms, so larger values
-are rejected before a descriptor is opened. That RFC separately recommends no
-more than 200 ms and an acknowledgement for at least every second packet;
-values from 201 through 500 or a frequency above 2 remain available as explicit,
-documented departures from those `SHOULD` recommendations. Every non-zero
-requested delayed-SACK field is read back and must match.
+- Linux stores `SCTP_FRAGMENT_INTERLEAVE` as a boolean, so RFC 6458 §8.1.20's
+  level 2 (`InterleaveStreams`) cannot be kept; the package refuses it with
+  an error matching `ErrUnsupported`.
+- Linux has no socket option for RFC 9653's zero checksum, nor for choosing
+  a congestion-control algorithm, so the package offers neither.
+- `Config.ExperimentalECN` is a Linux option: RFC 9260 §1.7 removed SCTP's
+  ECN appendix, and no current RFC specifies it.
+- RFC 9260 §6.2 caps the delayed-SACK timer at 500 ms, which the package
+  enforces, and recommends 200 ms and a SACK for at least every second
+  packet; a longer setting departs from that recommendation.
 
-One-to-many endpoints add two invariants to the zero value: they enable
-`SCTP_RCVINFO` and RFC 6458 §8.1.20's recommended fragment-interleave level 1
-before associations can exist. They also subscribe to `SCTP_ASSOC_CHANGE`.
-Explicit fragment level 0 or 1 wins; disabling RCVINFO or association-change
-events, or setting one-to-one-only `SCTP_REUSE_PORT`, is rejected.
+[ECOSYSTEM.md](ECOSYSTEM.md) records the survey of other SCTP libraries and
+their issue trackers that shaped this API, and what was adopted from it.
 
-One-to-many endpoints
-----
+## License
 
-`SCTPEndpoint` is the typed `SOCK_SEQPACKET` surface from RFC 6458 §3.1. It is
-intentionally neither a `net.Conn` nor a `net.Listener`: one descriptor owns
-many associations, there is no single remote address, and complete message
-boundaries and association metadata are part of every operation.
-
-```go
-server, err := sctp.ListenSCTPEndpoint("sctp4", local)
-if err != nil {
-        return err
-}
-defer server.Close()
-
-buf := make([]byte, 64<<10)
-n, info, flags, err := server.Receive(buf)
-if err != nil {
-        return err
-}
-if flags&sctp.MSG_NOTIFICATION != 0 {
-        note, err := sctp.ParseNotification(buf[:n])
-        // Association changes carry the endpoint-local association id.
-        _ = note
-        return err
-}
-if flags&sctp.MSG_EOR == 0 {
-        // This is one fragment; continue receiving until MSG_EOR.
-}
-
-_, err = server.Send(buf[:n], &sctp.SndInfo{
-        SID:     info.SID,
-        PPID:    info.PPID,
-        AssocID: int32(info.AssocID),
-}, nil, nil)
-```
-
-`OpenSCTPEndpoint` creates an active-only endpoint. Its `Connect` can be called
-for several peers and returns the endpoint-local association id. Because the
-descriptor is non-blocking, a nil error means setup was started; the
-automatically enabled `SCTP_ASSOC_CHANGE` notification reports `SCTP_COMM_UP`
-or `SCTP_CANT_STR_ASSOC`, following RFC 6458 §3.2 and Verified Erratum 6112.
-`Connect` preserves `EALREADY` and `EISCONN` instead of returning the reserved
-id zero as though another association had been created.
-
-`Receive` automatically requires the non-deprecated `SCTP_RCVINFO` from RFC
-6458 §5.3.5; application data without it returns `ErrMissingReceiveInfo` rather
-than becoming an unrouteable message. `Send` uses `SCTP_SNDINFO` (§5.3.4),
-requires a real association id, and rejects the `FUTURE`, `CURRENT`, and `ALL`
-scope selectors. PPIDs are host-order in both methods and converted at the
-kernel boundary. Linux exposes neither Verified Erratum 6111's `SCTP_EOR` nor
-the `SCTP_EXPLICIT_EOR` option, so every `Send` call is one complete record;
-explicit record assembly across several sends is unavailable.
-
-`AssociationCount` and `AssociationIDs` provide the RFC 6458 §8.2.5-§8.2.6
-snapshots without trusting a kernel count as an unbounded allocation size.
-`LocalAddrs` and `PeerAddrs` query one real association, while `BindAdd` and
-`BindRemove` change the endpoint-wide local address set. `SetAutoClose` and
-`GetAutoClose` expose the one-to-many idle timeout from §8.1.8. Auto-close
-makes terminated association ids eligible for reuse, so applications must
-retire them on the mandatory association-change notification rather than use
-an old id as a permanent peer identity.
-
-Endpoint construction sets fragmented interleave level 1, the one-to-many
-default recommended by RFC 6458 §8.1.20, so a partial delivery from one peer
-does not block every other association. An explicit
-`PreAssociation.FragmentInterleave` level 0 or 1 overrides that default.
-Current Linux stores this option as a boolean and silently reads level 2 back
-as level 1; construction detects that mismatch and reports unsupported instead
-of claiming the distinct level-2 semantics.
-
-Use `CloseAssociation` for a graceful zero-data `SCTP_EOF` shutdown and
-`AbortAssociation` for an immediate `SCTP_ABORT` with optional user cause data
-(RFC 6458 §3.1.5). Both affect only the selected association; `Close` and
-`Abort` still terminate every association owned by the endpoint. `Send`
-rejects these lifecycle flags so a data send cannot accidentally tear down an
-association.
-
-All methods are safe to call concurrently, but all receives consume one shared
-queue and readiness is endpoint-wide rather than association-specific. A
-message split across buffers must be reassembled by one dispatcher, and an
-association needing independent readiness or sustained backpressure should be
-split out with `PeelOff` (RFC 6458 §9.2). The returned `SCTPConn` owns its own
-close-on-exec descriptor; closing the original endpoint does not affect it.
-
-`SocketConfig.OpenEndpoint` and `SocketConfig.ListenEndpoint` provide the same
-pre-bind `Control`, `InitMsg`, `PreAssociation`, and `NotificationHandler`
-configuration surface as one-to-one sockets. The callback's numeric descriptor
-is borrowed only for the callback. Endpoint construction and `PeelOff` keep
-ownership inside the package, so no `NewSCTPConn` wrapper around a borrowed
-descriptor is needed.
-`SyscallConn` provides the same callback-scoped escape after construction;
-the descriptor must not be retained, closed, or wrapped. `Network` reports the
-canonical `sctp`, `sctp4`, or `sctp6` family and `Addr` returns a copy of the
-current endpoint-wide local address set.
-
-Dynamic local addresses
-----
-
-`BindAdd` and `BindRemove` are typed wrappers around `sctp_bindx` for
-`SCTPConn`, `SCTPListener`, and `SCTPEndpoint`:
-
-```go
-extra := &sctp.SCTPAddr{
-        IPAddrs: []net.IPAddr{{IP: net.ParseIP("192.0.2.20")}},
-        Port:    0, // inherit the endpoint's bound port
-}
-if err := conn.BindAdd(extra); err != nil {
-        return err
-}
-defer conn.BindRemove(extra)
-```
-
-The operation is atomic across every address in the value, does not mutate the
-value passed by the caller, and refreshes the endpoint's cached `LocalAddr` or
-`Addr` from the kernel. RFC 6458 §9.1 permits port zero or the existing bound
-port; another port is rejected with `EINVAL`. It also requires `EINVAL` when an
-operation would remove the last address. Linux reports `EBUSY` for that case,
-so the typed methods enforce the RFC result before the syscall. The lower-level
-`SCTPBind` function continues to expose the kernel errno unchanged.
-
-Changing a listener changes the addresses inherited by future associations.
-Changing an established connection can additionally invoke RFC 5061 dynamic
-address reconfiguration, which is optional and must be negotiated before INIT;
-set `PreAssociation.Authentication` and
-`PreAssociation.DynamicAddressReconfiguration` to `SocketOptionEnable` on the
-`SocketConfig` used to dial or listen. A successful local bindx call does not
-mean that the peer has acknowledged the change: RFC 5061 §5.3 defines the
-ASCONF-ACK boundary. RFC 6458 Erratum 4921's IPv4/IPv6 wording remains Held for
-Document Update, so it is reported in `STANDARDS.md` but is not applied as a
-normative correction.
-
-Testing
-----
-
-The package includes Go tests for the public API, Linux socket behavior that is
-reachable from ordinary Go code, parser boundaries and portable build behavior.
-Socket-backed tests require a Linux SCTP stack, which the project CI provisions
-before running the Linux suite. Tests for optional kernel capabilities skip when
-the specific capability they exercise is unavailable.
-
-License
-----
-
-Except where a file states otherwise, this project is licensed under the
-[Apache License, Version 2.0](LICENSE).
-
-Copyright in gomaja's original contributions and modifications belongs to
-gomaja. Upstream-derived portions remain copyright of their respective owners;
-the applicable source files retain those notices and identify gomaja's changes.
-
-`ipsock_linux.go` is derived from the Go standard library and remains licensed
-under the BSD 3-Clause License. Its copyright and license terms are preserved in
-the source file and [GO_LICENSE](GO_LICENSE); [NOTICE](NOTICE) records the
-third-party attribution.
+Licensed under the [Apache License, Version 2.0](LICENSE). Copyright in
+gomaja's contributions belongs to gomaja. Parts of the package are derived
+from Wataru Ishida's go-sctp; the files concerned keep his copyright notice,
+and [NOTICE](NOTICE) lists them. [GO_LICENSE](GO_LICENSE), the BSD 3-Clause
+license of the Go standard library, is kept for code derived from it, which
+NOTICE names when there is any.

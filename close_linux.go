@@ -275,6 +275,15 @@ func (c *Conn) Abort() error {
 // is an empty SCTP_EOF send. A second Shutdown returns nil: Linux ignores
 // a second SHUTDOWN primitive in every shutdown state
 // (net/sctp/sm_statetable.c: sctp_sf_ignore_primitive).
+//
+// Once the association is gone there is nothing to shut down. On a
+// one-to-one socket Shutdown then returns nil: the socket keeps its state,
+// and sctp_shutdown finds no association to act on (net/sctp/socket.c),
+// except on a connection whose association ended before Accept, which
+// Linux handed over closed and answers with ENOTCONN (net/ipv4/af_inet.c:
+// inet_shutdown). On a peeled connection whose failure a read or send has
+// already reported, Shutdown returns that error again, without a send.
+// Errors are *net.OpError with Op "close".
 func (c *Conn) Shutdown() error {
 	if c == nil {
 		return opError("close", "sctp", nil, nil, net.ErrClosed)

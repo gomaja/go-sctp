@@ -142,8 +142,8 @@ type Status struct {
 type AssocStats struct {
 	// MaxRTOTicks is sas_maxrto, copied from the association's own observed
 	// maximum (net/sctp/socket.c: "sas.sas_maxrto =
-	// asoc->stats.max_obs_rto"), in kernel ticks like PathInfo.SRTTTicks
-	// above, and reset by this read.
+	// asoc->stats.max_obs_rto"), in kernel ticks like PathInfo.SRTTTicks,
+	// and reset by this read.
 	MaxRTOTicks uint64
 	MaxRTOAddr  netip.AddrPort
 

@@ -42,7 +42,12 @@ import (
 // connection.
 type NotificationHandler func(Notification) error
 
-// Notification is implemented only by the types below.
+// Notification is one parsed notification: a *AssocChange,
+// *PeerAddrChange, *RemoteError, *Shutdown, *AdaptationIndication,
+// *PartialDelivery, *AuthEvent, *SenderDry, *StreamReset, *AssocReset,
+// *StreamChange or *SendFailed, or an *UnknownNotification for a type the
+// package does not decode. Type reports which; a type switch reaches the
+// fields. The package returns no other type.
 type Notification interface{ Type() EventType }
 
 // NotificationMaxSize is a read buffer size that holds any fixed-size
@@ -54,15 +59,13 @@ type Notification interface{ Type() EventType }
 // data they carry rather than the struct.
 const NotificationMaxSize = 1024
 
-// NotificationReassemblyLimit bounds memory retained while a single
-// notification is being assembled, and is also the largest declared length
-// ParseNotification itself will decode: a header declaring more is refused
-// with ErrNotificationTooLong before anything is allocated to hold it. It
-// is not a bound on what stays retained between one notification and the
-// next — a buffer that large is dropped well before this limit once its
-// notification has been consumed, so a connection that happened to decode
-// one huge notification does not keep that buffer alive for the rest of
-// its life.
+// NotificationReassemblyLimit bounds the memory a connection holds while it
+// reassembles one notification, and is the largest declared length
+// ParseNotification decodes: a header declaring more is refused with
+// ErrNotificationTooLong before anything is allocated to hold it. Between
+// notifications a connection keeps at most 64 KiB of reassembly storage,
+// so one large notification does not keep a buffer of up to this size
+// alive for the rest of the connection's life.
 const NotificationReassemblyLimit = 1 << 20
 
 // notificationDataDropCap is the cap above which reset drops data's
@@ -175,11 +178,14 @@ func (n *SenderDry) Type() EventType { return EventSenderDry }
 // include/uapi/linux/sctp.h), so this struct carries no separate
 // Indication field.
 //
-// Stream and SeqNum identify the aborted message only when I-DATA (RFC
-// 8260) is in use: net/sctp/stream_interleave.c's sctp_intl_abort_pd and
-// sctp_intl_skip pass the real stream and MID in that case, but
+// Stream and SeqNum are filled in only when I-DATA (RFC 8260) is in use;
 // net/sctp/ulpqueue.c's sctp_ulpq_abort_pd, the classic (non-I-DATA) path,
-// always passes zero for both.
+// always passes zero for both. With I-DATA, Stream is the stream of the
+// aborted delivery, and SeqNum is the MID Linux reports: the aborted
+// message's own when the association's receive queue is flushed
+// (net/sctp/stream_interleave.c: sctp_intl_abort_pd), or the MID of the
+// I-FORWARD-TSN skip entry that ended the delivery (sctp_intl_skip, RFC
+// 8260 §2.3.1), which can be past the aborted message's.
 //
 // Unordered is pdapi_flags's bit 0. RFC 6458 §6.1.7 calls the field
 // unused, and net/sctp/ulpevent.c's sctp_ulpevent_make_pdapi still quotes
@@ -189,7 +195,7 @@ func (n *SenderDry) Type() EventType { return EventSenderDry }
 // including on the classic path, which never sets it either.
 type PartialDelivery struct {
 	Stream    uint32 // with I-DATA (RFC 8260) only; Linux reports 0 otherwise
-	SeqNum    uint32 // the aborted message's MID, with I-DATA only; 0 otherwise
+	SeqNum    uint32 // with I-DATA only: the MID Linux reports (see above); 0 otherwise
 	Unordered bool
 	AssocID   AssocID
 }
@@ -271,14 +277,16 @@ func (n *UnknownNotification) Type() EventType {
 // ParseNotification decodes one complete notification. The result copies
 // what it needs and never aliases b.
 //
-// The header's own length field, not len(b), is the event's extent: Linux
-// sets it to the whole size of the event and delivers exactly that many
-// bytes, so anything in b past it belongs to a different read (a caller
-// that passed its whole read buffer rather than b[:n], for one). Trusting
-// len(b) instead — as a byte-for-byte port of the RFC's struct layouts
-// would — reads stale bytes back as event data on a short write; the same
-// wrong trust, the other way, reads past the end of a buffer shorter than
-// the event, the shape of defect JDK-8067846 reports.
+// The header's own length field, not len(b) and not the size of any fixed
+// struct, is the event's extent: Linux sets it to the whole size of the
+// event and delivers exactly that many bytes, so anything in b past it
+// belongs to a different read (a caller that passed its whole read buffer
+// rather than b[:n], for one), and a b shorter than it is refused with
+// ErrShortNotification. An event with a variable tail may be larger than
+// NotificationMaxSize: an SCTP_SEND_FAILED_EVENT carries the undelivered
+// payload. Bounding an event by a fixed struct size instead is the defect
+// JDK-8067846 reports, where a send-failed notification longer than the
+// 148-byte union sctp_notification was rejected as impossible.
 //
 // A malformed embedded address in an SCTP_PEER_ADDR_CHANGE record — an
 // address family this package does not recognise, or one that does not fit
@@ -617,10 +625,10 @@ func assocChangeInfoOrder(b []byte, order binary.ByteOrder) (state AssocChangeSt
 
 // notificationAccumulator reassembles a notification split across reads,
 // bounded by NotificationReassemblyLimit. Storage is per connection and
-// reused across records: reset prepares it for the next one by trimming
-// data to zero length rather than discarding its backing array, so a
-// connection that keeps receiving similarly-sized notifications does not
-// reallocate on every one.
+// reused across records: reset trims data to zero length and keeps its
+// backing array, so a connection that keeps receiving similarly-sized
+// notifications does not reallocate for each one, unless that array has
+// grown past notificationDataDropCap, which reset drops instead.
 //
 // The first sizeAssocChange bytes of every record are collected into a
 // fixed-size, struct-resident prefix regardless of retain, so a caller can
@@ -728,9 +736,10 @@ func (a *notificationAccumulator) head() []byte {
 // finish returns the reassembled record once add has seen exactly its
 // declared length, or the error that stopped it short. The returned slice
 // aliases data: it is valid only until the next add or reset, either of
-// which may overwrite or replace data's backing array. A caller that needs
-// the bytes afterward, such as a NotificationHandler's own copy on the
-// value ParseNotification builds from them, must copy them out first.
+// which may overwrite or replace data's backing array. A caller that keeps
+// the bytes past that point must copy them. ParseNotification does, so the
+// value it builds from them, which a NotificationHandler receives, never
+// aliases data.
 func (a *notificationAccumulator) finish() ([]byte, error) {
 	if a.err != nil {
 		return nil, a.err

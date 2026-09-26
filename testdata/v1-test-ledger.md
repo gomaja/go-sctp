@@ -6,9 +6,10 @@ at commit b6f3db1 (the last commit before v1 was removed), in the root
 removal so it stays reproducible straight from that commit at any later
 point.
 
-Whatever later change ports or retires a row updates its `status` column
-to either `ported → <new test name>` or `retired: <reason the property no
-longer exists>`. A row stays `pending` until something touches it.
+Each row's `status` column says what became of the test: `ported → <the
+test that now pins the property>`, `retired: <why the property no longer
+exists>`, or `split:` for a v1 test that covered two properties, one
+ported and the other retired. Every row has one of them.
 
 ## Generator
 
@@ -45,24 +46,21 @@ order it appears in its file.
 
 ## Closure
 
-Every row but the three below is either `ported →` or `retired:`; a
-`split:` row records one property ported and a sibling property retired
-where a single v1 test covered both.
+Every row is `ported →`, `retired:` or `split:`, which records one
+property ported and a sibling property retired where a single v1 test
+covered both.
 
 | status | count |
 |---|---|
-| ported | 438 |
+| ported | 441 |
 | retired | 66 |
 | split | 2 |
-| pending | 3 |
+| pending | 0 |
 | **total** | **509** |
 
 Recount from the Rows table itself, rather than trusting this table to
 have kept up with every row edit. Only a line starting with "| " and
-having at least 4 `|`-separated fields is a row; `split` is checked
-after `ported`/`retired` since the one legacy row worded "split and
-ported →..." (rather than this file's own `split:` convention) must
-count as split, not ported:
+having at least 4 `|`-separated fields is a row:
 
 ```sh
 awk -F'|' '
@@ -80,16 +78,13 @@ awk -F'|' '
 ' testdata/v1-test-ledger.md
 ```
 
-The 3 remaining `pending` rows are `example/sctp_test.go`'s: `example/main.go`
-does not exist yet, so there is nothing for them to be ported against.
-
 ## Rows
 
 | file | function | status |
 |---|---|---|
-| example/sctp_test.go | TestConfigureBuffersReadsEachConfiguredBuffer | pending |
-| example/sctp_test.go | TestConfigureBuffersLeavesZeroRequestsUnchanged | pending |
-| example/sctp_test.go | TestConfigureBuffersStopsAtEachError | pending |
+| example/sctp_test.go | TestConfigureBuffersReadsEachConfiguredBuffer | ported → TestNewConfigSetsRequestedBuffers and TestBufferSizesFollowTheConfig (example/main_test.go): buffer sizes are Config fields now, set before the socket connects or listens, and a live connection reports them as Linux keeps them, capped and doubled |
+| example/sctp_test.go | TestConfigureBuffersLeavesZeroRequestsUnchanged | ported → TestNewConfigLeavesZeroRequestsUnset (example/main_test.go): a size of 0 leaves the Config field nil, so the kernel's default stands |
+| example/sctp_test.go | TestConfigureBuffersStopsAtEachError | ported → TestBufferSizesStopsAtEachError (example/main_test.go): reading the send buffer, then the receive buffer, stops at the first error and wraps it; the setters it also covered are Config fields now, applied by the constructor |
 | sctp_already_test.go | TestSCTPConnectEALREADYOnNonblockingSocket | ported → TestConnectxReportsEALREADYWhileSetupInFlight (dial_linux_test.go): on the non-blocking socket Dial uses, a second CONNECTX3 to a setup in flight answers EALREADY, never success |
 | sctp_already_test.go | TestSCTPConnectEISCONNOnBlockingSocket | retired: the package no longer connects blocking sockets or exports SCTPConnect; Dial always sets up through a non-blocking CONNECTX3 and confirms establishment itself, so no connect result is ever converted into success |
 | sctp_already_test.go | TestSCTPConnectEALREADYOnBlockingSocketMidHandshake | retired: as above, there is no blocking connect whose EALREADY could be mistaken for an established association |
@@ -126,12 +121,12 @@ does not exist yet, so there is nothing for them to be ported against.
 | sctp_cause_test.go | TestNotificationTypeNumbersMatchTheKernel | ported → TestEnumerationValues (its EventType rows; enums_test.go); its SCTP_SN_TYPE_BASE row retired: 0x8000 is never a real notification on the wire (it is SCTP_DATA_IO_EVENT, a subscription-only pseudo-type from the deprecated EventSubscribe bitmask), so EventType names nothing at it |
 | sctp_cause_test.go | TestNotificationPPIDIsConvertedToHostOrder | ported → TestNotificationPPIDIsConvertedToHostOrder (notification_test.go); only the SendFailed (formerly SendFailedEvent) case remains, since v2 does not implement the legacy SCTP_SEND_FAILED/SndRcvInfo path the other v1 subtest covered |
 | sctp_cause_test.go | TestParseNotificationRejectsADeclaredLengthItDoesNotHave | ported → TestParseNotificationBoundsByDeclaredLength (notification_test.go), same subtests (declared longer than present, a variable tail that did not all arrive, declared exactly what is present, declared shorter than present) plus one more for the NotificationReassemblyLimit bound |
-| sctp_close_fuzz_test.go | FuzzCloseWithTimeout | ported → FuzzLifecycleClose (close_test.go) for the state machine: for every grace period, including zero, negative and sub-microsecond ones, close returns, releases the descriptor exactly once and leaves every later call reporting net.ErrClosed, now also with scripted status polls, failing steps and an Abort during the wait; the half that needs a live socket (checking that the descriptor is really closed) stays pending until the Linux close path exists |
-| sctp_close_fuzz_test.go | TestCloseTimeoutZeroIsImmediate | ported → TestLifecycleCloseNonPositiveGraceAborts (close_test.go) for the state machine: a zero or negative grace goes straight to the abortive close, with no SHUTDOWN, poll or wait; the half that needs a live socket stays pending until the Linux close path exists |
+| sctp_close_fuzz_test.go | FuzzCloseWithTimeout | ported → FuzzLifecycleClose (close_test.go) for the state machine: for every grace period, including zero, negative and sub-microsecond ones, close returns, releases the descriptor exactly once and leaves every later call reporting net.ErrClosed, now also with scripted status polls, failing steps and an Abort during the wait; the live half (the descriptor is really closed, and every later call reports net.ErrClosed) → TestCloseWithNonPositiveGraceAbortsAtOnce, TestDoubleCloseReturnsNetErrClosed and TestCloseDoesNotLeakDescriptors (close_linux_test.go) |
+| sctp_close_fuzz_test.go | TestCloseTimeoutZeroIsImmediate | ported → TestLifecycleCloseNonPositiveGraceAborts (close_test.go) for the state machine: a zero or negative grace goes straight to the abortive close, with no SHUTDOWN, poll or wait; the live half → TestCloseWithNonPositiveGraceAbortsAtOnce (close_linux_test.go): it returns at once, the descriptor is closed, and the peer reads ECONNRESET |
 | sctp_close_fuzz_test.go | TestCloseSubMicrosecondTimeout | ported → TestLifecycleCloseSubMicrosecondGrace (close_test.go); the timeval conversion it guarded no longer exists (the wait is a timer), so the property is that a grace below the first 200 µs backoff step still bounds the one wait and ends in the abortive close |
 | sctp_close_fuzz_test.go | TestCloseChurnUnderLoad | ported → TestDialUnderChurnSucceeds (dial_linux_test.go: churn dialing against concurrent accept goroutines), TestCloseDoesNotLeakDescriptors (close_linux_test.go: no descriptor leak over repeated dial/close/abort cycles) and TestManyClientsCloseDoesNotDisturbPeers (endpoint_linux_test.go: independent concurrent teardown leaves other peers alone): the same worker-pool churn property, split across tests already written for the dial, close and multi-peer paths rather than one combined test |
 | sctp_close_fuzz_test.go | TestCloseRacesWithReadAndWrite | ported → TestCloseReleasesParkedReaderAndWriter (close_linux_test.go): Close proven concurrent with both a parked Read and a parked Write together, across dialed, accepted and peeled connections, under -race |
-| sctp_close_fuzz_test.go | TestAbortDoesNotWait | ported → TestLifecycleAbortFromOpenDoesNotWait (close_test.go) for the state machine: an Abort from open starts no SHUTDOWN, polls nothing and never waits; the half that needs a live socket (against an already aborted peer) stays pending until the Linux close path exists |
+| sctp_close_fuzz_test.go | TestAbortDoesNotWait | ported → TestLifecycleAbortFromOpenDoesNotWait (close_test.go) for the state machine: an Abort from open starts no SHUTDOWN, polls nothing and never waits; the live half → TestAbortAfterPeerAbortDoesNotWait (close_linux_test.go): an Abort against an already aborted peer returns at once |
 | sctp_close_fuzz_test.go | TestPeelOffRacesWithClose | ported → TestPeelOffRacesWithEndpointClose (endpoint_linux_test.go) |
 | sctp_close_fuzz_test.go | TestClosingAPeeledConnectionShutsDownGracefully | ported → TestPeeledCloseShutsDownGracefully (endpoint_linux_test.go) |
 | sctp_close_fuzz_test.go | TestClosingBackpressuredPeeledConnectionRetriesEOF | ported → TestPeeledCloseWithFullSendBuffer (endpoint_linux_test.go); the SCTP_EOF send is made once and never waits for buffer space (net/sctp/socket.c: sctp_sendmsg_check_sflags), so the retry v1 pinned no longer exists, and the test pins what it protected: the queued messages, then io.EOF, before the grace period |
@@ -176,7 +171,7 @@ does not exist yet, so there is nothing for them to be ported against.
 | sctp_deadline_test.go | TestReadDeadlineDoesNotTruncateData | ported → TestReadDeadlines (recv_linux_test.go) |
 | sctp_deadline_test.go | TestReadMsgDeadlineBoundsWholeCall | ported → TestReadDeadlines (recv_linux_test.go) |
 | sctp_deadline_test.go | TestWriteDeadlineInThePast | ported → TestWriteDeadlineInThePast (send_linux_test.go), for Write, SendMsg and a NoWait send, with no sendmsg call made |
-| sctp_deadline_test.go | TestSetDeadlineSetsBoth | ported → TestSetDeadlineSetsBoth (send_linux_test.go); its read half reads through SyscallConn until Read exists |
+| sctp_deadline_test.go | TestSetDeadlineSetsBoth | ported → TestSetDeadlineSetsBoth (send_linux_test.go), a passed deadline failing both a Write and a RecvMsg |
 | sctp_deadline_test.go | TestDeadlineSetFromAnotherGoroutine | ported → TestReadDeadlines (recv_linux_test.go), TestPendingReadObservesLaterDeadline (recv_linux_test.go) |
 | sctp_deadline_test.go | TestWriteDeadlineStateIsAtomicWithPollerUpdate | retired: v1 kept a write-deadline flag that decided whether SCTPWrite waited for buffer space; every send now waits unless SendOptions.NoWait is set, and the deadline lives only in the runtime poller, so there is no state to publish |
 | sctp_deadline_test.go | TestWriteDeadlineStateConcurrentSetters | retired: the write-deadline flag it raced no longer exists (see TestWriteDeadlineStateIsAtomicWithPollerUpdate) |
@@ -546,7 +541,7 @@ does not exist yet, so there is nothing for them to be ported against.
 | sctp_state_test.go | TestPeerStateMatchesKernel | ported → TestEnumerationValues (enums_test.go): the PathState values of enum sctp_spinfo_state |
 | sctp_state_test.go | TestGetStatusReportsEstablished | ported → TestStatusReportsEstablished (options_linux_test.go) |
 | sctp_state_test.go | TestGetStatusAfterShutdown | ported → TestStatusAfterShutdown (options_linux_test.go): the state moves off StateEstablished, or Status reports the kernel's EINVAL once the association is gone, within 3 s, where v1 only logged a state that stayed put |
-| sctp_streams_test.go | TestStreams | ported → TestStreams (send_linux_test.go); the echo reads through SyscallConn until RecvMsg exists |
+| sctp_streams_test.go | TestStreams | ported → TestStreams (send_linux_test.go), the echo read with RecvMsg |
 | sctp_syscall_linux_test.go | TestRawSockoptSyscalls | ported → TestRawSockoptRoundTrip (syscall_linux_test.go); exercises a real SCTP socket and SCTP_NODELAY instead of an AF_UNIX pair and SO_PASSCRED, per the new rawSetsockopt/rawGetsockopt signature (unsafe.Pointer instead of a caller-converted uintptr) |
 | sctp_syscall_linux_test.go | TestRawMessageSyscalls | ported → TestRawMessageSyscalls (syscall_linux_test.go), unchanged in substance (an AF_UNIX pair; the syscalls do not care what kind of socket they are handed) |
 | sctp_syscall_linux_test.go | TestRawRecvmsgStackStorage | ported → TestRawRecvmsgStackStorage (syscall_linux_test.go), unchanged in substance; still the regression test for the 386 storage fix (commit b6f3db1) |

@@ -1153,13 +1153,11 @@ func TestSctp6CarriesIPv4WhateverBindv6only(t *testing.T) {
 	}
 }
 
-// countOpErrors walks err's whole unwrap tree, including a joined error's
-// several causes (Unwrap() []error, as ErrMessageInterrupted's is), and
-// counts every *net.OpError value anywhere in it. A closed descriptor's
-// error collapses to a bare net.ErrClosed before any *net.OpError is
-// built (opError, errors.go), so this walk only needs to recognize the
-// two ordinary unwrap shapes to see every *net.OpError a chain carries,
-// however many operations wrapped along the way.
+// countOpErrors walks err's whole unwrap tree, through both unwrap shapes:
+// a single cause (Unwrap() error, as *net.OpError and *os.SyscallError
+// have) and a joined error's several causes (Unwrap() []error, as an
+// interrupted ReadMsg's is). It counts every *net.OpError value anywhere
+// in it, however many operations wrapped along the way.
 func countOpErrors(err error) int {
 	if err == nil {
 		return 0
@@ -1180,26 +1178,29 @@ func countOpErrors(err error) int {
 	return n
 }
 
-// TestErrorsWrapExactlyOnce pins that Dial, Listen, Read, Write and an
-// option call each produce exactly one *net.OpError in their whole
-// error chain, for a cause that is not itself already closed-descriptor
-// flavoured. A cause that already matches net.ErrClosed, os.ErrClosed or
-// isFileClosingErr collapses to one net.ErrClosed wrap regardless of how
-// many times something tried to wrap it (opError, errors.go), which
-// would silently absorb a real double wrap before this test ever saw
-// it; every case below reaches its *net.OpError through a live,
-// non-closed cause instead — a peer ABORT, an expired deadline, a
-// refused argument or the kernel's own EINVAL — so a reintroduced double
-// wrap has nowhere to hide. Every one of this package's own error paths
-// hands opError, ioOpError, optError or callError a raw cause and
-// returns the result immediately, never wrapping an already-wrapped
-// result a second time; this is the regression test for that invariant
-// staying true as opError's own matching logic (errors.go) changes.
+// TestErrorsWrapExactlyOnce pins that Dial, Listen, Read, Write and the
+// option calls each produce exactly one *net.OpError in their whole error
+// chain. opError (errors.go) passes an existing *net.OpError through
+// unchanged only when it already describes the same operation, the same
+// Op, Net, Source and Addr; any other it wraps as its cause, so a path
+// that wrapped an error a second time, for another operation, would show
+// two here. Every case reaches its error through a live cause, the paths
+// callers actually meet: a Control hook's error, a peer's ABORT, an
+// expired deadline, a refused argument, and the kernel's own EINVAL and
+// ENOENT. Each also checks the cause itself, so that a case whose cause
+// never happened, a missed ABORT ending at the read deadline instead,
+// cannot pass. Every one of this package's own error paths hands
+// opError, ioOpError, optError or callError a raw cause and returns the
+// result immediately, never wrapping an already-wrapped result a second
+// time; this is the regression test for that invariant.
 func TestErrorsWrapExactlyOnce(t *testing.T) {
-	singleWrap := func(t *testing.T, err error) {
+	singleWrap := func(t *testing.T, err, cause error) {
 		t.Helper()
 		if err == nil {
 			t.Fatal("err is nil, want a real error to check")
+		}
+		if !errors.Is(err, cause) {
+			t.Errorf("err = %v, want one matching %v", err, cause)
 		}
 		if n := countOpErrors(err); n != 1 {
 			t.Errorf("err = %#v, has %d *net.OpError values in its chain, want exactly 1", err, n)
@@ -1210,13 +1211,13 @@ func TestErrorsWrapExactlyOnce(t *testing.T) {
 		cause := errors.New("control failed")
 		cfg := &Config{Control: func(string, string, syscall.RawConn) error { return cause }}
 		_, err := cfg.Dial(testContext(t, 5*time.Second), "sctp4", nil, loopback4(1))
-		singleWrap(t, err)
+		singleWrap(t, err, cause)
 	})
 	t.Run("Listen", func(t *testing.T) {
 		cause := errors.New("control failed")
 		cfg := &Config{Control: func(string, string, syscall.RawConn) error { return cause }}
 		_, err := cfg.Listen("sctp4", loopback4(0))
-		singleWrap(t, err)
+		singleWrap(t, err, cause)
 	})
 	t.Run("Read after peer abort", func(t *testing.T) {
 		client, server := connPair(t, nil, nil)
@@ -1232,7 +1233,7 @@ func TestErrorsWrapExactlyOnce(t *testing.T) {
 				break
 			}
 		}
-		singleWrap(t, err)
+		singleWrap(t, err, syscall.ECONNRESET)
 	})
 	t.Run("Read with expired deadline", func(t *testing.T) {
 		client, _ := connPair(t, nil, nil)
@@ -1240,7 +1241,7 @@ func TestErrorsWrapExactlyOnce(t *testing.T) {
 			t.Fatalf("SetReadDeadline: %v", err)
 		}
 		_, err := client.Read(make([]byte, 1))
-		singleWrap(t, err)
+		singleWrap(t, err, os.ErrDeadlineExceeded)
 	})
 	t.Run("Write after peer abort", func(t *testing.T) {
 		client, server := connPair(t, nil, nil)
@@ -1258,32 +1259,33 @@ func TestErrorsWrapExactlyOnce(t *testing.T) {
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
-		singleWrap(t, err)
+		singleWrap(t, err, syscall.ECONNRESET)
 	})
 	t.Run("Write empty message", func(t *testing.T) {
 		client, _ := connPair(t, nil, nil)
 		_, err := client.Write(nil)
-		singleWrap(t, err)
+		singleWrap(t, err, syscall.EINVAL)
 	})
 	t.Run("SetPrimaryAddr non-peer address", func(t *testing.T) {
 		client, _ := connPair(t, nil, nil)
 		err := client.SetPrimaryAddr(netip.MustParseAddr("192.0.2.1"))
-		singleWrap(t, err)
+		singleWrap(t, err, syscall.EINVAL)
 	})
 	t.Run("SetPrimaryAddr zero value", func(t *testing.T) {
 		client, _ := connPair(t, nil, nil)
 		err := client.SetPrimaryAddr(netip.Addr{})
-		singleWrap(t, err)
+		singleWrap(t, err, syscall.EINVAL)
 	})
 	t.Run("SetPathThresholds non-peer address", func(t *testing.T) {
 		// SetPathThresholds reads the path's current thresholds before
 		// merging in the caller's changes (readThresholds, a getsockopt
 		// wrapped by callError, options_linux.go), unlike SetPrimaryAddr
-		// or SetNoDelay above, which only ever set: this is the one live
-		// cause in this test that reaches callError rather than
-		// optionError or argError.
+		// above, which only sets: this is the one live cause in this test
+		// that reaches callError rather than optionError or argError.
+		// Linux refuses a path that is not the peer's here with ENOENT,
+		// not EINVAL (net/sctp/socket.c: sctp_getsockopt_paddr_thresholds).
 		client, _ := connPair(t, nil, nil)
 		err := client.SetPathThresholds(netip.MustParseAddr("192.0.2.1"), &PathThresholds{})
-		singleWrap(t, err)
+		singleWrap(t, err, syscall.ENOENT)
 	})
 }
