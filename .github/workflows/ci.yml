@@ -79,6 +79,24 @@ jobs:
         # on it.
         run: sudo -E env "PATH=$PATH" go test ./... -count=1 -timeout 900s
 
+  test-linux-arm64:
+    name: test-linux / arm64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+          cache: true
+      - name: Kernel tick rate
+        run: grep -E '^CONFIG_HZ=' "/boot/config-$(uname -r)" || true
+      - name: Build the test environment
+        run: sudo testdata/docker/setup-env.sh 1 1
+      - name: Build the tests
+        run: go test -run '^$' -count=1 ./...
+      - name: go test
+        run: sudo -E env "PATH=$PATH" go test ./... -count=1 -timeout 900s
+
   test-linux-race:
     name: test-linux race, sysctl ${{ matrix.sysctl }}
     runs-on: ubuntu-latest

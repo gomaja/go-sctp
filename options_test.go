@@ -19,6 +19,31 @@ import (
 	"time"
 )
 
+func TestKernelTickReadbackBounds(t *testing.T) {
+	set := 137 * time.Millisecond
+	for _, tc := range []struct {
+		got  time.Duration
+		want bool
+	}{
+		{136 * time.Millisecond, false},
+		{137 * time.Millisecond, true},
+		{140 * time.Millisecond, true},
+		{146 * time.Millisecond, true},
+		{147 * time.Millisecond, false},
+	} {
+		if got := kernelTickReadback(tc.got, set); got != tc.want {
+			t.Errorf("kernelTickReadback(%v, %v) = %t, want %t", tc.got, set, got, tc.want)
+		}
+	}
+}
+
+// Linux msecs_to_jiffies rounds up and jiffies_to_msecs reads the resulting
+// ticks (net/sctp/socket.c: sctp_setsockopt_rtoinfo, sctp_getsockopt_rtoinfo).
+// HZ=100 is a 10 ms tick, so a readback is in [set, set+10ms).
+func kernelTickReadback(got, set time.Duration) bool {
+	return got >= set && got-set < 10*time.Millisecond
+}
+
 // --- zero-value semantics ------------------------------------------------
 
 func TestInitMsgZeroValueIsKernelDefault(t *testing.T) {

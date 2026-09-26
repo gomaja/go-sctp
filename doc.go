@@ -48,6 +48,12 @@
 //	}
 //	conn, err := cfg.Dial(ctx, "sctp", nil, raddr)
 //
+// Linux keeps some durations of an association in kernel ticks: it stores
+// them with msecs_to_jiffies, which rounds up, and reports them with
+// jiffies_to_msecs (net/sctp/socket.c). Reading one back gives the value set
+// rounded up to the tick, exact at HZ=1000 and a multiple of 10 ms at
+// HZ=100; the documentation of each such value says so.
+//
 // [FileConn] and [FileListener] adopt a descriptor inherited from another
 // process.
 //

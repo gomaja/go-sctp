@@ -1037,14 +1037,14 @@ func TestConfigRTOInfoOnDial(t *testing.T) {
 		t.Run(policy.String(), func(t *testing.T) {
 			cfg := &Config{
 				AbandonPolicy: policy,
-				RTOInfo:       &RTOInfo{Initial: 500 * time.Millisecond, Max: 2 * time.Second, Min: 200 * time.Millisecond},
+				RTOInfo:       &RTOInfo{Initial: 501 * time.Millisecond, Max: 2001 * time.Millisecond, Min: 201 * time.Millisecond},
 			}
 			client, _ := connPair(t, cfg, nil)
 			var rto [sizeRTOInfo]byte
 			binary.NativeEndian.PutUint32(rto[rtoInfoAssocIDOff:], uint32(client.AssocID()))
 			getRawOpt(t, mustSyscallConn(t, client), optRTOInfo, rto[:])
-			if i, mx, mn := binary.NativeEndian.Uint32(rto[rtoInfoInitialOff:]), binary.NativeEndian.Uint32(rto[rtoInfoMaxOff:]), binary.NativeEndian.Uint32(rto[rtoInfoMinOff:]); i != 500 || mx != 2000 || mn != 200 {
-				t.Errorf("client RTOInfo = %d/%d/%d ms, want 500/2000/200", i, mx, mn)
+			if i, mx, mn := binary.NativeEndian.Uint32(rto[rtoInfoInitialOff:]), binary.NativeEndian.Uint32(rto[rtoInfoMaxOff:]), binary.NativeEndian.Uint32(rto[rtoInfoMinOff:]); !kernelTickReadback(time.Duration(i)*time.Millisecond, 501*time.Millisecond) || !kernelTickReadback(time.Duration(mx)*time.Millisecond, 2001*time.Millisecond) || !kernelTickReadback(time.Duration(mn)*time.Millisecond, 201*time.Millisecond) {
+				t.Errorf("client RTOInfo = %d/%d/%d ms, want tick-rounded 501/2001/201", i, mx, mn)
 			}
 		})
 	}
@@ -1094,8 +1094,8 @@ func TestConfigNegotiatesOnDial(t *testing.T) {
 		var sack [sizeDelayedSACK]byte
 		binary.NativeEndian.PutUint32(sack[delayedSACKAssocIDOff:], uint32(id))
 		getRawOpt(t, rc, optDelayedAckTime, sack[:])
-		if d, f := binary.NativeEndian.Uint32(sack[delayedSACKDelayOff:]), binary.NativeEndian.Uint32(sack[delayedSACKFrequencyOff:]); d != 137 || f != 2 {
-			t.Errorf("%s: delayed SACK = %d ms/%d, want 137/2", side, d, f)
+		if d, f := binary.NativeEndian.Uint32(sack[delayedSACKDelayOff:]), binary.NativeEndian.Uint32(sack[delayedSACKFrequencyOff:]); !kernelTickReadback(time.Duration(d)*time.Millisecond, 137*time.Millisecond) || f != 2 {
+			t.Errorf("%s: delayed SACK = %d ms/%d, want tick-rounded 137/2", side, d, f)
 		}
 	}
 	var init [sizeInitMsg]byte
