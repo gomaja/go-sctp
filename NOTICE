@@ -6,9 +6,10 @@ Copyright in upstream-derived portions remains with the respective copyright
 holders. Modified files retain those notices and identify gomaja's changes.
 
 Portions of addr.go, close.go, close_linux.go, conn_linux.go,
-dial_linux.go, listener_linux.go, notification.go, socket_linux.go and
-sockaddr.go, and of their tests, are derived from Wataru Ishida's go-sctp;
-those files retain that copyright notice alongside gomaja's.
+dial_linux.go, listener_linux.go, notification.go, send_linux.go,
+socket_linux.go and sockaddr.go, and of their tests, are derived from
+Wataru Ishida's go-sctp; those files retain that copyright notice
+alongside gomaja's.
 
 This distribution currently includes no third-party source code under a
 license other than Apache-2.0; GO_LICENSE (BSD 3-Clause) is kept for a Go

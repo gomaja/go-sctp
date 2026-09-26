@@ -182,20 +182,14 @@ func applyOp(fd int, op *configOp) error {
 		// RFC 6458 §8.1.5.
 		return setIntOpt(fd, ipprotoSCTP, optNoDelay, int32(boolValue(op.on)))
 	case opDefaultSndInfo:
-		// struct sctp_sndinfo, RFC 6458 §8.1.31. sndInfoPPID is already in
-		// the order the kernel keeps (config.go, configOp.sndInfoPPID).
-		var b [sizeSndInfo]byte
-		binary.NativeEndian.PutUint16(b[sndInfoStreamOff:], op.sndInfoStream)
-		binary.NativeEndian.PutUint16(b[sndInfoFlagsOff:], op.sndInfoFlags)
-		binary.NativeEndian.PutUint32(b[sndInfoPPIDOff:], op.sndInfoPPID)
-		binary.NativeEndian.PutUint32(b[sndInfoContextOff:], op.sndInfoContext)
-		return rawSetsockopt(fd, ipprotoSCTP, optDefaultSndInfo, unsafe.Pointer(&b[0]), uintptr(len(b)))
+		// struct sctp_sndinfo, RFC 6458 §8.1.31, set the way
+		// Conn.SetDefaultSndInfo sets it, so that a PR default Control set
+		// survives (send_linux.go). sndInfoPPID is already in the order the
+		// kernel keeps (config.go, configOp.sndInfoPPID).
+		return setDefaultSndInfo(fd, op.sndInfoStream, op.sndInfoFlags, op.sndInfoPPID, op.sndInfoContext)
 	case opDefaultPrInfo:
 		// struct sctp_default_prinfo, RFC 6458 §8.1.32.
-		var b [sizeDefaultPRInfo]byte
-		binary.NativeEndian.PutUint32(b[defaultPRInfoValueOff:], op.prValue)
-		binary.NativeEndian.PutUint16(b[defaultPRInfoPolicyOff:], op.prPolicy)
-		return rawSetsockopt(fd, ipprotoSCTP, optDefaultPRInfo, unsafe.Pointer(&b[0]), uintptr(len(b)))
+		return setDefaultPrInfo(fd, op.prPolicy, op.prValue)
 	case opNotification:
 		return setEvent(fd, op.event, true)
 	default:

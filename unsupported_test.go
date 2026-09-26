@@ -104,6 +104,12 @@ func unsupportedStubCases() []unsupportedStubCase {
 		{name: "Conn.CloseWithTimeout", call: func() error { return c.CloseWithTimeout(time.Second) }},
 		{name: "Conn.Shutdown", call: c.Shutdown},
 		{name: "Conn.Abort", call: c.Abort},
+		{name: "Conn.SendMsg", call: func() error { _, err := c.SendMsg([]byte("x"), SendOptions{}); return err }},
+		{name: "Conn.Write", call: func() error { _, err := c.Write([]byte("x")); return err }},
+		{name: "Conn.DefaultSndInfo", call: func() error { _, err := c.DefaultSndInfo(); return err }},
+		{name: "Conn.SetDefaultSndInfo", call: func() error { return c.SetDefaultSndInfo(&SndInfo{}) }},
+		{name: "Conn.DefaultPrInfo", call: func() error { _, err := c.DefaultPrInfo(); return err }},
+		{name: "Conn.SetDefaultPrInfo", call: func() error { return c.SetDefaultPrInfo(&PrInfo{}) }},
 	}
 }
 

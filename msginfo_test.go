@@ -238,6 +238,36 @@ func TestAppendSendCmsgsEncodesAuthInfoWhenKeySet(t *testing.T) {
 	}
 }
 
+// TestAppendSendCmsgsAuthInfoAlone covers the one send that carries
+// AUTHINFO and nothing else: a Conn send that sets SendOptions.AuthKey but
+// neither Info nor PR, which leaves the association's defaults to the
+// kernel (sctp_sendmsg_update_sinfo applies them only to a message with no
+// SNDINFO) and so must not send an SNDINFO at all.
+func TestAppendSendCmsgsAuthInfoAlone(t *testing.T) {
+	key := uint16(5)
+	buf := make([]byte, sndCmsgSpace)[:0]
+
+	n := appendSendCmsgs(buf, nil, 0, nil, &key)
+	if want := cmsgSpace(sizeAuthInfo); n != want {
+		t.Fatalf("appendSendCmsgs (AUTHINFO only) used %d bytes, want cmsgSpace(sizeAuthInfo) = %d", n, want)
+	}
+	full := fullSlice(buf, n)
+	checkCmsgHeader(t, full, 0, sizeAuthInfo, cmsgAuthInfo)
+	if got := binary.NativeEndian.Uint16(full[sizeCmsghdr+authInfoKeyNumberOff:]); got != 5 {
+		t.Errorf("auth_keynumber = %d, want 5", got)
+	}
+}
+
+// TestAppendSendCmsgsNothingToEncode: with no record requested the encoder
+// writes nothing, so a caller can pass its result straight to
+// msg_controllen.
+func TestAppendSendCmsgsNothingToEncode(t *testing.T) {
+	buf := make([]byte, sndCmsgSpace)[:0]
+	if n := appendSendCmsgs(buf, nil, 0, nil, nil); n != 0 {
+		t.Errorf("appendSendCmsgs with no records used %d bytes, want 0", n)
+	}
+}
+
 // TestAppendSendCmsgsAllThreeFitsSndCmsgSpaceExactly is the worst case
 // SendOptions can produce: SNDINFO, PRINFO and AUTHINFO all present. The
 // total must fit sndCmsgSpace exactly — a too-small buffer for this
@@ -489,6 +519,43 @@ func TestValidateSendOptionsAllocatesNothingOnSuccess(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Errorf("validateSendOptions allocated %.1f times on success, want 0", allocs)
+	}
+}
+
+// --- validateDefaultSndInfo -------------------------------------------------
+
+// TestValidateDefaultSndInfo covers the rule a socket-default SndInfo
+// follows, whether it comes from Config.DefaultSndInfo or
+// Conn.SetDefaultSndInfo: SendUnordered is the only flag it may hold.
+// Linux refuses SCTP_SACK_IMMEDIATELY in a default with EINVAL
+// (sctp_setsockopt_default_sndinfo), and the other bits it accepts there
+// have no SendFlags value.
+func TestValidateDefaultSndInfo(t *testing.T) {
+	for _, ok := range []SendFlags{0, SendUnordered} {
+		if err := validateDefaultSndInfo("SetDefaultSndInfo", &SndInfo{Stream: 2, Flags: ok, PPID: 9}); err != nil {
+			t.Errorf("flags %v: unexpected error %v", ok, err)
+		}
+	}
+	for _, bad := range []SendFlags{SendSACKImmediately, SendUnordered | SendSACKImmediately, SendFlags(1 << 5)} {
+		err := validateDefaultSndInfo("SetDefaultSndInfo", &SndInfo{Flags: bad})
+		wantRefused(t, err, "SetDefaultSndInfo.Flags")
+	}
+}
+
+// BenchmarkAppendSendCmsgs measures encoding the worst-case control
+// message, SNDINFO, PRINFO and AUTHINFO together, into a reused buffer (v1
+// BenchmarkBuildSndRcvCmsg measured its SCTP_SNDRCV builder, which
+// allocated its buffer on every call).
+func BenchmarkAppendSendCmsgs(b *testing.B) {
+	var cbuf [sndCmsgSpace]byte
+	snd := SndInfo{Stream: 1, Flags: SendUnordered, PPID: 0x1234, Context: 4}
+	pr := PrInfo{Policy: PRTTL, TTL: time.Second}
+	key := uint16(3)
+	b.ReportAllocs()
+	for b.Loop() {
+		if n := appendSendCmsgs(cbuf[:0], &snd, 0, &pr, &key); n != sndCmsgSpace {
+			b.Fatalf("appendSendCmsgs used %d bytes, want %d", n, sndCmsgSpace)
+		}
 	}
 }
 

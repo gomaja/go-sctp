@@ -36,6 +36,8 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // The three decode failures a malformed or truncated reply can produce.
@@ -76,6 +78,12 @@ func sockaddrSize(family int) (int, error) {
 // socket to ::ffff:0.0.0.0 instead would restrict it to IPv4, which is what
 // "sctp4" is for; "sctp"/"sctp6" get the dual-stack wildcard.
 //
+// ip and its zone are formatted into an error only as copies (ip.String,
+// strings.Clone), so that encodeAddr leaks nothing of ip: SendMsg encodes
+// SendOptions.Path with it, and a parameter that leaked would make the
+// compiler move whatever a caller's SendOptions points to onto the heap
+// on every send.
+//
 // A zone is accepted only on a link-local unicast IPv6 address — the only
 // scope SCTP, a unicast transport, ever addresses with one — and refused
 // with an error matching syscall.EINVAL on an IPv4 address or a
@@ -94,10 +102,10 @@ func encodeAddr(dst []byte, family int, ip netip.Addr, port uint16) (int, error)
 	switch family {
 	case afInet:
 		if zone != "" {
-			return 0, invalidArg("address %s has a zone but the socket family is AF_INET", ip)
+			return 0, invalidArg("address %s has a zone but the socket family is AF_INET", ip.String())
 		}
 		if !unmapped.Is4() {
-			return 0, invalidArg("address %s is not IPv4 for an AF_INET socket", ip)
+			return 0, invalidArg("address %s is not IPv4 for an AF_INET socket", ip.String())
 		}
 		if len(dst) < sizeSockaddrIn {
 			return 0, invalidArg("a %d byte buffer is too small for a %d byte sockaddr_in", len(dst), sizeSockaddrIn)
@@ -119,10 +127,10 @@ func encodeAddr(dst []byte, family int, ip netip.Addr, port uint16) (int, error)
 		var scope uint32
 		if zone != "" {
 			if unmapped.Is4() {
-				return 0, invalidArg("address %s has a zone but is IPv4", ip)
+				return 0, invalidArg("address %s has a zone but is IPv4", ip.String())
 			}
 			if !unmapped.IsLinkLocalUnicast() {
-				return 0, invalidArg("address %s has a zone but is not link-local", ip)
+				return 0, invalidArg("address %s has a zone but is not link-local", ip.String())
 			}
 			s, err := encodeZone(zone)
 			if err != nil {
@@ -180,32 +188,116 @@ func encodeAddrs(family int, ips []netip.Addr, port uint16) ([]byte, error) {
 // interface index v1's zoneID also accepted — into the numeric scope id
 // sin6_scope_id carries. The interface name is tried first and the decimal
 // form is the fallback, the same order net's own zoneCache.index resolves a
-// zone in (net/interface.go); v1 tried the numeric form first. An empty
-// zone is scope id 0; an explicit zone of "0" is refused, since Linux
-// refuses to bind to, or connect or send to, a link-local address with
-// scope id 0 (net/sctp/ipv6.c: sctp_inet6_bind_verify checks a local
-// address being bound, sctp_inet6_send_verify a destination address being
-// connected or sent to — both return 0 when the address is link-local and
-// sin6_scope_id is zero) and encodeAddr only reaches this function for a
-// link-local address.
+// zone in (net/interface.go); v1 tried the numeric form first. Names are
+// resolved through zoneIndexes, so that encoding a zoned address, which
+// every SendOptions.Path on a link-local address does, allocates nothing
+// once the name is known. An empty zone is scope id 0; an explicit zone of
+// "0" is refused, since Linux refuses to bind to, or connect or send to, a
+// link-local address with scope id 0 (net/sctp/ipv6.c:
+// sctp_inet6_bind_verify checks a local address being bound,
+// sctp_inet6_send_verify a destination address being connected or sent to
+// — both return 0 when the address is link-local and sin6_scope_id is
+// zero) and encodeAddr only reaches this function for a link-local
+// address.
 func encodeZone(zone string) (uint32, error) {
 	if zone == "" {
 		return 0, nil
 	}
-	if ifi, err := net.InterfaceByName(zone); err == nil {
-		if ifi.Index < 0 {
-			return 0, invalidArg("zone %q: interface index %d is negative", zone, ifi.Index)
+	if index, ok := zoneIndexes.index(zone); ok {
+		if index < 0 {
+			return 0, invalidArg("zone %q: interface index %d is negative", strings.Clone(zone), index)
 		}
-		return uint32(ifi.Index), nil
+		return uint32(index), nil
 	}
 	n, err := strconv.ParseUint(zone, 10, 32)
 	if err != nil {
-		return 0, invalidArg("zone %q is not an interface name or a decimal index", zone)
+		return 0, invalidArg("zone %q is not an interface name or a decimal index", strings.Clone(zone))
 	}
 	if n == 0 {
-		return 0, invalidArg("zone %q: a link-local address needs a non-zero scope id", zone)
+		return 0, invalidArg("zone %q: a link-local address needs a non-zero scope id", strings.Clone(zone))
 	}
 	return uint32(n), nil
+}
+
+// zoneCacheTTL is how long zoneCache answers from the interface table it
+// last read before it reads the table again: the interval net's own zone
+// cache uses (net/interface.go: ipv6ZoneCache.update), so an interface
+// deleted and created again under the same name, with a new index, is
+// followed at least as promptly as net follows it.
+const zoneCacheTTL = 60 * time.Second
+
+// zoneIndexes resolves every zone name encodeZone sees.
+var zoneIndexes = zoneCache{interfaces: net.Interfaces, now: time.Now}
+
+// zoneCache maps interface names to interface indexes from a copy of the
+// host's interface table, like net's ipv6ZoneCache (net/interface.go). A
+// lookup the table answers costs a map read and allocates nothing, where
+// net.InterfaceByName asks the kernel for the whole table every time. The
+// table is read again when it is older than zoneCacheTTL, and when a name
+// is missing from it, so an interface created since the last read is
+// found at once; a missing name that is a decimal number is the one
+// exception, answered from the table as it is, since encodeZone then
+// takes the number as the index and a send to an address zoned by index
+// would otherwise read the table on every call. The table holds one entry
+// per interface the host had at the last read, and nothing else, so its
+// size is bounded by the host's interfaces, not by the names asked for.
+type zoneCache struct {
+	mu      sync.RWMutex
+	byName  map[string]int
+	fetched time.Time // when byName was read; zero before the first read
+
+	interfaces func() ([]net.Interface, error) // net.Interfaces; replaced by tests
+	now        func() time.Time                // time.Now; replaced by tests
+}
+
+// index returns the index of the interface named name, and whether the
+// host has one.
+func (z *zoneCache) index(name string) (int, bool) {
+	now := z.now()
+	z.mu.RLock()
+	idx, ok := z.byName[name]
+	fresh := !z.fetched.IsZero() && now.Sub(z.fetched) < zoneCacheTTL
+	z.mu.RUnlock()
+	if fresh && (ok || isDecimal(name)) {
+		return idx, ok
+	}
+	return z.refresh(now, name)
+}
+
+// refresh reads the interface table again, unless another caller has
+// since read one this lookup may use, and looks name up in the result. A
+// table that cannot be read leaves the previous one in place.
+func (z *zoneCache) refresh(now time.Time, name string) (int, bool) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if z.fetched.After(now) {
+		// Read after this lookup started: as fresh as a read here would be.
+		idx, ok := z.byName[name]
+		return idx, ok
+	}
+	if ift, err := z.interfaces(); err == nil {
+		byName := make(map[string]int, len(ift))
+		for _, ifi := range ift {
+			byName[ifi.Name] = ifi.Index
+		}
+		z.byName = byName
+		z.fetched = now
+	}
+	idx, ok := z.byName[name]
+	return idx, ok
+}
+
+// isDecimal reports whether s is a non-empty run of ASCII digits.
+func isDecimal(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // zoneName maps a scope id back to the interface name it still names, else

@@ -146,3 +146,21 @@ func (c *Conn) Shutdown() error { return ErrUnsupported }
 
 // Abort reports ErrUnsupported: SCTP sockets exist only on Linux.
 func (c *Conn) Abort() error { return ErrUnsupported }
+
+// SendMsg reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SendMsg([]byte, SendOptions) (int, error) { return 0, ErrUnsupported }
+
+// Write reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) Write([]byte) (int, error) { return 0, ErrUnsupported }
+
+// DefaultSndInfo reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) DefaultSndInfo() (*SndInfo, error) { return nil, ErrUnsupported }
+
+// SetDefaultSndInfo reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetDefaultSndInfo(*SndInfo) error { return ErrUnsupported }
+
+// DefaultPrInfo reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) DefaultPrInfo() (*PrInfo, error) { return nil, ErrUnsupported }
+
+// SetDefaultPrInfo reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetDefaultPrInfo(*PrInfo) error { return ErrUnsupported }
