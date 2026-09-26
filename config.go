@@ -670,8 +670,8 @@ func (c *Config) prepare(style socketStyle) (*prepared, error) {
 		// SCTP_UNORDERED | SCTP_ADDR_OVER | SCTP_ABORT | SCTP_EOF; this
 		// package narrows a default to the one bit SendFlags exposes as
 		// meaningful there (msginfo.go's SndInfo doc comment).
-		if f := c.DefaultSndInfo.Flags &^ SendUnordered; f != 0 {
-			return nil, invalidArg("Config.DefaultSndInfo.Flags %#04x sets bits outside SendUnordered", uint16(c.DefaultSndInfo.Flags))
+		if err := validateDefaultSndInfo("Config.DefaultSndInfo", c.DefaultSndInfo); err != nil {
+			return nil, err
 		}
 		ops = append(ops, configOp{
 			kind:           opDefaultSndInfo,

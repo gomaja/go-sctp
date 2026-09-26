@@ -56,12 +56,12 @@ order it appears in its file.
 | sctp_already_test.go | TestIsNonblockingDetectsBothStates | ported → TestIsNonblockingDetectsBothStates (socket_linux_test.go); the helper now backs the descriptor-mode assertions (TestDescriptorsAreNonBlockingAndCloseOnExec, TestDialContextReturnsPollableDescriptor) and reports false, failing those assertions, for a descriptor it cannot query |
 | sctp_backlog_test.go | TestListenBacklogUsesKernelMaximum | ported → TestListenBacklogUsesKernelMaximum (listener_linux_test.go) |
 | sctp_backlog_test.go | TestReadSomaxconnMatchesProc | ported → TestReadSomaxconnMatchesProc (listener_linux_test.go) |
-| sctp_bench_test.go | BenchmarkSCTPWrite | pending |
-| sctp_bench_test.go | BenchmarkSCTPWriteNoInfo | pending |
-| sctp_bench_test.go | BenchmarkSCTPWriteInfo | pending |
+| sctp_bench_test.go | BenchmarkSCTPWrite | ported → BenchmarkSendMsg (send_linux_test.go), against a helper-process peer so that allocs/op counts the sender alone; sends now wait for buffer space, so v1's EAGAIN retry accounting is gone |
+| sctp_bench_test.go | BenchmarkSCTPWriteNoInfo | ported → BenchmarkWrite (send_linux_test.go) |
+| sctp_bench_test.go | BenchmarkSCTPWriteInfo | ported → BenchmarkSendMsg, BenchmarkSendMsgInfoPR (send_linux_test.go) |
 | sctp_bench_test.go | BenchmarkSCTPRead | pending |
-| sctp_bench_test.go | BenchmarkBuildSndRcvCmsg | pending |
-| sctp_bench_test.go | BenchmarkToBuf | pending |
+| sctp_bench_test.go | BenchmarkBuildSndRcvCmsg | ported → BenchmarkAppendSendCmsgs (msginfo_test.go): the control message is now encoded into the connection's own buffer, SNDINFO in place of the deprecated SCTP_SNDRCV |
+| sctp_bench_test.go | BenchmarkToBuf | retired: toBuf, the binary.Write-based struct serialiser v1's send path used, no longer exists; every record is written field by field at abi.go's offsets, and BenchmarkAppendSendCmsgs measures the encoder that replaced it |
 | sctp_bench_test.go | BenchmarkParseSndRcvInfo | pending |
 | sctp_bench_test.go | BenchmarkResolveSCTPAddr | pending |
 | sctp_bench_test.go | BenchmarkToRawSockAddrBuf | pending |
@@ -124,8 +124,8 @@ order it appears in its file.
 | sctp_contract_test.go | TestAcceptDoesNotReturnATypedNilConn | pending |
 | sctp_contract_test.go | TestAcceptedConnDoesNotInheritTheAcceptDeadline | pending |
 | sctp_contract_test.go | TestAbortWakesAParkedReader | pending |
-| sctp_contract_test.go | TestErrorsAfterCloseWrapNetErrClosed | pending |
-| sctp_contract_test.go | TestWriteWithZeroLengthBufferIsANoOp | pending |
+| sctp_contract_test.go | TestErrorsAfterCloseWrapNetErrClosed | ported → TestSendErrorsCarryConnectionContext (send_linux_test.go) for Write and SendMsg; the read calls stay pending until Read, RecvMsg and ReadMsg exist |
+| sctp_contract_test.go | TestWriteWithZeroLengthBufferIsANoOp | retired: Write no longer answers (0, nil) for an empty buffer; an SCTP message has at least one byte (RFC 9260 §6.2), so Write refuses it with EINVAL like SendMsg, pinned by TestSendEmptyRefused (send_linux_test.go) |
 | sctp_contract_test.go | TestPrimaryAddrSettersRejectMultipleAddresses | pending |
 | sctp_contract_test.go | TestIPv6AssociationRoundTrip | pending |
 | sctp_contract_test.go | TestSetSelectReadFDUsesNativeWordSize | pending |
@@ -135,11 +135,11 @@ order it appears in its file.
 | sctp_deadline_test.go | TestReadDeadlineCleared | pending |
 | sctp_deadline_test.go | TestReadDeadlineDoesNotTruncateData | pending |
 | sctp_deadline_test.go | TestReadMsgDeadlineBoundsWholeCall | pending |
-| sctp_deadline_test.go | TestWriteDeadlineInThePast | pending |
-| sctp_deadline_test.go | TestSetDeadlineSetsBoth | pending |
+| sctp_deadline_test.go | TestWriteDeadlineInThePast | ported → TestWriteDeadlineInThePast (send_linux_test.go), for Write, SendMsg and a NoWait send, with no sendmsg call made |
+| sctp_deadline_test.go | TestSetDeadlineSetsBoth | ported → TestSetDeadlineSetsBoth (send_linux_test.go); its read half reads through SyscallConn until Read exists |
 | sctp_deadline_test.go | TestDeadlineSetFromAnotherGoroutine | pending |
-| sctp_deadline_test.go | TestWriteDeadlineStateIsAtomicWithPollerUpdate | pending |
-| sctp_deadline_test.go | TestWriteDeadlineStateConcurrentSetters | pending |
+| sctp_deadline_test.go | TestWriteDeadlineStateIsAtomicWithPollerUpdate | retired: v1 kept a write-deadline flag that decided whether SCTPWrite waited for buffer space; every send now waits unless SendOptions.NoWait is set, and the deadline lives only in the runtime poller, so there is no state to publish |
+| sctp_deadline_test.go | TestWriteDeadlineStateConcurrentSetters | retired: the write-deadline flag it raced no longer exists (see TestWriteDeadlineStateIsAtomicWithPollerUpdate) |
 | sctp_dialcontext_test.go | TestDialContextAlreadyCancelledOpensNoSocket | ported → TestDialContextAlreadyCancelledOpensNoSocket (dial_linux_test.go) |
 | sctp_dialcontext_test.go | TestDialContextTimeoutAbandonsTheAttempt | ported → TestDialContextTimeoutAbandonsTheAttempt (dial_linux_test.go) |
 | sctp_dialcontext_test.go | TestDialContextCancelDuringDial | ported → TestDialContextCancelDuringDial (dial_linux_test.go) |
@@ -155,7 +155,7 @@ order it appears in its file.
 | sctp_eintr_test.go | TestReadSurvivesSignals | pending |
 | sctp_eintr_test.go | TestAcceptSurvivesSignals | pending |
 | sctp_eintr_test.go | TestGracefulCloseSurvivesSignals | pending |
-| sctp_eintr_test.go | TestDialNeverReturnsAnUnestablishedAssociation | pending |
+| sctp_eintr_test.go | TestDialNeverReturnsAnUnestablishedAssociation | ported → TestDialNeverReturnsAnUnestablishedAssociation (send_linux_test.go), with Write as the probe and SCTP_STATUS read directly; EINTR on sends is pinned by TestSendRetriesEINTR and TestSendSurvivesSignals |
 | sctp_eintr_test.go | TestSCTPReadRetriesEINTRDeterministically | pending |
 | sctp_eintr_test.go | TestSCTPReadRetriesEINTRUnderLoad | pending |
 | sctp_eintr_test.go | TestCloseTerminatesPromptlyUnderSignals | pending |
@@ -202,9 +202,9 @@ order it appears in its file.
 | sctp_error_contract_linux_test.go | TestListenErrorCarriesOperationAndAddress | pending |
 | sctp_error_contract_linux_test.go | TestDialContextErrorCarriesOperationAndAddresses | pending |
 | sctp_error_contract_linux_test.go | TestAcceptErrorCarriesListenerContext | pending |
-| sctp_error_contract_linux_test.go | TestNetConnIOErrorsCarryConnectionContext | pending |
-| sctp_error_contract_linux_test.go | TestNetConnIOErrorsPreserveExplicitNetwork | pending |
-| sctp_error_contract_linux_test.go | TestClosedNetConnErrorsRetainConnectionContext | pending |
+| sctp_error_contract_linux_test.go | TestNetConnIOErrorsCarryConnectionContext | ported → TestSendErrorsCarryConnectionContext (send_linux_test.go) for the write half; the read half stays pending until Read exists |
+| sctp_error_contract_linux_test.go | TestNetConnIOErrorsPreserveExplicitNetwork | ported → TestSendErrorsCarryConnectionContext/sctp4 (send_linux_test.go) for the write half; the read half stays pending until Read exists |
+| sctp_error_contract_linux_test.go | TestClosedNetConnErrorsRetainConnectionContext | ported → TestSendErrorsCarryConnectionContext (send_linux_test.go) for the write half; the read half stays pending until Read exists |
 | sctp_error_contract_linux_test.go | TestNetConnGracefulCloseReturnsDirectEOF | pending |
 | sctp_error_contract_linux_test.go | TestClosedListenerAcceptErrorRetainsListenerContext | pending |
 | sctp_error_contract_linux_test.go | TestRawConnectErrorRemainsUnwrapped | pending |
@@ -216,15 +216,15 @@ order it appears in its file.
 | sctp_event_test.go | TestSubscribeEventRejectsUnknownType | pending |
 | sctp_event_test.go | TestSubscribeEventOnClosedConn | pending |
 | sctp_event_test.go | TestSetRecvInfoOptions | pending |
-| sctp_extensions_test.go | TestDefaultSndInfoRoundTrip | pending |
-| sctp_extensions_test.go | TestDefaultSndInfoRejectsShortOption | pending |
+| sctp_extensions_test.go | TestDefaultSndInfoRoundTrip | ported → TestDefaultInfoRoundTrip (send_linux_test.go) |
+| sctp_extensions_test.go | TestDefaultSndInfoRejectsShortOption | ported → TestDefaultInfoRoundTrip (send_linux_test.go): a 12-byte SCTP_DEFAULT_SNDINFO is still refused with EINVAL |
 | sctp_extensions_test.go | TestAutoAsconfNeedsBoundSocket | pending |
 | sctp_extensions_test.go | TestPrSupportedFollowsSysctl | pending |
-| sctp_extensions_test.go | TestDefaultPrInfoRoundTrip | pending |
+| sctp_extensions_test.go | TestDefaultPrInfoRoundTrip | ported → TestDefaultInfoRoundTrip (send_linux_test.go) |
 | sctp_extensions_test.go | TestPrPolicyConstantValues | ported → TestEnumerationValues (its PR-policy, stream-reset-mask and HMAC rows; enums_test.go); its SCTP_ENABLE_STRRESET_MASK completeness check has no v2 row of its own — StreamResetMask only names the three bits the mask actually carries |
 | sctp_extensions_test.go | TestOptionNumbersMatchHeader | ported → TestOptionNumbers (abi_test.go); its SCTP_PEER_ADDR_THLDS, SCTP_SOCKOPT_PEELOFF and SCTP_SOCKOPT_CONNECTX rows retired: v2 uses only SCTP_PEER_ADDR_THLDS_V2, SCTP_SOCKOPT_PEELOFF_FLAGS and SCTP_SOCKOPT_CONNECTX3, so the superseded option numbers are never defined |
 | sctp_extensions_test.go | TestAssocIDAndSinfoConstantsMatchHeader | ported → TestAssocScopeSelectors (abi_test.go); its SCTP_NOTIFICATION == MSG_NOTIFICATION row has no v2 counterpart, see TestAssocScopeSelectors's doc comment |
-| sctp_extensions_test.go | TestDefaultPrInfoRejectsUnknownPolicy | pending |
+| sctp_extensions_test.go | TestDefaultPrInfoRejectsUnknownPolicy | ported → TestDefaultInfoRoundTrip (send_linux_test.go): the package now refuses the policy before any system call |
 | sctp_extensions_test.go | TestPrStreamStatusNeedsAssociation | pending |
 | sctp_extensions_test.go | TestPrAssocStatus | pending |
 | sctp_extensions_test.go | TestPeerAddrThldsV2RoundTrip | pending |
@@ -293,7 +293,7 @@ order it appears in its file.
 | sctp_multihome_test.go | TestMultihomedBindRejectsAnUnusableAddress | ported → TestMultihomedBindRejectsAnUnusableAddress (listener_linux_test.go) |
 | sctp_netconn_contract_test.go | TestNetConnPendingReadObservesLaterDeadline | pending |
 | sctp_netconn_contract_test.go | TestSCTPListenerPendingAcceptObservesLaterDeadline | pending |
-| sctp_netconn_contract_test.go | TestNetConnWriteWaitsForBufferSpace | pending |
+| sctp_netconn_contract_test.go | TestNetConnWriteWaitsForBufferSpace | ported → TestSendWaitsForBufferSpace (send_linux_test.go): "deadline set while waiting" and "Close" |
 | sctp_netconn_contract_test.go | TestNetConnDeadlineSettersAfterClose | pending |
 | sctp_netconn_contract_test.go | TestNetConnAddressesRemainStableAfterClose | pending |
 | sctp_netconn_contract_test.go | TestNetConnZeroLengthClosedParity | pending |
@@ -396,10 +396,10 @@ order it appears in its file.
 | sctp_rawconn_test.go | TestSyscallConnAfterCloseReturnsNetErrClosed | ported → TestSyscallConnAfterCloseReturnsNetErrClosed (close_linux_test.go) |
 | sctp_rawconn_test.go | TestListenerSyscallConnReadWriteReturnEINVAL | ported → TestListenerSyscallConnReadWriteReturnEINVAL (listener_linux_test.go) |
 | sctp_rawconn_test.go | TestListenerRawConnAfterCloseDoesNotUseRecycledFD | ported → TestListenerRawConnAfterCloseDoesNotUseRecycledFD (listener_linux_test.go) |
-| sctp_rawconn_test.go | TestSCTPWriteWithoutDeadlineReturnsEAGAIN | pending |
-| sctp_rawconn_test.go | TestSCTPWriteWithDeadlineWaitsForSpace | pending |
-| sctp_rawconn_test.go | TestSCTPWriteDeadlineExpiresWhileSendBufferFull | pending |
-| sctp_rawconn_test.go | TestSCTPWriteDeadlineInThePastDoesNotWait | pending |
+| sctp_rawconn_test.go | TestSCTPWriteWithoutDeadlineReturnsEAGAIN | ported → TestNoWaitRefusalQueuesNothing (send_linux_test.go): a single attempt is now SendOptions.NoWait, not the absence of a write deadline |
+| sctp_rawconn_test.go | TestSCTPWriteWithDeadlineWaitsForSpace | ported → TestSendWaitsForBufferSpace/drain (send_linux_test.go): every send waits, with or without a deadline |
+| sctp_rawconn_test.go | TestSCTPWriteDeadlineExpiresWhileSendBufferFull | ported → TestSendWaitsForBufferSpace/deadline_set_before and /deadline_set_while_waiting (send_linux_test.go) |
+| sctp_rawconn_test.go | TestSCTPWriteDeadlineInThePastDoesNotWait | ported → TestWriteDeadlineInThePast (send_linux_test.go) |
 | sctp_rawconn_test.go | TestSyscallConnDoesNotSpinWhenReadyButNotDone | ported → TestSyscallConnDoesNotSpinWhenReadyButNotDone (close_linux_test.go) |
 | sctp_rawconn_test.go | TestSyscallConnCloseUnblocksWait | ported → TestSyscallConnCloseUnblocksWait (close_linux_test.go) |
 | sctp_rawconn_test.go | TestSyscallConnAbortUnblocksWait | ported → TestSyscallConnAbortUnblocksWait (close_linux_test.go) |
@@ -443,7 +443,7 @@ order it appears in its file.
 | sctp_readmsg_test.go | TestReadMsgExactMaxIsComplete | pending |
 | sctp_readmsg_test.go | TestReadMsgOneOverMax | pending |
 | sctp_readmsg_test.go | TestReadMsgTooLongDrainsRemainder | pending |
-| sctp_readmsg_test.go | TestZeroLengthSendIsRefusedByTheKernel | pending |
+| sctp_readmsg_test.go | TestZeroLengthSendIsRefusedByTheKernel | ported → TestSendEmptyRefused (send_linux_test.go): the package now refuses an empty message with EINVAL before any system call, for every combination of options, and rawSendmsg still never substitutes a byte of its own; the peer then receives the next real message first |
 | sctp_readmsg_test.go | FuzzReadMsg | pending |
 | sctp_resolve_linux_test.go | TestExplicitNetworkRejectsTheOtherAddressFamily | ported → TestExplicitNetworkRejectsTheOtherAddressFamily (socket_linux_test.go), with a changed invariant: an IPv6 address on sctp4 is still refused (now EINVAL, before any socket exists), but an IPv4 address on sctp6 is accepted and used in IPv4-mapped form, since an AF_INET6 socket carries both families |
 | sctp_resolve_portable_test.go | TestNilSCTPAddrString | ported → TestNilAddrString (addr_test.go) |
@@ -477,17 +477,17 @@ order it appears in its file.
 | sctp_shutdownwait_test.go | TestListenerAcceptDeadline | ported → TestListenerAcceptDeadline (listener_linux_test.go), also asserting a net.Error with Timeout() true |
 | sctp_shutdownwait_test.go | TestRawSocketTimeoutDoesNotBecomeListenerDeadline | ported → TestRawSocketTimeoutDoesNotBecomeListenerDeadline (listener_linux_test.go) |
 | sctp_shutdownwait_test.go | TestListenerDeadlineInThePast | ported → TestListenerDeadlineInThePast (listener_linux_test.go) |
-| sctp_shutdownwait_test.go | TestSendDoesNotRaiseSIGPIPE | pending |
+| sctp_shutdownwait_test.go | TestSendDoesNotRaiseSIGPIPE | ported → TestSendAfterPeerShutdown and TestSendAfterPeerAbortIsSticky (send_linux_test.go) |
 | sctp_shutdownwait_test.go | TestRawWaitTerminatesOnAbortedAssociation | ported → TestRawWaitTerminatesOnAbortedAssociation (close_linux_test.go) |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoCarriesStreamAndPPID | ported → TestAppendSendCmsgsEncodesSndInfo (msginfo_test.go) for the SNDINFO byte encoding, including the PPID conversion; the live-socket, end-to-end half stays pending until Conn.SendMsg exists |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoNilInfoUsesDefaults | pending: a nil SndInfo falling back to the cached socket default is the send path's job (validateSendOptions and appendSendCmsgs take an already-resolved SndInfo/PrInfo and never decide defaults themselves), so this stays pending until that path exists |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoWithPrInfo | ported → TestAppendSendCmsgsEncodesPrInfoWhenSet, TestAppendSendCmsgsPRTTLConvertsToMilliseconds (msginfo_test.go) for the PRINFO byte encoding; the live-socket half (a PR-SCTP send actually arriving) stays pending until Conn.SendMsg exists |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoCmsgPadding | ported → TestAppendSendCmsgsAllThreeFitsSndCmsgSpaceExactly, TestAppendSendCmsgsZeroesPaddingGaps (msginfo_test.go) for the inter-cmsg alignment padding itself; the live-socket confirmation that a malformed pad makes the kernel reject the sendmsg stays pending until Conn.SendMsg exists |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoCarriesStreamAndPPID | ported → TestAppendSendCmsgsEncodesSndInfo (msginfo_test.go) for the SNDINFO byte encoding, including the PPID conversion, and TestSendMsgDeliversStreamAndPPID (send_linux_test.go) for the live socket |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoNilInfoUsesDefaults | ported → TestSendDefaultsAllCombinations (send_linux_test.go), for every combination of a nil Info and a nil PR |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoWithPrInfo | ported → TestAppendSendCmsgsEncodesPrInfoWhenSet, TestAppendSendCmsgsPRTTLConvertsToMilliseconds (msginfo_test.go) for the PRINFO byte encoding, and TestSendMsgWithPrInfo (send_linux_test.go) for the live socket |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoCmsgPadding | ported → TestAppendSendCmsgsAllThreeFitsSndCmsgSpaceExactly, TestAppendSendCmsgsZeroesPaddingGaps (msginfo_test.go) for the inter-cmsg alignment padding, and TestSendMsgWithAuthKey (send_linux_test.go) for a live send carrying all three records |
 | sctp_sndinfo_test.go | TestCmsgPaddingIsObservable | ported → TestCmsgLenIsExactNotAligned, TestCmsgFormulaAcrossWordSizes (msginfo_test.go), pinning the same CMSG_LEN-vs-CMSG_SPACE gap for AUTHINFO directly from the word-size formula instead of syscall.CmsgLen/CmsgSpace |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoRejectsBadPrPolicy | ported → TestValidateSendOptionsRefusesUnknownPRPolicyBits (msginfo_test.go): the package now runs the same SCTP_PR_SCTP_MASK check itself before any syscall (validateSendOptions), rather than relying solely on the kernel's own EINVAL |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoRejectsBadPrPolicy | ported → TestValidateSendOptionsRefusesUnknownPRPolicyBits (msginfo_test.go) and TestSendMsgRefusesBadPrPolicy (send_linux_test.go): the package runs the same SCTP_PR_SCTP_MASK check itself before any syscall |
 | sctp_sndinfo_test.go | TestSCTPWriteInfoInteropWithSCTPWrite | retired: it pinned that the deprecated SCTP_SNDRCV send path (SCTPWrite) and the non-deprecated one (SCTPWriteInfo) interoperate on one association. v2 has a single send path (SendMsg/Write, where Write is SendMsg with no control records), not two different wire formats to interoperate between |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoHonoursWriteDeadline | pending: write-deadline enforcement belongs to the send path itself (the runtime poller and the connection's write deadline), not to the metadata codecs here |
-| sctp_sndinfo_test.go | TestSCTPWriteInfoWithAuthInfo | ported → TestAppendSendCmsgsEncodesAuthInfoWhenKeySet (msginfo_test.go) for the AUTHINFO byte encoding; the live-socket half (needs net.sctp.auth_enable) stays pending until Conn.SendMsg exists |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoHonoursWriteDeadline | ported → TestWriteDeadlineInThePast (send_linux_test.go) |
+| sctp_sndinfo_test.go | TestSCTPWriteInfoWithAuthInfo | ported → TestAppendSendCmsgsEncodesAuthInfoWhenKeySet (msginfo_test.go) for the AUTHINFO byte encoding, and TestSendMsgWithAuthKey (send_linux_test.go) for the live socket, with AUTH on through Config.Authentication and DATA authenticated, so an unknown key is refused |
 | sctp_sockopt_stack_test.go | TestSubscribedEventsSurvivesStackGrowth | pending |
 | sctp_sockopt_stack_test.go | TestRawGetsockoptSurvivesStackGrowth | ported → TestRawSockoptStackStorage (syscall_linux_test.go); the wrapper it exercised, SCTPConn.Getsockopt, has no v2 equivalent (raw option access is SyscallConn), so this now proves the same stack-growth-survives-a-syscall property directly against rawSetsockopt/rawGetsockopt, the layer that wrapper used to sit on |
 | sctp_sockopt_stack_test.go | TestInternalRawGetsockoptSurvivesStackGrowth | pending: exercised SCTPConn.getsockoptRaw, an internal helper tied to the x86_64 compat-layout retry for the peer-address-threshold options; not yet implemented |
@@ -506,7 +506,7 @@ order it appears in its file.
 | sctp_state_test.go | TestPeerStateMatchesKernel | pending |
 | sctp_state_test.go | TestGetStatusReportsEstablished | pending |
 | sctp_state_test.go | TestGetStatusAfterShutdown | pending |
-| sctp_streams_test.go | TestStreams | pending |
+| sctp_streams_test.go | TestStreams | ported → TestStreams (send_linux_test.go); the echo reads through SyscallConn until RecvMsg exists |
 | sctp_syscall_linux_test.go | TestRawSockoptSyscalls | ported → TestRawSockoptRoundTrip (syscall_linux_test.go); exercises a real SCTP socket and SCTP_NODELAY instead of an AF_UNIX pair and SO_PASSCRED, per the new rawSetsockopt/rawGetsockopt signature (unsafe.Pointer instead of a caller-converted uintptr) |
 | sctp_syscall_linux_test.go | TestRawMessageSyscalls | ported → TestRawMessageSyscalls (syscall_linux_test.go), unchanged in substance (an AF_UNIX pair; the syscalls do not care what kind of socket they are handed) |
 | sctp_syscall_linux_test.go | TestRawRecvmsgStackStorage | ported → TestRawRecvmsgStackStorage (syscall_linux_test.go), unchanged in substance; still the regression test for the 386 storage fix (commit b6f3db1) |

@@ -27,6 +27,7 @@ import (
 	"runtime/debug"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // rawSockaddrIn builds a sockaddr_in byte for byte, independently of
@@ -773,5 +774,174 @@ func TestZoneNameFallsBackToDecimal(t *testing.T) {
 	}
 	if got, want := zoneName(idx), "2000000000"; got != want {
 		t.Errorf("zoneName(%d) = %q, want %q", idx, got, want)
+	}
+}
+
+// --- zone name cache ------------------------------------------------------
+
+// fakeZoneTable is an interface table and a clock for a zoneCache under
+// test: calls counts how often the cache asked for the table, and err, when
+// set, is what the next request fails with.
+type fakeZoneTable struct {
+	ifs   []net.Interface
+	err   error
+	calls int
+	clock time.Time
+}
+
+func (f *fakeZoneTable) cache() *zoneCache {
+	f.clock = time.Unix(1_000_000, 0)
+	return &zoneCache{
+		interfaces: func() ([]net.Interface, error) {
+			f.calls++
+			if f.err != nil {
+				return nil, f.err
+			}
+			return append([]net.Interface(nil), f.ifs...), nil
+		},
+		now: func() time.Time { return f.clock },
+	}
+}
+
+// TestZoneCacheHitDoesNotRefetch: once a name is in the table, looking it
+// up again within zoneCacheTTL asks the host for nothing.
+func TestZoneCacheHitDoesNotRefetch(t *testing.T) {
+	f := &fakeZoneTable{ifs: []net.Interface{{Index: 7, Name: "zoneA"}}}
+	z := f.cache()
+	for i := 0; i < 3; i++ {
+		if idx, ok := z.index("zoneA"); !ok || idx != 7 {
+			t.Fatalf("lookup %d: index(zoneA) = %d, %v; want 7, true", i, idx, ok)
+		}
+		f.clock = f.clock.Add(zoneCacheTTL / 4)
+	}
+	if f.calls != 1 {
+		t.Errorf("the interface table was read %d times for repeated hits within the TTL, want 1", f.calls)
+	}
+}
+
+// TestZoneCacheRefreshesAfterTTL: a table older than zoneCacheTTL is read
+// again before it answers, so an interface deleted and re-created under the
+// same name, with a new index, is followed within the TTL, as net's own
+// zone cache does (net/interface.go).
+func TestZoneCacheRefreshesAfterTTL(t *testing.T) {
+	f := &fakeZoneTable{ifs: []net.Interface{{Index: 7, Name: "zoneA"}}}
+	z := f.cache()
+	if idx, _ := z.index("zoneA"); idx != 7 {
+		t.Fatalf("index(zoneA) = %d, want 7", idx)
+	}
+	f.ifs = []net.Interface{{Index: 9, Name: "zoneA"}}
+	f.clock = f.clock.Add(zoneCacheTTL)
+	if idx, ok := z.index("zoneA"); !ok || idx != 9 {
+		t.Errorf("index(zoneA) after the TTL = %d, %v; want the new index 9", idx, ok)
+	}
+	if f.calls != 2 {
+		t.Errorf("the interface table was read %d times, want 2", f.calls)
+	}
+}
+
+// TestZoneCacheMissOnANameRefetches: a name the table does not hold is
+// looked up again in a fresh table at once, so an interface created since
+// the last read is found.
+func TestZoneCacheMissOnANameRefetches(t *testing.T) {
+	f := &fakeZoneTable{ifs: []net.Interface{{Index: 7, Name: "zoneA"}}}
+	z := f.cache()
+	if _, ok := z.index("zoneA"); !ok {
+		t.Fatal("index(zoneA) missed")
+	}
+	f.ifs = append(f.ifs, net.Interface{Index: 8, Name: "zoneB"})
+	if idx, ok := z.index("zoneB"); !ok || idx != 8 {
+		t.Errorf("index(zoneB) = %d, %v; want 8, true from a fresh table", idx, ok)
+	}
+	if _, ok := z.index("nowhere"); ok {
+		t.Error("index(nowhere) found an interface that does not exist")
+	}
+	if f.calls != 3 {
+		t.Errorf("the interface table was read %d times, want 3 (the first read and one per miss)", f.calls)
+	}
+}
+
+// TestZoneCacheNumericMissDoesNotRefetch: a decimal zone that names no
+// interface in a fresh table is answered as a miss without reading the
+// table again, so a send to a link-local address zoned by index does not
+// cost an interface dump each time; encodeZone then takes the number.
+func TestZoneCacheNumericMissDoesNotRefetch(t *testing.T) {
+	f := &fakeZoneTable{ifs: []net.Interface{{Index: 7, Name: "zoneA"}}}
+	z := f.cache()
+	for i := 0; i < 3; i++ {
+		if _, ok := z.index("12"); ok {
+			t.Fatal("index(12) found an interface named 12")
+		}
+	}
+	if f.calls != 1 {
+		t.Errorf("the interface table was read %d times for a decimal zone, want 1", f.calls)
+	}
+	// An interface really named with digits is still found by name.
+	f.ifs = append(f.ifs, net.Interface{Index: 30, Name: "12"})
+	f.clock = f.clock.Add(zoneCacheTTL)
+	if idx, ok := z.index("12"); !ok || idx != 30 {
+		t.Errorf("index(12) with an interface named 12 = %d, %v; want 30, true", idx, ok)
+	}
+}
+
+// TestZoneCacheKeepsTheTableWhenARefreshFails: an interface table that
+// cannot be read leaves the previous one in place.
+func TestZoneCacheKeepsTheTableWhenARefreshFails(t *testing.T) {
+	f := &fakeZoneTable{ifs: []net.Interface{{Index: 7, Name: "zoneA"}}}
+	z := f.cache()
+	if _, ok := z.index("zoneA"); !ok {
+		t.Fatal("index(zoneA) missed")
+	}
+	f.err = errors.New("netlink unavailable")
+	f.clock = f.clock.Add(zoneCacheTTL)
+	if idx, ok := z.index("zoneA"); !ok || idx != 7 {
+		t.Errorf("index(zoneA) after a failed refresh = %d, %v; want the previous 7, true", idx, ok)
+	}
+}
+
+// TestZoneCacheHitAllocatesNothing pins the property SendOptions.Path with
+// a zoned link-local address relies on: resolving a zone the table holds
+// allocates nothing.
+func TestZoneCacheHitAllocatesNothing(t *testing.T) {
+	if underRaceDetector {
+		t.Skip("allocation counts are unreliable under the race detector")
+	}
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	f := &fakeZoneTable{ifs: []net.Interface{{Index: 7, Name: "zoneA"}}}
+	z := f.cache()
+	z.index("zoneA")
+	allocs := testing.AllocsPerRun(200, func() {
+		if idx, ok := z.index("zoneA"); !ok || idx != 7 {
+			t.Fatalf("index(zoneA) = %d, %v", idx, ok)
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("a cached zone lookup allocated %.1f times, want 0", allocs)
+	}
+}
+
+// TestEncodeAddrZonedAllocatesNothing: encoding a link-local address zoned
+// by a real interface's name allocates nothing once the name is cached,
+// which is what keeps SendMsg with such a Path allocation-free.
+func TestEncodeAddrZonedAllocatesNothing(t *testing.T) {
+	if underRaceDetector {
+		t.Skip("allocation counts are unreliable under the race detector")
+	}
+	ifs, err := net.Interfaces()
+	if err != nil || len(ifs) == 0 {
+		t.Skip("no network interfaces available on this host")
+	}
+	ip := netip.MustParseAddr("fe80::1").WithZone(ifs[0].Name)
+	var dst [sizeSockaddrIn6]byte
+	if _, err := encodeAddr(dst[:], afInet6, ip, 80); err != nil {
+		t.Fatalf("encodeAddr(%v): %v", ip, err)
+	}
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	allocs := testing.AllocsPerRun(200, func() {
+		if _, err := encodeAddr(dst[:], afInet6, ip, 80); err != nil {
+			t.Fatalf("encodeAddr: %v", err)
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("encodeAddr(%v) allocated %.1f times, want 0", ip, allocs)
 	}
 }

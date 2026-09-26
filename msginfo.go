@@ -187,9 +187,28 @@ func validateSendOptions(opts *SendOptions) error {
 	return nil
 }
 
-// appendSendCmsgs encodes SNDINFO (from snd and assoc), then PRINFO when
-// pr is non-nil, then AUTHINFO when key is non-nil, into dst and returns
-// the number of bytes used. dst must have length 0 and capacity at least
+// validateDefaultSndInfo checks a SndInfo meant as the socket's default
+// (Config.DefaultSndInfo, Conn.SetDefaultSndInfo): SendUnordered is the
+// only flag a default may hold. Linux refuses SCTP_SACK_IMMEDIATELY there
+// with EINVAL (net/sctp/socket.c: sctp_setsockopt_default_sndinfo), and
+// the other bits it accepts in a default (SCTP_ADDR_OVER, SCTP_ABORT,
+// SCTP_EOF) have no SendFlags value. field names the argument, for the
+// error.
+func validateDefaultSndInfo(field string, info *SndInfo) error {
+	if f := info.Flags &^ SendUnordered; f != 0 {
+		return invalidArg("%s.Flags %#04x sets bits outside SendUnordered, the only flag a default may hold", field, uint16(info.Flags))
+	}
+	return nil
+}
+
+// appendSendCmsgs encodes SNDINFO (from snd and assoc) when snd is
+// non-nil, then PRINFO when pr is non-nil, then AUTHINFO when key is
+// non-nil, into dst and returns the number of bytes used, 0 when all three
+// are nil. A nil snd with a non-nil key is the one send of that kind the
+// package makes: a Conn send that names an AUTH key and leaves the
+// association's defaults to the kernel, which applies them only to a
+// message that carries no SNDINFO (net/sctp/socket.c:
+// sctp_sendmsg_update_sinfo). dst must have length 0 and capacity at least
 // sndCmsgSpace — appendSendCmsgs always writes starting at index 0, the
 // same as append(dst, ...) would from an empty dst, so it panics if dst is
 // not empty rather than silently writing over a caller's existing bytes at
@@ -225,7 +244,10 @@ func appendSendCmsgs(dst []byte, snd *SndInfo, assoc AssocID, pr *PrInfo, key *u
 		panic("sctp: appendSendCmsgs requires a zero-length destination")
 	}
 
-	total := cmsgSpace(sizeSndInfo)
+	total := 0
+	if snd != nil {
+		total += cmsgSpace(sizeSndInfo)
+	}
 	if pr != nil {
 		total += cmsgSpace(sizePrInfo)
 	}
@@ -249,14 +271,16 @@ func appendSendCmsgs(dst []byte, snd *SndInfo, assoc AssocID, pr *PrInfo, key *u
 
 	off := 0
 
-	putCmsgHeader(dst, off, sizeSndInfo, cmsgSndInfo)
-	p := off + sizeCmsghdr
-	binary.NativeEndian.PutUint16(dst[p+sndInfoStreamOff:], snd.Stream)
-	binary.NativeEndian.PutUint16(dst[p+sndInfoFlagsOff:], uint16(snd.Flags))
-	binary.BigEndian.PutUint32(dst[p+sndInfoPPIDOff:], snd.PPID)
-	binary.NativeEndian.PutUint32(dst[p+sndInfoContextOff:], snd.Context)
-	binary.NativeEndian.PutUint32(dst[p+sndInfoAssocIDOff:], uint32(assoc))
-	off += cmsgSpace(sizeSndInfo)
+	if snd != nil {
+		putCmsgHeader(dst, off, sizeSndInfo, cmsgSndInfo)
+		p := off + sizeCmsghdr
+		binary.NativeEndian.PutUint16(dst[p+sndInfoStreamOff:], snd.Stream)
+		binary.NativeEndian.PutUint16(dst[p+sndInfoFlagsOff:], uint16(snd.Flags))
+		binary.BigEndian.PutUint32(dst[p+sndInfoPPIDOff:], snd.PPID)
+		binary.NativeEndian.PutUint32(dst[p+sndInfoContextOff:], snd.Context)
+		binary.NativeEndian.PutUint32(dst[p+sndInfoAssocIDOff:], uint32(assoc))
+		off += cmsgSpace(sizeSndInfo)
+	}
 
 	if pr != nil {
 		start := off
