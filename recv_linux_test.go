@@ -437,7 +437,8 @@ func TestRecvMsgControlBufferHoldsEveryRecord(t *testing.T) {
 // --- the end of an association ------------------------------------------------
 
 // endPair sets up an association for the end-of-association tests and
-// returns the side under test ("dialed" or "accepted") and its peer.
+// returns the side under test ("dialed", "accepted", or "peeled" off an
+// Endpoint opened with cfg) and its peer.
 func endPair(t *testing.T, side string, cfg *Config) (c, peer *Conn) {
 	t.Helper()
 	switch side {
@@ -445,6 +446,8 @@ func endPair(t *testing.T, side string, cfg *Config) (c, peer *Conn) {
 		c, peer = connPair(t, cfg, nil)
 	case "accepted":
 		peer, c = connPair(t, nil, cfg)
+	case "peeled":
+		c, peer = peeledPair(t, cfg)
 	default:
 		t.Fatalf("unknown side %q", side)
 	}
@@ -457,11 +460,13 @@ func endPair(t *testing.T, side string, cfg *Config) (c, peer *Conn) {
 // failing with EPIPE), and no read waits on a descriptor that will never
 // become ready again. Every read has a deadline far beyond the expected
 // result, so a hang fails the test instead of passing it. It runs on a
-// dialed and on an accepted connection; connections peeled off an Endpoint
-// share the same receive path.
+// dialed, an accepted and a peeled connection: Linux sets the socket error
+// of a peeled socket as of a one-to-one one, since its style is not the
+// one-to-many SCTP_SOCKET_UDP (net/sctp/sm_sideeffect.c:
+// sctp_cmd_set_sk_err; net/sctp/socket.c: sctp_do_peeloff).
 func TestAssociationErrorSticky(t *testing.T) {
 	const bound = 5 * time.Second
-	for _, side := range []string{"dialed", "accepted"} {
+	for _, side := range []string{"dialed", "accepted", "peeled"} {
 		t.Run(side+"/reads", func(t *testing.T) {
 			c, peer := endPair(t, side, nil)
 			if err := peer.Abort(); err != nil {
@@ -620,9 +625,12 @@ func TestAssociationErrorAfterQueuedData(t *testing.T) {
 // TestGracefulEndReachesEOF: every graceful end reaches io.EOF, unwrapped,
 // and every later read returns it again: a reader parked before the peer's
 // Close; one parked before a local Shutdown, where Linux marks nothing on
-// the socket and only the AssocShutdownComplete record ends the stream; and
-// an association whose SHUTDOWN arrived before Accept, which Linux hands
-// over on a socket it never marks shut for reading. The records are not
+// the socket and only the AssocShutdownComplete record ends the stream,
+// both on dialed, accepted and peeled connections (Linux never marks a
+// peeled socket shut for reading: net/sctp/sm_sideeffect.c,
+// sctp_cmd_new_state); and an association whose SHUTDOWN arrived before
+// Accept, which Linux hands over on a socket it never marks shut for
+// reading. The records are not
 // delivered to a caller who did not subscribe to EventAssocChange, and
 // are delivered to one who did, from RecvMsg or to the handler.
 func TestGracefulEndReachesEOF(t *testing.T) {
@@ -651,7 +659,7 @@ func TestGracefulEndReachesEOF(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		return done
 	}
-	for _, side := range []string{"dialed", "accepted"} {
+	for _, side := range []string{"dialed", "accepted", "peeled"} {
 		t.Run(side+"/peer Close", func(t *testing.T) {
 			c, peer := endPair(t, side, nil)
 			setReadDeadline(t, c, bound)
@@ -3544,9 +3552,9 @@ func TestNotificationBufferReleasedAfterDelivery(t *testing.T) {
 }
 
 // TestSuccessPathsAllocateNothing pins that calls which succeed build no
-// error, and so copy no address: the deadline setters, the SyscallConn
-// handles' Control, Read and Write, and Listener.SetDeadline allocate
-// nothing when they succeed. An error carries copies of the address
+// error, and so copy no address: the deadline setters and the SyscallConn
+// handles' Control, Read and Write, of a Conn and of an Endpoint, and
+// Listener.SetDeadline allocate nothing when they succeed. An error carries copies of the address
 // snapshots, made only on the error branch. Close's success path releases
 // the descriptor and cannot be measured apart from that, so its error
 // wrapping is pinned on its own.
@@ -3563,6 +3571,8 @@ func TestSuccessPathsAllocateNothing(t *testing.T) {
 	l := mustListen(t, nil, "sctp4", loopback4(0))
 	rc := mustSyscallConn(t, client)
 	lrc := mustListenerRawConn(t, l)
+	e := listenEndpoint(t, nil, "sctp4", loopback4(0))
+	erc := mustEndpointRawConn(t, e)
 	later := time.Now().Add(time.Hour)
 	control := func(uintptr) {}
 	done := func(uintptr) bool { return true }
@@ -3579,6 +3589,13 @@ func TestSuccessPathsAllocateNothing(t *testing.T) {
 		{"Listener.SetDeadline", func() error { return l.SetDeadline(later) }},
 		{"Listener SyscallConn Control", func() error { return lrc.Control(control) }},
 		{"Close's error wrapping of nil", func() error { return client.closeError(nil) }},
+		{"Endpoint.SetReadDeadline", func() error { return e.SetReadDeadline(later) }},
+		{"Endpoint.SetWriteDeadline", func() error { return e.SetWriteDeadline(later) }},
+		{"Endpoint.SetDeadline", func() error { return e.SetDeadline(later) }},
+		{"Endpoint SyscallConn Control", func() error { return erc.Control(control) }},
+		{"Endpoint SyscallConn Read", func() error { return erc.Read(done) }},
+		{"Endpoint SyscallConn Write", func() error { return erc.Write(done) }},
+		{"Endpoint Close's error wrapping of nil", func() error { return e.closeError(nil) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var failed error

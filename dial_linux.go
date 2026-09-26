@@ -305,13 +305,27 @@ var testHookDialConnecting func(*socket) error
 // the only form this package uses: the older CONNECTX and CONNECTX_OLD
 // return no association id. The error is the bare errno.
 func (s *socket) connectx(addrs []byte) error {
+	_, err := s.connectxID(addrs)
+	return err
+}
+
+// connectxID is connectx, returning the new association's id as well.
+// Linux writes the id over the start of the argument whenever the setup
+// has started, with the EINPROGRESS a non-blocking socket gets as much as
+// with success (net/sctp/socket.c: sctp_getsockopt_connectx3), which is
+// how a one-to-many socket learns the id at once (erlang/otp PR #1592).
+// On any other error the id is 0.
+func (s *socket) connectxID(addrs []byte) (AssocID, error) {
 	arg := connectx3Arg{addrNum: int32(len(addrs)), addrs: unsafe.Pointer(&addrs[0])}
 	l := uint32(unsafe.Sizeof(arg))
 	err := s.getsockopt(optSockoptConnectx3, unsafe.Pointer(&arg), &l)
 	// The kernel reads addrs through the pointer in arg, which the compiler
 	// cannot see as a use of addrs.
 	runtime.KeepAlive(addrs)
-	return err
+	if err != nil && err != syscall.EINPROGRESS {
+		return 0, err
+	}
+	return AssocID(arg.assocID), err
 }
 
 // aLongTimeAgo is a deadline in the past, which ends a poller wait at once.

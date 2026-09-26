@@ -27,7 +27,9 @@
 // its receive lock, and every recvmsg(2) runs in a callback bound once,
 // when the Conn is built, while the latch mutex is held (termState), so
 // that an association error the kernel hands a read is latched before any
-// other call can look. Reading data allocates nothing.
+// other call can look. Reading data allocates nothing. An Endpoint's
+// RecvMsg (endpoint_linux.go) uses the same storage and reassembly,
+// without the latch and the end-of-association rules.
 
 package sctp
 
@@ -50,10 +52,10 @@ const recvFlags = syscall.MSG_DONTWAIT
 // by the receive path, to count, inspect or script its system calls.
 var testHookRecvmsg func(fd int, msg *syscall.Msghdr, flags int) (int, error)
 
-// recvState is a Conn's receive storage, reused by every read under mu, the
-// connection's receive lock, which is held from the first recvmsg of a read
-// until the read has what it returns, and released before a
-// NotificationHandler runs. The descriptor's read lock (internal/poll:
+// recvState is a Conn's or an Endpoint's receive storage, reused by every
+// read under mu, the connection's receive lock, which is held from the
+// first recvmsg of a read until the read has what it returns, and released
+// before a NotificationHandler runs. The descriptor's read lock (internal/poll:
 // FD.readLock) is taken inside it, by raw.Read.
 //
 // Linux queues notifications on the same receive queue as data. A record
@@ -84,8 +86,14 @@ type recvState struct {
 	record bool
 	cut    bool
 
-	term *termState     // the connection's association-error latch
-	subs *atomic.Uint32 // the connection's logical subscriptions (Conn.subs)
+	// term is the connection's association-error latch, or nil for an
+	// Endpoint's socket, which has none: Linux never sets the socket error
+	// of a one-to-many socket (net/sctp/sm_sideeffect.c:
+	// sctp_cmd_set_sk_err), and an Endpoint's callers receive every
+	// AssocChange record, so no record ends its reads and each read
+	// reports its own error.
+	term *termState
+	subs *atomic.Uint32 // the logical subscriptions (Conn.subs, Endpoint.subs)
 
 	// keepNotes is set by the reader before each attempt: whether a record
 	// the caller receives is retained, for its handler or to be returned
@@ -107,11 +115,16 @@ type recvState struct {
 }
 
 // init prepares s for c's reads; newConn calls it for every connection.
-// It binds the attempt callback, so that no read makes a closure, and
-// needs no socket.
 func (s *recvState) init(c *Conn) {
-	s.term = &c.term
-	s.subs = &c.subs
+	s.bind(&c.term, &c.subs)
+}
+
+// bind points s at the connection's latch, nil for an Endpoint, and at its
+// logical subscriptions, and binds the attempt callback, so that no read
+// makes a closure. It needs no socket.
+func (s *recvState) bind(term *termState, subs *atomic.Uint32) {
+	s.term = term
+	s.subs = subs
 	s.fn = s.attempt
 	s.msg.Iov = &s.iov
 	s.msg.Iovlen = 1
@@ -358,7 +371,8 @@ func (s *recvState) stopServing() {
 // read is latched before any other call can look (termState). It returns
 // false, so that the poller waits, only when recvmsg finds nothing queued
 // and the latch rules leave nothing to report (termState.readErrorLocked);
-// it retries EINTR in place.
+// it retries EINTR in place. An Endpoint's read, which has no latch, waits
+// whenever recvmsg finds nothing queued and otherwise reports what it got.
 //
 // A notification record's pieces after the first are read into scratch in
 // the same callback, never waiting: Linux puts what did not fit back at
@@ -377,7 +391,9 @@ func (s *recvState) attempt(fd uintptr) bool {
 		s.msg.Flags = 0
 
 		t := s.term
-		t.mu.Lock()
+		if t != nil {
+			t.mu.Lock()
+		}
 		n, err := s.recvmsg(int(fd))
 		flags := int(s.msg.Flags)
 		piece := err == nil && flags&msgNotification != 0
@@ -391,16 +407,20 @@ func (s *recvState) attempt(fd uintptr) bool {
 		case s.noting:
 			// Whatever cut the record short, an association error it
 			// took must still be latched.
-			t.storeLocked(err)
+			if t != nil {
+				t.storeLocked(err)
+			}
 		default:
 			if err == nil && n == 0 {
 				err = io.EOF
 			}
-			if err != nil {
+			if err != nil && t != nil {
 				err = t.readErrorLocked(err)
 			}
 		}
-		t.mu.Unlock()
+		if t != nil {
+			t.mu.Unlock()
+		}
 
 		switch {
 		case err == syscall.EINTR, piece && s.noting:
@@ -467,10 +487,10 @@ func (s *recvState) addPiece(p []byte) {
 // does. AssocCommUp and AssocRestart change nothing: a restart keeps the
 // association and its id (sctp_sf_do_dupcook_a), though it flushes any
 // partial reassembly, and AssocCantStart ends only a setup that never made
-// a Conn.
+// a Conn. On an Endpoint, which has no latch, it only ends the record.
 func (s *recvState) endRecordLocked() {
 	s.noting = false
-	if !s.typed || s.typ != EventAssocChange {
+	if s.term == nil || !s.typed || s.typ != EventAssocChange {
 		return
 	}
 	state, _, ok := assocChangeInfo(s.notes.head())

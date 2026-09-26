@@ -26,7 +26,8 @@
 // A send allocates nothing. The control message is encoded into the
 // connection's own storage (sendState), under the connection's send lock,
 // and the one sendmsg(2) runs in a callback bound once, when the Conn is
-// built, so no closure is made per call.
+// built, so no closure is made per call. An Endpoint's SendMsg
+// (endpoint_linux.go) uses the same storage and path, without the latch.
 
 package sctp
 
@@ -57,10 +58,10 @@ const sendFlags = syscall.MSG_DONTWAIT | syscall.MSG_NOSIGNAL
 // by the send path, to count, inspect or script its system calls.
 var testHookSendmsg func(fd int, msg *syscall.Msghdr, flags int) (int, error)
 
-// sendState is a Conn's send storage, reused by every send under mu, the
-// connection's send lock. It guards the storage from the start of
-// encoding the control message until the raw write returns, so
-// concurrent sends can never exchange stream, PPID or other metadata. The
+// sendState is a Conn's or an Endpoint's send storage, reused by every
+// send under mu, the connection's send lock. It guards the storage from
+// the start of encoding the control message until the raw write returns,
+// so concurrent sends can never exchange stream, PPID or other metadata. The
 // descriptor's write lock (internal/poll: FD.writeLock) is taken inside
 // it, by raw.Write.
 type sendState struct {
@@ -80,22 +81,39 @@ type sendState struct {
 	n     int
 	err   error
 
-	term *termState            // the connection's association-error latch
+	// term is the connection's association-error latch, or nil for an
+	// Endpoint's socket, which has none: Linux never sets the socket error
+	// of a one-to-many socket (net/sctp/sm_sideeffect.c:
+	// sctp_cmd_set_sk_err), so each send reports its own error.
+	term *termState
 	fn   func(fd uintptr) bool // attempt, bound once
+
+	// explicit is set for an Endpoint, whose sends always carry SNDINFO,
+	// since that is where the association id travels (RFC 6458 §5.3.4).
+	explicit bool
 }
 
 // init prepares s for c's sends; newConn calls it for every connection,
 // once the association id is known. It binds the attempt callback and
 // reads the socket's default send parameters, which the association took
 // from its endpoint when it was set up (net/sctp/associola.c:
-// sctp_association_init), after Config was applied or, for an accepted or
-// adopted socket, as whoever set it up left them; reading them back rather
-// than copying Config also captures what Control set. A socket the
-// defaults cannot be read from, such as one whose association ended
-// before Accept, starts with zero defaults.
+// sctp_association_init), after Config was applied or, for an accepted,
+// peeled or adopted socket, as whoever set it up left them; reading them
+// back rather than copying Config also captures what Control set. A
+// socket the defaults cannot be read from, such as one whose association
+// ended before Accept, starts with zero defaults.
 func (s *sendState) init(c *Conn) {
 	s.bind(&c.term)
-	_ = c.sock.control(func(fd int) error {
+	s.readDefaults(&c.sock)
+}
+
+// readDefaults reads the socket's default send parameters into the cache,
+// leaving it as it was when they cannot be read. On a one-to-many socket
+// association id 0 reads the endpoint's own defaults, those every
+// association it creates starts with (net/sctp/socket.c:
+// sctp_getsockopt_default_sndinfo, sctp_getsockopt_default_prinfo).
+func (s *sendState) readDefaults(sock *socket) {
+	_ = sock.control(func(fd int) error {
 		snd, err := getDefaultSndInfo(fd)
 		if err != nil {
 			return err
@@ -109,8 +127,8 @@ func (s *sendState) init(c *Conn) {
 	})
 }
 
-// bind points s at the connection's latch and binds the attempt callback,
-// the part of init that needs no socket.
+// bind points s at the connection's latch, nil for an Endpoint, and binds
+// the attempt callback: the part of init that needs no socket.
 func (s *sendState) bind(term *termState) {
 	s.term = term
 	s.fn = s.attempt
@@ -159,7 +177,7 @@ func (c *Conn) SendMsg(b []byte, opts SendOptions) (int, error) {
 	if err := c.term.latched(); err != nil {
 		return 0, c.writeError(err)
 	}
-	n, err := c.send.send(&c.sock, b, &opts, name[:namelen])
+	n, err := c.send.send(&c.sock, b, &opts, name[:namelen], 0)
 	if err != nil {
 		return 0, c.writeError(err)
 	}
@@ -219,15 +237,15 @@ func (c *Conn) checkSend(b []byte, opts *SendOptions, name *[sizeSockaddrIn6]byt
 }
 
 // send is one send under the send lock: it points msg at b, the control
-// records and the destination, makes the attempt through raw.Write, and
-// clears every reference to the caller's memory before it releases the
-// lock.
-func (s *sendState) send(sock *socket, b []byte, opts *SendOptions, name []byte) (int, error) {
+// records, naming association assoc on an Endpoint, and the destination,
+// makes the attempt through raw.Write, and clears every reference to the
+// caller's memory before it releases the lock.
+func (s *sendState) send(sock *socket, b []byte, opts *SendOptions, name []byte, assoc AssocID) (int, error) {
 	s.mu.Lock()
 	s.b = b
 	s.iov.Base = &b[0]
 	s.iov.SetLen(len(b))
-	if n := s.encode(opts); n > 0 {
+	if n := s.encode(opts, assoc); n > 0 {
 		s.msg.Control = &s.cbuf[0]
 		s.msg.SetControllen(n)
 	} else {
@@ -275,15 +293,16 @@ func (s *sendState) send(sock *socket, b []byte, opts *SendOptions, name []byte)
 // policy only when there is no PRINFO either (net/sctp/socket.c:
 // sctp_sendmsg_update_sinfo), so when one of the two is set the other is
 // sent explicitly from the cached default: SNDINFO from Info or defSnd,
-// and PRINFO from PR, or from defPR when its policy is not PRNone.
-// AUTHINFO is added when AuthKey is set, and is the only record of a send
-// that sets nothing else.
-func (s *sendState) encode(opts *SendOptions) int {
+// and PRINFO from PR, or from defPR when its policy is not PRNone. An
+// Endpoint send always carries SNDINFO, naming assoc, and so always sends
+// its defaults that way. AUTHINFO is added when AuthKey is set, and is
+// the only record of a Conn send that sets nothing else.
+func (s *sendState) encode(opts *SendOptions, assoc AssocID) int {
 	var (
 		snd *SndInfo
 		pr  *PrInfo
 	)
-	if opts.Info != nil || opts.PR != nil {
+	if s.explicit || opts.Info != nil || opts.PR != nil {
 		snd = opts.Info
 		if snd == nil {
 			snd = &s.defSnd
@@ -293,16 +312,33 @@ func (s *sendState) encode(opts *SendOptions) int {
 			pr = &s.defPR
 		}
 	}
-	// A one-to-one or peeled socket ignores snd_assoc_id (RFC 6458 §5.3.4).
-	return appendSendCmsgs(s.cbuf[:0], snd, 0, pr, opts.AuthKey)
+	// A one-to-one or peeled socket ignores snd_assoc_id, which a Conn
+	// leaves 0 (RFC 6458 §5.3.4).
+	return appendSendCmsgs(s.cbuf[:0], snd, assoc, pr, opts.AuthKey)
 }
 
-// attempt is the raw.Write callback: one sendmsg, made while the latch
-// mutex is held, so that an association error the kernel hands this call
-// is latched before any other call can look (termState). It returns false,
-// so that the poller waits for buffer space, only on EAGAIN for a send
-// that waits; it retries EINTR in place. A latched error ends the send
-// without a system call.
+// attempt is the raw.Write callback: one send (sendOnce). It returns
+// false, so that the poller waits for buffer space, only on EAGAIN for a
+// send that waits; it retries EINTR in place.
+func (s *sendState) attempt(fd uintptr) bool {
+	for {
+		n, err := s.sendOnce(int(fd))
+		switch {
+		case err == syscall.EINTR:
+			continue
+		case err == syscall.EAGAIN && s.wait:
+			return false
+		}
+		s.n, s.err = n, err
+		return true
+	}
+}
+
+// sendOnce makes one sendmsg, while the latch mutex is held, so that an
+// association error the kernel hands this call is latched before any
+// other call can look (termState). A latched error ends the send without a
+// system call. An Endpoint's send, which has no latch, is the sendmsg
+// alone.
 //
 // A send with a destination (SendOptions.Path) that Linux refuses with
 // EADDRNOTAVAIL is made once more without it when the association turns
@@ -315,33 +351,25 @@ func (s *sendState) encode(opts *SendOptions) int {
 // finds no association (sctp_id2assoc) and gets exactly that, and nothing
 // can be queued for an association that does not exist. So the send
 // reports what any send does after the end, and the latch sees it.
-func (s *sendState) attempt(fd uintptr) bool {
-	for {
-		s.term.mu.Lock()
-		if err := s.term.err; err != nil {
-			s.term.mu.Unlock()
-			s.n, s.err = 0, err
-			return true
-		}
-		n, err := s.sendmsg(int(fd))
-		if err == syscall.EADDRNOTAVAIL && s.msg.Name != nil && assocEnded(int(fd)) {
-			s.msg.Name, s.msg.Namelen = nil, 0
-			n, err = s.sendmsg(int(fd))
-		}
-		if err != nil {
-			err = s.term.sendErrorLocked(err)
-		}
-		s.term.mu.Unlock()
-
-		switch {
-		case err == syscall.EINTR:
-			continue
-		case err == syscall.EAGAIN && s.wait:
-			return false
-		}
-		s.n, s.err = n, err
-		return true
+func (s *sendState) sendOnce(fd int) (int, error) {
+	t := s.term
+	if t == nil {
+		return s.sendmsg(fd)
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.err; err != nil {
+		return 0, err
+	}
+	n, err := s.sendmsg(fd)
+	if err == syscall.EADDRNOTAVAIL && s.msg.Name != nil && assocEnded(fd) {
+		s.msg.Name, s.msg.Namelen = nil, 0
+		n, err = s.sendmsg(fd)
+	}
+	if err != nil {
+		err = t.sendErrorLocked(err)
+	}
+	return n, err
 }
 
 // sendmsg makes the one system call of an attempt.

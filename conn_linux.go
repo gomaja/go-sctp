@@ -78,15 +78,16 @@ func (c *Conn) init(p *prepared) error {
 	}
 	c.subs.Store(uint32(subs))
 
-	if c.kind == kindAccepted || c.kind == kindAdopted {
+	if c.kind == kindAccepted || c.kind == kindAdopted || c.kind == kindPeeled {
 		// The package keeps SCTP_ASSOC_CHANGE subscribed on every socket
 		// it uses (Config.Notifications). An association takes its own
 		// copy of the endpoint's subscriptions when it is created
 		// (net/sctp/associola.c: sctp_association_init), so one queued on
-		// a listener before the package owned it, or on a descriptor set
-		// up elsewhere, may lack it; on an established one-to-one socket
-		// SCTP_EVENT reaches that copy (net/sctp/socket.c:
-		// sctp_setsockopt_event).
+		// a listener before the package owned it, set up on a descriptor
+		// elsewhere, or switched off for one association of an Endpoint
+		// through its SyscallConn, may lack it; on an established
+		// one-to-one or peeled socket SCTP_EVENT reaches that copy
+		// (net/sctp/socket.c: sctp_setsockopt_event, sctp_id2assoc).
 		if err := c.sock.control(func(fd int) error { return setEvent(fd, EventAssocChange, true) }); err != nil {
 			return os.NewSyscallError("setsockopt", err)
 		}

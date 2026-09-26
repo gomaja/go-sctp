@@ -924,8 +924,10 @@ func TestConfigValidationPrecedesSocketAndControl(t *testing.T) {
 		DelayedSACK: &DelayedSACK{Delay: 501 * time.Millisecond, Frequency: 2},
 	}
 	for name, call := range map[string]func() error{
-		"Listen": func() error { _, err := cfg.Listen("sctp4", loopback4(0)); return err },
-		"Dial":   func() error { _, err := cfg.Dial(context.Background(), "sctp4", nil, loopback4(9)); return err },
+		"Listen":         func() error { _, err := cfg.Listen("sctp4", loopback4(0)); return err },
+		"Dial":           func() error { _, err := cfg.Dial(context.Background(), "sctp4", nil, loopback4(9)); return err },
+		"ListenEndpoint": func() error { _, err := cfg.ListenEndpoint("sctp4", loopback4(0)); return err },
+		"OpenEndpoint":   func() error { _, err := cfg.OpenEndpoint("sctp4", loopback4(0)); return err },
 	} {
 		if err := call(); err == nil || !strings.Contains(err.Error(), "500 ms maximum") || !errors.Is(err, syscall.EINVAL) {
 			t.Errorf("%s = %v, want the delayed-SACK maximum refusal matching EINVAL", name, err)

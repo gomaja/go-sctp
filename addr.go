@@ -23,6 +23,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -263,4 +264,26 @@ func normalizeResolvedAddr(ip netip.Addr) (netip.Addr, error) {
 		return ip.Unmap(), nil
 	}
 	return ip, nil
+}
+
+// canonicalName is network with "" spelled "sctp": the name a socket and
+// every error it produces carry.
+func canonicalName(network string) string {
+	if network == "" {
+		return "sctp"
+	}
+	return network
+}
+
+// netAddr turns a possibly nil *Addr into a net.Addr that is nil when a is,
+// so that a *net.OpError built from it never carries a non-nil interface
+// holding a nil pointer. Otherwise it returns a copy of a with IPs of its
+// own: the caller may keep and change what it gets, and neither the
+// snapshot a Conn or Listener holds nor an address a caller passed in
+// changes with it.
+func netAddr(a *Addr) net.Addr {
+	if a == nil {
+		return nil
+	}
+	return &Addr{IPs: slices.Clone(a.IPs), Port: a.Port}
 }
