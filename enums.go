@@ -83,8 +83,13 @@ func (s PathState) String() string {
 	return fmt.Sprintf("PathState(%d)", int32(s))
 }
 
-// PRPolicy is a PR-SCTP policy, RFC 7496 §4 (RFC 3758's SCTP_PR_SCTP_MASK
-// bits, include/uapi/linux/sctp.h).
+// PRPolicy is a PR-SCTP policy, PrInfo.Policy: PRTTL is RFC 3758's timed
+// reliability (RFC 6458 §5.3.7), PRRtx and PRPrio are RFC 7496 §§3.1-3.2's
+// limited retransmissions and priority, and PRAll selects the totals of
+// every policy in a status query (RFC 7496 §§4.3-4.4). The values are
+// Linux's SCTP_PR_SCTP_* constants (include/uapi/linux/sctp.h): the
+// policies occupy the bits of SCTP_PR_SCTP_MASK, and PRAll is
+// SCTP_PR_SCTP_ALL, outside them.
 type PRPolicy uint16
 
 const (
@@ -187,8 +192,7 @@ func (e PFExposure) String() string {
 // StreamResetMask enables stream-reconfiguration request kinds, RFC 6525
 // §6.3 (SCTP_ENABLE_STREAM_RESET, include/uapi/linux/sctp.h). Its String
 // joins the names of its set bits with "|" and renders any bits it does not
-// name as a trailing hexadecimal literal, the same rule SendFlags uses
-// below.
+// name as a trailing hexadecimal literal, as SendFlags's String does.
 type StreamResetMask uint32
 
 const (
@@ -327,9 +331,12 @@ var errorCauseIANANames = map[ErrorCause]string{
 	CauseUnsupportedHMAC:     "Unsupported HMAC Identifier",
 }
 
-// String returns the name errorCauseIANANames gives the cause, e.g.
-// "Stale Cookie" or "No Error". A cause the package does not name renders
-// as ErrorCause(n), e.g. ErrorCause(1000).
+// String returns the cause's name in IANA's "SCTP Error Cause Codes"
+// registry, e.g. "Stale Cookie". The two causes the registry does not list
+// have names of their own: "No Error" for CauseNone, and for
+// CauseRestartNewEncapPort the name of the Internet-Draft it comes from. A
+// cause the package does not name renders as ErrorCause(n), e.g.
+// ErrorCause(1000).
 func (c ErrorCause) String() string {
 	if name, ok := errorCauseIANANames[c]; ok {
 		return name
@@ -488,6 +495,9 @@ func (s AssocChangeState) String() string {
 
 // AddrChangeState is PeerAddrChange.State, the Linux enum sctp_spc_state
 // (spc_state, a C int, include/uapi/linux/sctp.h; RFC 6458 §6.1.2).
+// AddrConfirmed, which Linux reports when a path is confirmed, is not in RFC
+// 6458 §6.1.2's list; Held Erratum 6116 proposes adding it as
+// SCTP_ADDR_CONFIRMED. AddrPotentiallyFailed is RFC 7829 §7.1's.
 type AddrChangeState int32
 
 const (

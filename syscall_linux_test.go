@@ -306,7 +306,7 @@ func TestRawRecvmsgStackStorage(t *testing.T) {
 // SyscallConn (sctp_sockopt_stack_test.go's TestRawSetsockoptKeepsOptionAlive
 // and TestRawGetsockoptSurvivesStackGrowth). This package now pins it
 // directly at the raw layer those wrappers used to sit on top of,
-// independently of whether anything above that layer exists yet.
+// independently of the typed option methods built on it.
 func TestRawSockoptStackStorage(t *testing.T) {
 	requireSCTPProtocolOptions(t)
 	fd := sctpSocket(t)

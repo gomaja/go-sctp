@@ -456,7 +456,8 @@ func (e *Endpoint) AssocCount() (int, error) {
 // (net/sctp/bind_addr.c: sctp_bind_addr_copy). The *Addr is the caller's
 // own. A scope selector or a negative id is refused with an error matching
 // syscall.EINVAL before any system call, so the endpoint's own bound
-// addresses, which id 0 would report, are never taken for an
+// addresses, which id 0 would report (RFC 6458 §9.5; Held Erratum 6114
+// writes that 0 as SCTP_FUTURE_ASSOC), are never taken for an
 // association's; an id the endpoint does not hold fails with the kernel's
 // EINVAL (net/sctp/socket.c: sctp_getsockopt_local_addrs). Errors are
 // *net.OpError with Op "get".
@@ -817,13 +818,13 @@ func (e *Endpoint) abortInterruptedNotification(cause error) error {
 // by taking one and giving it back, and fails with an error matching
 // syscall.EMFILE otherwise, the association staying on the endpoint. A
 // descriptor another goroutine takes between that check and the peel-off
-// can still cost the association, which then fails with the kernel's
-// EMFILE. So can the system running out of open files as a whole: when
-// the new socket's file cannot be allocated, Linux releases the socket
-// with the association, and PeelOff fails with the kernel's ENFILE (net/
-// socket.c: sock_alloc_file; fs/file_table.c: alloc_empty_file). The
-// descriptor check cannot see that limit coming, since a duplicate
-// descriptor shares its file.
+// can still cost the association, and PeelOff then fails with the
+// kernel's EMFILE. So can the system running out of open files as a
+// whole: when the new socket's file cannot be allocated, Linux releases
+// the socket with the association, and PeelOff fails with the kernel's
+// ENFILE (net/socket.c: sock_alloc_file; fs/file_table.c:
+// alloc_empty_file). The descriptor check cannot see that limit coming,
+// since a duplicate descriptor shares its file.
 //
 // A scope selector or a negative id is refused with an error matching
 // syscall.EINVAL before any system call, and an id the endpoint does not

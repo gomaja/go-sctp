@@ -394,6 +394,120 @@ func TestShutdownThenClose(t *testing.T) {
 	}
 }
 
+// TestShutdownAfterTheAssociationIsGone: once a one-to-one socket's
+// association has ended, by the peer's ABORT or by a completed graceful
+// shutdown, Shutdown has nothing to shut down and returns nil. Linux
+// leaves the socket's own state as it was when the association ended
+// (net/sctp/sm_sideeffect.c: sctp_cmd_new_state never moves a one-to-one
+// socket back to CLOSED), so shutdown(2) succeeds, and sctp_shutdown finds
+// no association to send a SHUTDOWN for (net/sctp/socket.c).
+func TestShutdownAfterTheAssociationIsGone(t *testing.T) {
+	for _, abort := range []bool{true, false} {
+		name := "after a graceful end"
+		if abort {
+			name = "after the peer's ABORT"
+		}
+		t.Run(name, func(t *testing.T) {
+			client, server := connPair(t, nil, nil)
+			end, want := server.Close, error(io.EOF)
+			if abort {
+				end, want = server.Abort, syscall.ECONNRESET
+			}
+			if err := end(); err != nil {
+				t.Fatalf("ending the association at the peer: %v", err)
+			}
+			if err := client.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatalf("SetReadDeadline: %v", err)
+			}
+			if _, err := client.Read(make([]byte, 64)); !errors.Is(err, want) {
+				t.Fatalf("read after the peer ended the association = %v, want %v", err, want)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				gone, err := client.newCloseOps().assocGone()
+				if err != nil {
+					t.Fatalf("assocGone: %v", err)
+				}
+				if gone {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the association outlived its end by 5 s")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			if err := client.Shutdown(); err != nil {
+				t.Fatalf("Shutdown after the association is gone = %v, want nil", err)
+			}
+			if err := client.Close(); err != nil {
+				t.Errorf("Close after that Shutdown = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// TestCloseWithNonPositiveGraceAbortsAtOnce (the socket half of
+// TestLifecycleCloseNonPositiveGraceAborts): CloseWithTimeout with a zero
+// or negative grace period aborts a live association at once. It returns
+// nil without waiting, the descriptor is closed, and the ABORT reaches the
+// peer, whose read fails with ECONNRESET.
+func TestCloseWithNonPositiveGraceAbortsAtOnce(t *testing.T) {
+	for _, grace := range []time.Duration{0, -time.Second} {
+		t.Run(grace.String(), func(t *testing.T) {
+			client, server := connPair(t, nil, nil)
+			rc, err := client.SyscallConn()
+			if err != nil {
+				t.Fatalf("SyscallConn: %v", err)
+			}
+			var fd int
+			rawFd(t, rc, func(f int) { fd = f })
+			start := time.Now()
+			if err := client.CloseWithTimeout(grace); err != nil {
+				t.Fatalf("CloseWithTimeout(%v) = %v, want nil", grace, err)
+			}
+			if d := time.Since(start); d > time.Second {
+				t.Errorf("CloseWithTimeout(%v) took %v, want an immediate abort", grace, d)
+			}
+			if fdIsOpen(fd) {
+				t.Errorf("descriptor %d is still open after CloseWithTimeout(%v)", fd, grace)
+			}
+			if err := server.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatalf("SetReadDeadline: %v", err)
+			}
+			if _, err := server.Read(make([]byte, 64)); !errors.Is(err, syscall.ECONNRESET) {
+				t.Errorf("the peer's read after CloseWithTimeout(%v) = %v, want ECONNRESET", grace, err)
+			}
+		})
+	}
+}
+
+// TestAbortAfterPeerAbortDoesNotWait (the socket half of
+// TestLifecycleAbortFromOpenDoesNotWait): an Abort on a connection whose
+// peer has already aborted the association returns nil at once and
+// releases the descriptor.
+func TestAbortAfterPeerAbortDoesNotWait(t *testing.T) {
+	client, server := connPair(t, nil, nil)
+	if err := server.Abort(); err != nil {
+		t.Fatalf("peer Abort: %v", err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	if _, err := client.Read(make([]byte, 64)); !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("read after the peer's ABORT = %v, want ECONNRESET", err)
+	}
+	start := time.Now()
+	if err := client.Abort(); err != nil {
+		t.Fatalf("Abort = %v, want nil", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("Abort against an aborted peer took %v; it must not wait", d)
+	}
+	if err := client.Abort(); !errors.Is(err, net.ErrClosed) {
+		t.Errorf("second Abort = %v, want net.ErrClosed", err)
+	}
+}
+
 // TestCloseAbortOvertakes: a Close waiting for a SHUTDOWN handshake that
 // cannot complete (a full send buffer, a peer that never reads) is ended
 // by an Abort from another goroutine: both return nil, well before the

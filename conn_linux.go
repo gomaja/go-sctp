@@ -402,6 +402,14 @@ func (c *Conn) setDeadline(t time.Time, set func(*os.File, time.Time) error) err
 // the middle of one of the package's reads, such as a ReadMsg between two
 // pieces of a message. Once the descriptor has been released, every call
 // returns an error matching net.ErrClosed without running the callback.
+//
+// What a Read callback consumes, the package never sees. A notification
+// record it reads is not delivered, and if that record is the AssocChange
+// that reports the end of the association, the package's reads see the end
+// only when Linux also marks it on the socket: as the error of a failed
+// association, unless the callback took that too, or as the end of the
+// stream after the peer shut a one-to-one socket's association down.
+// Otherwise they wait until their deadline.
 func (c *Conn) SyscallConn() (syscall.RawConn, error) {
 	if !c.opened() {
 		return nil, opError("syscallconn", c.network(), nil, c.LocalAddr(), net.ErrClosed)

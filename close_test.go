@@ -59,7 +59,11 @@ type fakeClock struct {
 	auto    bool
 	waits   []time.Duration // every d passed to after, in order
 	pending []fakeTimer
-	waiting chan time.Duration // manual mode only
+	// waiting receives d from every after call in manual mode. It is
+	// buffered well past the number of waits any one test makes, so that
+	// after never blocks on a test that does not read it, and a test that
+	// does can wait on it until the lifecycle is parked.
+	waiting chan time.Duration
 	// hook, when set, runs on every after call with its zero-based index,
 	// before the channel is chosen. It returns true to make that one wait
 	// never fire, whatever the mode.

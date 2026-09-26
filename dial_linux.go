@@ -220,22 +220,26 @@ func (c *Conn) selfConnected() bool {
 }
 
 // peerIsLocal reports whether the peer address peer is the local address
-// local. netip.Addr equality compares zones as well, and the two copies
-// of a link-local address differ in that: a local address carries its
-// interface's index as its scope id (net/sctp/ipv6.c:
+// local, on a dialed association, the only kind Dial checks. netip.Addr
+// equality compares zones as well, and the two copies of a link-local
+// address differ in that: a dialed association's local address carries
+// its interface's index as its scope id (net/sctp/ipv6.c:
 // sctp_v6_copy_addrlist), whereas a peer address learned from an INIT or
 // INIT ACK address parameter carries scope id 0, since
 // sctp_v6_from_addr_param stores its iif argument and every caller passes
 // 0 (net/sctp/sm_make_chunk.c: sctp_process_init, sctp_process_param,
-// sctp_add_asconf_response, sctp_asconf_param_success; net/sctp/input.c:
-// __sctp_rcv_init_lookup, __sctp_rcv_asconf_lookup); only a peer address
-// taken from a packet's source keeps its receiving interface
-// (sctp_v6_from_skb). The decoder keeps a zone only for a link-local
-// address with a non-zero scope id (decodeSockaddrEntry), so a zone-less
-// link-local peer address is matched against the local address without
-// its zone, as the kernel's own comparison does when either scope id is 0
-// (__sctp_v6_cmp_addr). A peer address that carries a zone must match
-// exactly: a local link-local address always has one.
+// sctp_process_asconf_param, sctp_asconf_param_success; net/sctp/input.c:
+// __sctp_rcv_init_lookup, __sctp_rcv_asconf_lookup; net/sctp/bind_addr.c:
+// sctp_raw_to_bind_addrs); only a peer address taken from a packet's
+// source keeps its receiving interface (sctp_v6_from_skb). The decoder
+// keeps a zone only for a link-local address with a non-zero scope id
+// (decodeSockaddrEntry), so a zone-less link-local peer address is matched
+// against the local address without its zone, as the kernel's own
+// comparison does when either scope id is 0 (__sctp_v6_cmp_addr). A peer
+// address that carries a zone must match exactly: on a dialed association
+// a local link-local address always has one. (An accepted association's
+// local list is rebuilt from the state cookie by sctp_raw_to_bind_addrs,
+// with scope id 0, but Dial never checks one.)
 func peerIsLocal(peer, local netip.Addr) bool {
 	return peer == local || (peer.Zone() == "" && peer.IsLinkLocalUnicast() && peer == local.WithZone(""))
 }

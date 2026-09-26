@@ -354,16 +354,22 @@ func sockaddrEntrySize(b []byte, at int) (int, error) {
 // A genuine IPv6 entry keeps its scope id as a zone only when the address
 // is link-local unicast. Linux sets sin6_scope_id without regard to the
 // address's kind, and differently for the two lists SCTP_GET_LOCAL_ADDRS
-// and SCTP_GET_PEER_ADDRS hand back (net/sctp/ipv6.c): every local
-// address carries its device's index (sctp_v6_copy_addrlist sets it from
-// dev->ifindex for every address on the device's list); a peer address
-// taken from a packet's source carries the receiving interface's index
-// (sctp_v6_from_skb); and a peer address learned from an INIT, INIT ACK
-// or ASCONF address parameter carries 0, since sctp_v6_from_addr_param
-// stores its iif argument and every caller passes 0
-// (net/sctp/sm_make_chunk.c: sctp_process_init, sctp_process_param,
-// sctp_add_asconf_response, sctp_asconf_param_success; net/sctp/input.c:
-// __sctp_rcv_init_lookup, __sctp_rcv_asconf_lookup). sctp_v6_addr_to_user,
+// and SCTP_GET_PEER_ADDRS hand back (net/sctp/ipv6.c): a local address
+// copied from the host's address list, as every local address of a dialed
+// association is, carries its device's index (sctp_v6_copy_addrlist sets
+// it from dev->ifindex for every address on the device's list); an
+// address taken from a packet carries the receiving interface's index
+// (sctp_v6_from_skb), as a peer's source address does, and as the one
+// local address of an accepted association whose local list holds a
+// single address does (net/sctp/sm_make_chunk.c: sctp_unpack_cookie adds
+// the COOKIE ECHO's destination); and an address learned from an INIT,
+// INIT ACK or ASCONF address parameter, or rebuilt from the state cookie
+// for an accepted association's longer local list, carries 0, since
+// sctp_v6_from_addr_param stores its iif argument and every caller passes
+// 0 (net/sctp/sm_make_chunk.c: sctp_process_init, sctp_process_param,
+// sctp_process_asconf_param, sctp_asconf_param_success; net/sctp/input.c:
+// __sctp_rcv_init_lookup, __sctp_rcv_asconf_lookup; net/sctp/bind_addr.c:
+// sctp_raw_to_bind_addrs). sctp_v6_addr_to_user,
 // which builds the value userspace reads, never clears or conditions it.
 // A loopback or global address decoded with its scope id would therefore
 // pick up a spurious zone from whichever interface happened to report or

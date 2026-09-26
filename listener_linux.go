@@ -48,7 +48,7 @@ func Listen(network string, laddr *Addr) (*Listener, error) {
 // each Listen, rather than syscall.SOMAXCONN: the Go constant is 128,
 // while Linux has defaulted to 4096 since 5.4, and a listener handed more
 // INITs than its backlog answers the excess with an ABORT, so the peer
-// sees its setup refused by a listener that is healthy (v1 readSomaxconn).
+// sees its setup refused by a listener that is healthy.
 //
 // Errors are *net.OpError with Op "listen".
 func (c *Config) Listen(network string, laddr *Addr) (*Listener, error) {

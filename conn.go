@@ -18,14 +18,7 @@ import (
 //
 // Every method of Conn may be called from several goroutines at once.
 //
-// Without the directive below, staticcheck flags sock, assoc, peerPort,
-// laddr, raddr, pathScope, bindMu, optMu, handler, closeWait, subs,
-// subMu, send, recv and term as unused (U1000) on GOOS=darwin and
-// GOOS=windows (kind and life are not flagged): only conn_linux.go's
-// methods read or write them, and the portable stubs in unsupported.go
-// never touch a real Conn's fields at all.
-//
-//lint:ignore U1000 see the comment above
+//lint:ignore U1000 staticcheck flags sock, assoc, peerPort, laddr, raddr, pathScope, bindMu, optMu, handler, closeWait, subs, subMu, send, recv and term as unused (U1000) on GOOS=darwin and GOOS=windows without this (kind and life are not flagged): only conn_linux.go's methods read or write them, and the portable stubs in unsupported.go never touch a real Conn's fields at all
 type Conn struct {
 	sock     socket
 	kind     connKind

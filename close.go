@@ -279,11 +279,13 @@ func (l *lifecycle) finish(err error) error {
 }
 
 // closeClock is the clock of the real closeOps. The wait uses one timer,
-// made on the first step and reset for every later one, so it allocates
-// nothing per step beyond that first time.NewTimer. Since Go 1.23 a reset
-// timer never delivers a value from before the reset, and an unreferenced
-// timer is collected without being stopped, so the clock needs no cleanup
-// when close returns with a step still pending.
+// made on the first step and reset for every later one, so the only
+// allocation is that first time.NewTimer. Two properties of the timers of
+// Go 1.23 and later, which this module gets from its go directive, make
+// that safe: a receive from the channel after Reset returns never yields a
+// value from the timer's earlier setting, and a timer nothing refers to
+// any more is collected whether or not it was stopped, so the clock needs
+// no cleanup when close returns with a step still pending.
 //
 // A closeClock has one caller: the close call whose wait it times. Its
 // timer is reset in place, so two closes sharing one clock would reset
