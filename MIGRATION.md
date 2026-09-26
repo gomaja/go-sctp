@@ -151,8 +151,10 @@ Beyond the names, these behaviours differ from v1.
 7. **Durations are exact.** A duration that is not a whole number of the
    kernel's unit, milliseconds, or seconds for `SetAutoClose`, is refused
    rather than rounded.
-8. **Kernel fallbacks are gone.** `SCTP_SOCKOPT_CONNECTX`, the legacy
-   peel-off option and the two-field thresholds option are no longer tried.
+8. **Kernel fallbacks are gone.** `SCTP_SOCKOPT_CONNECTX` and the legacy
+   peel-off option are no longer tried. A 32-bit build queries the two-field
+   `SCTP_PEER_ADDR_THLDS` option once per process only to learn the kernel's
+   word size.
    On a kernel without an option, the calls that need it return the
    kernel's error, typically one matching `syscall.ENOPROTOOPT`.
 9. **`Abort` overtakes a pending `Close`.** It makes the waiting `Close`
@@ -161,7 +163,11 @@ Beyond the names, these behaviours differ from v1.
     exists: Linux sets the association's receive window from the receive
     buffer when the association is created. `SetReadBuffer` on a live
     connection never makes the window larger.
-11. **`SendMsg`, `RecvMsg` and `Read` make no allocation per call**, and
+11. **`SendMsg`, `RecvMsg` and `Read` make no allocation per call** when
+    `SendOptions.Path` has no zone or a numeric zone. A zone given by
+    interface name allocates only when the package reads the host's
+    interface table again (at most once a minute, or for a name it has not
+    seen).
     `SendMsg` keeps nothing of its arguments.
 12. **`LocalAddr` and `LocalAddrs` report the association's own
     addresses.** v1 asked for association 0 and got the endpoint's bound
@@ -186,6 +192,7 @@ Beyond the names, these behaviours differ from v1.
     `SCTP_SEND_FAILED_EVENT`; the deprecated `SCTP_SEND_FAILED` is gone.
 18. **Every connection ends with `io.EOF`** after a graceful end, whichever
     side started it, on accepted, dialed and peeled-off connections alike.
+    A record consumed through `SyscallConn` is never seen by the package.
     With Linux alone, a peeled-off connection, or one whose shutdown this
     side started, leaves a reader waiting; v1 did.
 19. **Per-message path selection and bundling are new**: `SendOptions.Path`
@@ -796,7 +803,7 @@ successor; the text after it names what to use instead.
 | `SCTP_PARTIAL_DELIVERY_POINT` | `Conn.PartialDeliveryPoint` / `SetPartialDeliveryPoint` |
 | `SCTP_PEER_ADDR_CHANGE` | `EventPeerAddrChange` |
 | `SCTP_PEER_ADDR_PARAMS` | `Conn.PathParams` / `SetPathParams` |
-| `SCTP_PEER_ADDR_THLDS` | removed — Linux's legacy two-field option; `Conn.PathThresholds` |
+| `SCTP_PEER_ADDR_THLDS` | removed from the public API; a 32-bit build queries the legacy two-field option once per process to learn the kernel's word size; `Conn.PathThresholds` uses the three-field form |
 | `SCTP_PEER_ADDR_THLDS_V2` | `Conn.PathThresholds` / `SetPathThresholds` |
 | `SCTP_PEER_AUTH_CHUNKS` | `Conn.PeerAuthChunks` |
 | `SCTP_PF` | `PathPotentiallyFailed` |

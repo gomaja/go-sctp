@@ -719,7 +719,7 @@ func (e *Endpoint) recvNext(b []byte) (int, MsgInfo, Notification, error) {
 		}
 		s.b, s.keepNotes = b, true
 		perr := e.sock.raw.Read(s.fn)
-		s.b = nil
+		s.b, s.iov.Base = nil, nil
 		n, flags, record, cut, err := s.take()
 		switch {
 		case perr != nil:

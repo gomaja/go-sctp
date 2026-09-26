@@ -80,7 +80,7 @@ type lifecycle struct {
 	state atomic.Int32  // a lifeState
 	abort chan struct{} // closed by the Abort that moves the lifecycle to lifeAborting
 	done  chan struct{} // closed once the descriptor has been released
-	shut  atomic.Bool   // the graceful shutdown has been started, by shutdown or close
+	shut  atomic.Bool   // Shutdown or Close claimed the graceful shutdown
 }
 
 // closeOps are the system-level steps of closing one descriptor, injected
@@ -162,14 +162,14 @@ func (l *lifecycle) close(ops closeOps, grace time.Duration) error {
 	}
 	deadline := ops.now().Add(grace)
 
-	// Start the shutdown unless Shutdown already has: Linux would ignore a
-	// second SHUTDOWN primitive anyway (net/sctp/sm_statetable.c:
-	// TYPE_SCTP_PRIMITIVE_SHUTDOWN maps every shutdown state to
-	// sctp_sf_ignore_primitive). Its error only says that the association
-	// is already gone or shutting down; the poll below finds out which.
-	if l.shut.CompareAndSwap(false, true) {
-		_ = ops.startShutdown()
-	}
+	// Start the shutdown even if Shutdown set shut: it may not have called
+	// startShutdown yet. Linux ignores a second SHUTDOWN primitive in every
+	// shutdown state (net/sctp/sm_statetable.c:
+	// TYPE_SCTP_PRIMITIVE_SHUTDOWN maps to sctp_sf_ignore_primitive). Its
+	// error only says that the association is already gone or shutting down;
+	// the poll below finds out which.
+	l.shut.Store(true)
+	_ = ops.startShutdown()
 
 	// Wait for the association to go away by asking about the association
 	// itself, with one short query at a time and the waits in between, here,

@@ -281,7 +281,7 @@ func (c *Conn) recvNext(b []byte, raw bool) (int, MsgInfo, Notification, error) 
 
 		s.b, s.keepNotes = b, raw || c.handler != nil
 		perr := c.sock.raw.Read(s.fn)
-		s.b = nil
+		s.b, s.iov.Base = nil, nil
 		n, flags, record, cut, err := s.take()
 		switch {
 		case perr != nil:
@@ -724,7 +724,7 @@ func (c *Conn) readMsg(max int) (data []byte, info RcvInfo, err error) {
 				}
 			}
 		})
-		s.b = nil
+		s.b, s.iov.Base = nil, nil
 
 		// A handler must run after raw.Read has returned: it may read from
 		// the same connection. Before the message starts, the lock is

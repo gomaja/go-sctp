@@ -703,8 +703,8 @@ func TestLifecycleAbortiveCloseIsExclusive(t *testing.T) {
 // the graceful shutdown and reports that call's result, every later call is
 // a no-op returning nil (Linux ignores a second SHUTDOWN primitive in every
 // shutdown state, net/sctp/sm_statetable.c: TYPE_SCTP_PRIMITIVE_SHUTDOWN
-// maps them to sctp_sf_ignore_primitive), a later close waits without
-// starting another, and after close it reports net.ErrClosed.
+// maps them to sctp_sf_ignore_primitive), a later close starts shutdown
+// again and waits, and after close it reports net.ErrClosed.
 func TestLifecycleShutdownOnce(t *testing.T) {
 	t.Run("twice", func(t *testing.T) {
 		ops := &fakeOps{fakeClock: newAutoClock()}
@@ -734,12 +734,25 @@ func TestLifecycleShutdownOnce(t *testing.T) {
 			t.Errorf("startShutdown ran %d times, want once", c.shutdown)
 		}
 	})
-	t.Run("then close waits without starting another", func(t *testing.T) {
+	t.Run("then close starts shutdown again and waits", func(t *testing.T) {
 		ops := &fakeOps{fakeClock: newAutoClock(), gone: goneAfter(1)}
 		l := newLifecycleForTest()
 		if err := l.shutdown(ops); err != nil {
 			t.Fatalf("shutdown = %v", err)
 		}
+		if err := l.close(ops, time.Second); err != nil {
+			t.Fatalf("close = %v, want nil", err)
+		}
+		want := callCounts{gone: 2, shutdown: 2, abortive: 0, release: 1}
+		if c := ops.counts(); c != want {
+			t.Errorf("calls = %+v, want %+v", c, want)
+		}
+		wantReleased(t, l)
+	})
+	t.Run("close after shutdown claimed the start", func(t *testing.T) {
+		ops := &fakeOps{fakeClock: newAutoClock(), gone: goneAfter(1)}
+		l := newLifecycleForTest()
+		l.shut.Store(true) // Shutdown won its CAS but has not called startShutdown.
 		if err := l.close(ops, time.Second); err != nil {
 			t.Fatalf("close = %v, want nil", err)
 		}

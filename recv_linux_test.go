@@ -49,6 +49,39 @@ var (
 	_ net.Listener = (*Listener)(nil)
 )
 
+// TestConnReadsReleaseCallerBuffer checks every receive entry point after
+// a successful read, while the Conn remains open for another read.
+func TestConnReadsReleaseCallerBuffer(t *testing.T) {
+	for _, name := range []string{"RecvMsg", "Read", "ReadMsg"} {
+		t.Run(name, func(t *testing.T) {
+			sender, receiver := connPair(t, nil, nil)
+			if _, err := sender.Write([]byte("data")); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			switch name {
+			case "RecvMsg":
+				if n, _, err := receiver.RecvMsg(make([]byte, 32)); n != 4 || err != nil {
+					t.Fatalf("RecvMsg = %d, %v", n, err)
+				}
+			case "Read":
+				if n, err := receiver.Read(make([]byte, 32)); n != 4 || err != nil {
+					t.Fatalf("Read = %d, %v", n, err)
+				}
+			case "ReadMsg":
+				if b, _, err := receiver.ReadMsg(32); string(b) != "data" || err != nil {
+					t.Fatalf("ReadMsg = %q, %v", b, err)
+				}
+			}
+			receiver.recv.mu.Lock()
+			base := receiver.recv.iov.Base
+			receiver.recv.mu.Unlock()
+			if base != nil {
+				t.Errorf("receive state still points at the caller's buffer: %p", base)
+			}
+		})
+	}
+}
+
 // --- helpers ------------------------------------------------------------------
 
 // scriptConn builds a Conn over one end of an AF_UNIX socket pair, whose

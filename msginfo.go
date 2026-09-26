@@ -67,6 +67,10 @@ type SendOptions struct {
 	// Endpoint (where the kernel would look the association up by address,
 	// not by id) and on a connection from Endpoint.PeelOff (where Linux
 	// silently ignores the destination).
+	// A numeric zone or no zone adds no allocation to a successful send.
+	// A zone given by interface name allocates only when the package reads
+	// the host's interface table again (at most once a minute, or for a name
+	// it has not seen).
 	//
 	// A link-local Path without a zone, the form PeerAddrs reports a peer
 	// address in when the peer listed it in its INIT or INIT ACK, gets its

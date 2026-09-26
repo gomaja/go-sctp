@@ -138,6 +138,146 @@ func TestCloseDoesNotLeakDescriptors(t *testing.T) {
 	}
 }
 
+// TestCloseChurnUnderLoad runs graceful closes and aborts in eight workers
+// while accepted peers are reading, then checks teardown and descriptors.
+func TestCloseChurnUnderLoad(t *testing.T) {
+	before := openFds(t)
+	ln := mustListen(t, nil, "sctp4", loopback4(0))
+	addr := listenerAddr(t, ln)
+	if err := ln.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		t.Fatalf("listener deadline: %v", err)
+	}
+	var peerMu sync.Mutex
+	peers := make(map[*Conn]struct{})
+	var serverWG sync.WaitGroup
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		for {
+			c, err := ln.AcceptSCTP()
+			if err != nil {
+				return
+			}
+			peerMu.Lock()
+			peers[c] = struct{}{}
+			serverWG.Add(1)
+			peerMu.Unlock()
+			go func() {
+				defer serverWG.Done()
+				defer func() {
+					peerMu.Lock()
+					delete(peers, c)
+					peerMu.Unlock()
+				}()
+				_ = c.SetReadDeadline(time.Now().Add(20 * time.Second))
+				buf := make([]byte, 512)
+				for {
+					if _, err := c.Read(buf); err != nil {
+						_ = c.Abort()
+						return
+					}
+				}
+			}()
+		}
+	}()
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			_ = ln.Close()
+			select {
+			case <-acceptDone:
+			case <-time.After(time.Second):
+				t.Error("accept loop did not exit after listener Close")
+				return
+			}
+			peerMu.Lock()
+			remaining := make([]*Conn, 0, len(peers))
+			for c := range peers {
+				remaining = append(remaining, c)
+			}
+			peerMu.Unlock()
+			for _, c := range remaining {
+				_ = c.Abort()
+			}
+			serverDone := make(chan struct{})
+			go func() { serverWG.Wait(); close(serverDone) }()
+			select {
+			case <-serverDone:
+			case <-time.After(2 * time.Second):
+				t.Error("server readers did not exit after Abort")
+			}
+		})
+	}
+	t.Cleanup(cleanup)
+
+	const workers, cycles = 8, 15
+	errs := make(chan error, 2*workers*cycles)
+	var graceful, abortive atomic.Int32
+	var workersWG sync.WaitGroup
+	for w := range workers {
+		workersWG.Add(1)
+		go func() {
+			defer workersWG.Done()
+			for i := range cycles {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				c, err := Dial(ctx, "sctp4", nil, addr)
+				cancel()
+				if err != nil {
+					continue // a full backlog may refuse a rapid reconnect
+				}
+				_, err = c.Write([]byte("churn"))
+				if err != nil {
+					errs <- fmt.Errorf("worker %d cycle %d write: %w", w, i, err)
+				}
+				if (w+i)%2 == 0 {
+					err = c.CloseWithTimeout(200 * time.Millisecond)
+					if err == nil {
+						graceful.Add(1)
+					}
+				} else {
+					err = c.Abort()
+					if err == nil {
+						abortive.Add(1)
+					}
+				}
+				if err != nil {
+					errs <- fmt.Errorf("worker %d cycle %d teardown: %w", w, i, err)
+				}
+			}
+		}()
+	}
+	workersDone := make(chan struct{})
+	go func() { workersWG.Wait(); close(workersDone) }()
+	select {
+	case <-workersDone:
+	case <-time.After(20 * time.Second):
+		t.Fatal("churn workers did not finish within 20 s")
+	}
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if graceful.Load() == 0 || abortive.Load() == 0 {
+		t.Errorf("teardown coverage: %d graceful closes, %d aborts", graceful.Load(), abortive.Load())
+	}
+	if n := graceful.Load() + abortive.Load(); n < workers*cycles/2 {
+		t.Errorf("only %d of %d churn connections reached teardown", n, workers*cycles)
+	}
+	cleanup()
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		after := openFds(t)
+		if after <= before {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("descriptors did not settle: before=%d after=%d", before, after)
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // TestCloseReleasesPortForRebind: once both ends and the listener are
 // closed, the exact address can be bound again at once.
 func TestCloseReleasesPortForRebind(t *testing.T) {
@@ -683,6 +823,48 @@ func TestCloseReleasesParkedReaderAndWriter(t *testing.T) {
 				t.Errorf("descriptor count went %d -> %d", before, after)
 			}
 		})
+	}
+}
+
+// TestCloseBoundsParkedSendMsg checks that a send waiting for buffer space
+// cannot delay the close past its grace period.
+func TestCloseBoundsParkedSendMsg(t *testing.T) {
+	const grace = 300 * time.Millisecond
+	sender, receiver := connPair(t, &Config{WriteBuffer: new(1 << 20)}, &Config{ReadBuffer: new(closingReadBuffer)})
+	fillSendBufferStable(t, sender, receiver, fill(4096))
+	parked := make(chan struct{})
+	var once sync.Once
+	hookSendmsg(t, func(fd int, msg *syscall.Msghdr, flags int) (int, error) {
+		n, err := rawSendmsg(fd, msg, flags)
+		if err == syscall.EAGAIN {
+			once.Do(func() { close(parked) })
+		}
+		return n, err
+	})
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := sender.SendMsg(fill(4096), SendOptions{})
+		sendDone <- err
+	}()
+	select {
+	case <-parked:
+	case <-time.After(time.Second):
+		t.Fatal("SendMsg did not park on the full buffer")
+	}
+	start := time.Now()
+	if err := sender.CloseWithTimeout(grace); err != nil {
+		t.Fatalf("CloseWithTimeout: %v", err)
+	}
+	if d := time.Since(start); d > grace+200*time.Millisecond {
+		t.Errorf("CloseWithTimeout took %v with a %v grace", d, grace)
+	}
+	select {
+	case err := <-sendDone:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Errorf("parked SendMsg = %v, want net.ErrClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parked SendMsg did not return after Close")
 	}
 }
 
