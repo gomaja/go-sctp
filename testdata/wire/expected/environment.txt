@@ -1,0 +1,19 @@
+go image: golang:1.26.5-bookworm
+kernel: 7.0.12-linuxkit aarch64
+go: go version go1.26.5 linux/arm64
+tshark: TShark (Wireshark) 4.0.17 (Git v4.0.17 packaged as 4.0.17-0+deb12u3).
+dumpcap: Dumpcap (Wireshark) 4.0.17 (Git v4.0.17 packaged as 4.0.17-0+deb12u3).
+mtu: 1500
+net.sctp.prsctp_enable: 1
+net.sctp.intl_enable: 0
+net.sctp.auth_enable: 0
+net.sctp.addip_enable: 0
+net.sctp.rto_initial: 3000
+net.sctp.rto_min: 1000
+net.sctp.rto_max: 60000
+net.sctp.association_max_retrans: 10
+net.sctp.path_max_retrans: 5
+net.sctp.max_init_retransmits: 8
+net.sctp.sndbuf_policy: 0
+net.sctp.rcvbuf_policy: 0
+net.ipv4.ip_local_port_range: 49152-60999
