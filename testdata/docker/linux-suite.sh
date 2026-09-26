@@ -170,14 +170,20 @@ ip addr add 127.0.0.4/8 dev lo
 ip link add silent0 type dummy
 ip link set silent0 up
 ip route add 192.0.2.1/32 dev silent0
+# fe80::9 is a known link-local address on silent0, which the link-local
+# path tests bind, so that an association spans two links, and check for.
+ip -6 addr add fe80::9/64 dev silent0 nodad
 
 # A real interface literally named zone0 lets a zoned link-local address
 # round trip (fe80::1%zone0) through address resolution, encoding,
 # decoding and printing against a genuine kernel interface index, instead
-# of skipping for want of a matching interface.
+# of skipping for want of a matching interface. fe80::3 on the same link
+# lets two endpoints bind link-local addresses of that one link only, for
+# the tests of link-local paths given without a zone.
 ip link add zone0 type dummy
 ip link set zone0 up
 ip -6 addr add fe80::1/64 dev zone0 nodad
+ip -6 addr add fe80::3/64 dev zone0 nodad
 
 uname -r
 go version

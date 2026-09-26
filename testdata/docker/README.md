@@ -55,17 +55,24 @@ both sysctl states, and with `-race`, before it is committed.
   loopback port would. A dial-timeout or cancelled-context test needs that
   genuine silence: a fast, synthetic `ECONNREFUSED` would return before the
   timeout or cancellation ever had anything to interrupt, and the test
-  would pass for the wrong reason.
+  would pass for the wrong reason. `ip -6 addr add fe80::9/64 dev silent0
+  nodad` gives the link a known link-local address, besides the one Linux
+  generates for it, which the tests of link-local paths given without a
+  zone bind, so that an association spans two links, and check for.
 
 - **`ip link add zone0 type dummy; ip link set zone0 up; ip -6 addr add
-  fe80::1/64 dev zone0 nodad`.** IPv6 link-local addresses carry a
-  zone (scope) id tied to a real interface index; there is no way to
-  fabricate one. A genuine interface named `zone0` carrying `fe80::1` lets
-  a zoned link-local address (`fe80::1%zone0`) round-trip through address
-  resolution, encoding, decoding and printing against a real kernel
-  interface index, for the link-local zone tests. `nodad` skips duplicate
-  address detection, which would otherwise delay the address becoming
-  usable on a freshly created dummy link for no benefit here.
+  fe80::1/64 dev zone0 nodad`, and the same for `fe80::3`.**
+  IPv6 link-local addresses carry a zone (scope) id tied to a real
+  interface index; there is no way to fabricate one. A genuine interface
+  named `zone0` carrying `fe80::1` lets a zoned link-local address
+  (`fe80::1%zone0`) round-trip through address resolution, encoding,
+  decoding and printing against a real kernel interface index, for the
+  link-local zone tests. `fe80::3` lets a listener and a dialer bind
+  link-local addresses of that one link only, so that the association
+  runs over a single link, which the tests of link-local paths given
+  without a zone need. `nodad` skips duplicate address detection,
+  which would otherwise delay the addresses becoming usable on a freshly
+  created dummy link for no benefit here.
 
 - **`GOFLAGS=-buildvcs=false`.** Defensive, not required: Go 1.26 builds
   fine even with a git worktree's `.git` pointer file (it silently omits

@@ -115,9 +115,11 @@ func (c *Conn) init(p *prepared) error {
 }
 
 // refreshSnapshots replaces the LocalAddr and RemoteAddr snapshots with the
-// association's current address lists, each as a whole. A list that cannot
-// be read, because the association ended meanwhile, leaves that snapshot
-// as it was, or, on the first read, empty.
+// association's current address lists, each as a whole, and works out from
+// them again the scope id a link-local path without a zone gets
+// (linkLocalPathScope). A list that cannot be read, because the
+// association ended meanwhile, leaves that snapshot as it was, or, on the
+// first read, empty.
 func (c *Conn) refreshSnapshots() {
 	if a, err := c.sock.getAddrs(optGetLocalAddrs, c.assoc); err == nil {
 		c.laddr.Store(a)
@@ -128,6 +130,45 @@ func (c *Conn) refreshSnapshots() {
 		c.raddr.Store(a)
 	} else if c.raddr.Load() == nil {
 		c.raddr.Store(&Addr{})
+	}
+	if c.sock.family == afInet6 {
+		c.pathScope.Store(linkLocalPathScope(c.laddr.Load().IPs, c.raddr.Load().IPs, interfaceHolders()))
+	}
+}
+
+// interfaceHolders returns a function that reports the indexes of the host's
+// interfaces holding an address, for linkLocalPathScope. It reads the
+// interface table on its first call, and only then: linkLocalPathScope
+// asks only when neither the association's local nor its peer link-local
+// addresses carry a zone, and this runs when the address snapshots are
+// taken, never on a send.
+func interfaceHolders() func(netip.Addr) []uint32 {
+	var holders map[netip.Addr][]uint32
+	return func(ip netip.Addr) []uint32 {
+		if holders == nil {
+			holders = map[netip.Addr][]uint32{}
+			ifs, err := net.Interfaces()
+			if err != nil {
+				return nil
+			}
+			for _, ifi := range ifs {
+				addrs, err := ifi.Addrs()
+				if err != nil {
+					continue
+				}
+				for _, a := range addrs {
+					n, ok := a.(*net.IPNet)
+					if !ok {
+						continue
+					}
+					if held, ok := netip.AddrFromSlice(n.IP); ok {
+						held = held.Unmap()
+						holders[held] = append(holders[held], uint32(ifi.Index))
+					}
+				}
+			}
+		}
+		return holders[ip.WithZone("")]
 	}
 }
 

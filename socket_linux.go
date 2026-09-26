@@ -44,6 +44,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -107,17 +108,71 @@ func (s *socket) control(fn func(fd int) error) error {
 	return ferr
 }
 
+// testHookSockopt, when a test stores a function in it, is called with the
+// option number before every option system call getsockoptAt and
+// setsockoptAt make, to count them.
+var testHookSockopt atomic.Pointer[func(opt int)]
+
 // getsockopt reads SCTP option opt (level IPPROTO_SCTP) into the l bytes
 // at p, and sets l to the length the kernel reports. The error is the
 // bare errno, or net.ErrClosed.
 func (s *socket) getsockopt(opt int, p unsafe.Pointer, l *uint32) error {
-	return s.control(func(fd int) error { return rawGetsockopt(fd, ipprotoSCTP, opt, p, l) })
+	return s.getsockoptAt(ipprotoSCTP, opt, p, l)
+}
+
+// getsockoptAt is getsockopt at any level.
+func (s *socket) getsockoptAt(level, opt int, p unsafe.Pointer, l *uint32) error {
+	if hook := testHookSockopt.Load(); hook != nil {
+		(*hook)(opt)
+	}
+	return s.control(func(fd int) error { return rawGetsockopt(fd, level, opt, p, l) })
 }
 
 // setsockopt writes the l bytes at p to SCTP option opt (level
 // IPPROTO_SCTP). The error is the bare errno, or net.ErrClosed.
 func (s *socket) setsockopt(opt int, p unsafe.Pointer, l uintptr) error {
-	return s.control(func(fd int) error { return rawSetsockopt(fd, ipprotoSCTP, opt, p, l) })
+	return s.setsockoptAt(ipprotoSCTP, opt, p, l)
+}
+
+// setsockoptAt is setsockopt at any level.
+func (s *socket) setsockoptAt(level, opt int, p unsafe.Pointer, l uintptr) error {
+	if hook := testHookSockopt.Load(); hook != nil {
+		(*hook)(opt)
+	}
+	return s.control(func(fd int) error { return rawSetsockopt(fd, level, opt, p, l) })
+}
+
+// storageLayoutCache is which shape the running kernel gives the option
+// structs that embed a sockaddr_storage, once a 32-bit build has asked
+// (selectStorageLayout).
+var storageLayoutCache atomic.Uint32
+
+// storageLayout returns the shape the running kernel gives the option
+// structs that embed a sockaddr_storage (sockaddrStorageLayout, options.go),
+// for both getting and setting them, on a Conn or an Endpoint alike. A
+// 64-bit build runs only on a 64-bit kernel, which uses the build's own
+// layout, and so asks nothing: wordSize is a constant, and the rest of the
+// function is compiled away. A 32-bit build asks once per process, on s,
+// with probeKernelWordSize.
+func (s *socket) storageLayout() (*sockaddrStorageLayout, error) {
+	if wordSize == 8 {
+		return &nativeStorageLayout, nil
+	}
+	return selectStorageLayout(&storageLayoutCache, s.probeKernelWordSize)
+}
+
+// probeKernelWordSize asks for the two-field SCTP_PEER_ADDR_THLDS with
+// association id 0, the wildcard address and this build's own
+// sizeof(struct sctp_paddrthlds): 136 bytes on a 32-bit build. Linux
+// refuses a buffer shorter than its own struct with EINVAL
+// (net/sctp/socket.c: sctp_getsockopt_paddr_thresholds, "if (len < min)
+// return -EINVAL"), 144 bytes on a 64-bit kernel, and otherwise answers
+// with the socket's or association's thresholds, whatever the socket's
+// state, since the wildcard names no path.
+func (s *socket) probeKernelWordSize() error {
+	var b [sizePathThresholdsProbe]byte
+	l := uint32(len(b))
+	return s.getsockopt(optPathThresholdsProbe, unsafe.Pointer(&b[0]), &l)
 }
 
 // maxAddrsBuf bounds the buffer an address-list query may grow to. Linux

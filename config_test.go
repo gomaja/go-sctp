@@ -478,6 +478,24 @@ func TestPrepareRejectsInvalidConfiguration(t *testing.T) {
 // sctpAuthMaxChunks (SCTP_AUTH_MAX_CHUNKS, 16) entry-count cap
 // independently of both the forbidden-type check and the ASCONF-pair
 // auto-add.
+// TestPrepareAuthChunksCountsTheCallersASCONFPair: a caller that lists
+// ASCONF (0xC1) and ASCONF-ACK (0x80) itself leaves Linux nothing to add
+// (net/sctp/socket.c: sctp_setsockopt_auth_supported,
+// sctp_setsockopt_asconf_supported), so 16 other chunk types plus the pair
+// are 18 entries of the caller's own, two past SCTP_AUTH_MAX_CHUNKS, and
+// the refusal says so without a clause about chunks added automatically.
+func TestPrepareAuthChunksCountsTheCallersASCONFPair(t *testing.T) {
+	cfg := &Config{
+		Authentication: ptr(true),
+		AuthChunks:     append(manyAuthChunks(16), chunkTypeASCONF, chunkTypeASCONFAck),
+	}
+	_, err := cfg.prepare(styleDial)
+	wantRefused(t, err, "Config.AuthChunks has 18 entries")
+	if strings.Contains(err.Error(), "automatically") {
+		t.Errorf("err = %q, want no clause about chunks Linux adds automatically: the caller listed both", err)
+	}
+}
+
 func manyAuthChunks(n int) []uint8 {
 	chunks := make([]uint8, n)
 	for i := range chunks {
