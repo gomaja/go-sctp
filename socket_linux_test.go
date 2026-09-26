@@ -160,9 +160,110 @@ func fillSendBuffer(t testing.TB, c *Conn, payload []byte) int {
 	return 0
 }
 
+// closingReadBuffer is a receive buffer for a peer whose window a
+// stalled sender must close (fillSendBufferStable). Linux sets an
+// association's window to half the socket's receive buffer, which is
+// twice the value set (net/sctp/associola.c: sctp_association_init), so
+// the window is this many bytes: less than a sender's default send
+// buffer, net.core.wmem_default, 212992 bytes on the hosts the suite runs
+// on, so that the sender's messages close it, and more than the 65535 bytes a
+// loopback path's MTU is, the least a window must grow by before Linux
+// announces that a reading peer has reopened it (net/sctp/associola.c:
+// sctp_peer_needs_update), so that a peer that drains the messages does
+// so at once. The default receive buffer, net.core.rmem_default, is not
+// used: it can be so large, 16 MiB on some hosts, that the messages
+// never close the window.
+const closingReadBuffer = 128 << 10
+
+// fillSendBufferStable fills sender's send buffer, as fillSendBuffer does,
+// and makes it stay full: it waits until receiver, which must not read,
+// has closed its receive window and sender has taken in the SACK that
+// says so (awaitClosedWindow), then fills the room that SACK freed. It
+// returns how many messages were queued in all. receiver's window must be
+// smaller than sender's send buffer (closingReadBuffer), or the messages
+// cannot close it.
+//
+// One EAGAIN alone proves nothing lasting. DATA still in flight when it
+// comes is acknowledged by the receiver's delayed SACK
+// (net.sctp.sack_timeout; RFC 9260 §6.2), and the acknowledgement frees
+// its space in the buffer (net/sctp/outqueue.c: sctp_outq_sack frees the
+// chunks it acknowledges), so a send that should wait finds room. Once
+// receiver's window is closed and sender has seen it, nothing frees any:
+// every chunk receiver accepted has been acknowledged, and while it does
+// not read it discards every new one, the zero window probe Linux may
+// still send included (net/sctp/sm_statefuns.c: sctp_eat_data discards
+// DATA with no room in the window; net/sctp/output.c:
+// sctp_packet_can_append_data lets the probe out). A discarded chunk is
+// never acknowledged, so its space stays taken.
+func fillSendBufferStable(t testing.TB, sender, receiver *Conn, payload []byte) int {
+	t.Helper()
+	n := fillSendBuffer(t, sender, payload)
+	awaitClosedWindow(t, receiver, func() uint64 {
+		s, err := sender.Stats()
+		if err != nil {
+			t.Fatalf("sender Stats: %v", err)
+		}
+		return s.SACKsIn
+	})
+	return n + fillSendBuffer(t, sender, payload)
+}
+
+// awaitClosedWindow waits, up to 5 s, until receiver has announced a
+// closed receive window and its peer has taken in every SACK receiver had
+// sent by then; sacksIn reports how many SACKs the peer has taken in.
+// SCTP_ASSOCINFO's sasoc_local_rwnd is the window receiver's last SACK
+// announced (net/sctp/socket.c: sctp_getsockopt_associnfo reports a_rwnd,
+// which net/sctp/sm_sideeffect.c: sctp_gen_sack sets as it makes a SACK).
+// SCTP_GET_ASSOC_STATS counts SACKs out as each is put into a packet
+// (net/sctp/output.c: __sctp_packet_append_chunk) and in as each is
+// processed (net/sctp/associola.c: sctp_assoc_bh_rcv, which counts it and
+// runs it through the state machine under the socket lock the query also
+// takes). So once sacksIn reaches receiver's SACKs out, read after the
+// zero window was, the peer has processed the SACK that announced it,
+// which acknowledges every chunk receiver accepted: with its window
+// closed it accepts none after it.
+func awaitClosedWindow(t testing.TB, receiver *Conn, sacksIn func() uint64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ai, err := receiver.AssocInfo()
+		if err != nil {
+			t.Fatalf("receiver AssocInfo: %v", err)
+		}
+		if ai.LocalRwnd == 0 {
+			rs, err := receiver.Stats()
+			if err != nil {
+				t.Fatalf("receiver Stats: %v", err)
+			}
+			if sacksIn() >= rs.SACKsOut {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the receive window did not close, or its SACK was not taken in, within 5 s: the receiver announces %d bytes", ai.LocalRwnd)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// pollerStarted makes sure the runtime's network poller exists before a
+// descriptor count is taken: the poller opens its own descriptors, an
+// epoll instance and an eventfd (runtime/netpoll_epoll.go: netpollinit),
+// when the first pollable file is opened, and a count taken before that,
+// in a test run on its own, would take them for a leak.
+var pollerStarted sync.Once
+
 // openFds counts the descriptors this process holds.
 func openFds(t testing.TB) int {
 	t.Helper()
+	pollerStarted.Do(func() {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		_ = r.Close()
+		_ = w.Close()
+	})
 	ents, err := os.ReadDir("/proc/self/fd")
 	if err != nil {
 		t.Fatalf("read /proc/self/fd: %v", err)
@@ -1050,4 +1151,139 @@ func TestSctp6CarriesIPv4WhateverBindv6only(t *testing.T) {
 			_ = c.Abort()
 		})
 	}
+}
+
+// countOpErrors walks err's whole unwrap tree, including a joined error's
+// several causes (Unwrap() []error, as ErrMessageInterrupted's is), and
+// counts every *net.OpError value anywhere in it. A closed descriptor's
+// error collapses to a bare net.ErrClosed before any *net.OpError is
+// built (opError, errors.go), so this walk only needs to recognize the
+// two ordinary unwrap shapes to see every *net.OpError a chain carries,
+// however many operations wrapped along the way.
+func countOpErrors(err error) int {
+	if err == nil {
+		return 0
+	}
+	n := 0
+	if _, ok := err.(*net.OpError); ok {
+		n++
+	}
+	if u, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range u.Unwrap() {
+			n += countOpErrors(e)
+		}
+		return n
+	}
+	if u, ok := err.(interface{ Unwrap() error }); ok {
+		n += countOpErrors(u.Unwrap())
+	}
+	return n
+}
+
+// TestErrorsWrapExactlyOnce pins that Dial, Listen, Read, Write and an
+// option call each produce exactly one *net.OpError in their whole
+// error chain, for a cause that is not itself already closed-descriptor
+// flavoured. A cause that already matches net.ErrClosed, os.ErrClosed or
+// isFileClosingErr collapses to one net.ErrClosed wrap regardless of how
+// many times something tried to wrap it (opError, errors.go), which
+// would silently absorb a real double wrap before this test ever saw
+// it; every case below reaches its *net.OpError through a live,
+// non-closed cause instead — a peer ABORT, an expired deadline, a
+// refused argument or the kernel's own EINVAL — so a reintroduced double
+// wrap has nowhere to hide. Every one of this package's own error paths
+// hands opError, ioOpError, optError or callError a raw cause and
+// returns the result immediately, never wrapping an already-wrapped
+// result a second time; this is the regression test for that invariant
+// staying true as opError's own matching logic (errors.go) changes.
+func TestErrorsWrapExactlyOnce(t *testing.T) {
+	singleWrap := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("err is nil, want a real error to check")
+		}
+		if n := countOpErrors(err); n != 1 {
+			t.Errorf("err = %#v, has %d *net.OpError values in its chain, want exactly 1", err, n)
+		}
+	}
+
+	t.Run("Dial", func(t *testing.T) {
+		cause := errors.New("control failed")
+		cfg := &Config{Control: func(string, string, syscall.RawConn) error { return cause }}
+		_, err := cfg.Dial(testContext(t, 5*time.Second), "sctp4", nil, loopback4(1))
+		singleWrap(t, err)
+	})
+	t.Run("Listen", func(t *testing.T) {
+		cause := errors.New("control failed")
+		cfg := &Config{Control: func(string, string, syscall.RawConn) error { return cause }}
+		_, err := cfg.Listen("sctp4", loopback4(0))
+		singleWrap(t, err)
+	})
+	t.Run("Read after peer abort", func(t *testing.T) {
+		client, server := connPair(t, nil, nil)
+		if err := server.Abort(); err != nil {
+			t.Fatalf("peer Abort: %v", err)
+		}
+		if err := client.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Fatalf("SetReadDeadline: %v", err)
+		}
+		var err error
+		for {
+			if _, err = client.Read(make([]byte, 1)); err != nil {
+				break
+			}
+		}
+		singleWrap(t, err)
+	})
+	t.Run("Read with expired deadline", func(t *testing.T) {
+		client, _ := connPair(t, nil, nil)
+		if err := client.SetReadDeadline(time.Now().Add(-time.Second)); err != nil {
+			t.Fatalf("SetReadDeadline: %v", err)
+		}
+		_, err := client.Read(make([]byte, 1))
+		singleWrap(t, err)
+	})
+	t.Run("Write after peer abort", func(t *testing.T) {
+		client, server := connPair(t, nil, nil)
+		if err := server.Abort(); err != nil {
+			t.Fatalf("peer Abort: %v", err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		var err error
+		for {
+			if _, err = client.Write([]byte("x")); err != nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("writes kept succeeding after the peer's ABORT")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		singleWrap(t, err)
+	})
+	t.Run("Write empty message", func(t *testing.T) {
+		client, _ := connPair(t, nil, nil)
+		_, err := client.Write(nil)
+		singleWrap(t, err)
+	})
+	t.Run("SetPrimaryAddr non-peer address", func(t *testing.T) {
+		client, _ := connPair(t, nil, nil)
+		err := client.SetPrimaryAddr(netip.MustParseAddr("192.0.2.1"))
+		singleWrap(t, err)
+	})
+	t.Run("SetPrimaryAddr zero value", func(t *testing.T) {
+		client, _ := connPair(t, nil, nil)
+		err := client.SetPrimaryAddr(netip.Addr{})
+		singleWrap(t, err)
+	})
+	t.Run("SetPathThresholds non-peer address", func(t *testing.T) {
+		// SetPathThresholds reads the path's current thresholds before
+		// merging in the caller's changes (readThresholds, a getsockopt
+		// wrapped by callError, options_linux.go), unlike SetPrimaryAddr
+		// or SetNoDelay above, which only ever set: this is the one live
+		// cause in this test that reaches callError rather than
+		// optionError or argError.
+		client, _ := connPair(t, nil, nil)
+		err := client.SetPathThresholds(netip.MustParseAddr("192.0.2.1"), &PathThresholds{})
+		singleWrap(t, err)
+	})
 }

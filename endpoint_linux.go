@@ -776,14 +776,7 @@ func (e *Endpoint) readEnded(err error) error {
 func (e *Endpoint) abortInterruptedNotification(cause error) error {
 	err := errors.Join(e.recv.notes.interrupted(), closedCause(cause))
 	e.recv.notes.reset()
-	switch aerr := e.Abort(); {
-	case aerr == nil:
-	case errors.Is(aerr, net.ErrClosed):
-		err = errors.Join(err, net.ErrClosed)
-	default:
-		err = errors.Join(err, aerr)
-	}
-	return err
+	return joinAbortCause(err, e.Abort())
 }
 
 // --- PeelOff -----------------------------------------------------------------------

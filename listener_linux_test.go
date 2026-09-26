@@ -54,6 +54,132 @@ func readSysctl(t testing.TB, name string) string {
 
 // --- Listener lifecycle ------------------------------------------------------
 
+// TestListenErrorCarriesOperationAndAddress: a Control failure comes back
+// as a *net.OpError with Op "listen", a nil Source and Addr laddr,
+// wrapping the cause; the snapshot survives the caller changing laddr
+// afterward (see netAddr, TestDialErrorCarriesOperationAndAddresses).
+func TestListenErrorCarriesOperationAndAddress(t *testing.T) {
+	cause := errors.New("control failed")
+	laddr := loopback4(0)
+	cfg := &Config{Control: func(string, string, syscall.RawConn) error { return cause }}
+
+	ln, err := cfg.Listen("sctp4", laddr)
+	if ln != nil {
+		_ = ln.Close()
+		t.Fatal("Listen returned a listener with a failing Control hook")
+	}
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Op != "listen" || opErr.Net != "sctp4" || opErr.Source != nil {
+		t.Fatalf("err = %#v, want a *net.OpError with Op listen, Net sctp4 and a nil Source", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("err = %v, want it to wrap %v", err, cause)
+	}
+	wantAddr := laddr.String()
+	if got := opErr.Addr.String(); got != wantAddr {
+		t.Fatalf("Addr = %q, want laddr %q", got, wantAddr)
+	}
+
+	laddr.Port = 1
+	laddr.IPs[0] = netip.MustParseAddr("10.0.0.9")
+	if got := opErr.Addr.String(); got != wantAddr {
+		t.Errorf("Addr changed after caller mutation: got %q, want %q", got, wantAddr)
+	}
+}
+
+// TestListenWrapsForeignOperationError: a Control hook that returns a
+// *net.OpError from some other operation must not have that operation's
+// Op and Net leak into the error Listen itself reports; the result is
+// still Op "listen", Net "sctp4", with this call's own Addr, and
+// errors.Is still reaches the foreign error's own root cause.
+func TestListenWrapsForeignOperationError(t *testing.T) {
+	root := errors.New("control failed")
+	foreign := &net.OpError{Op: "control", Net: "tcp", Err: root}
+	laddr := loopback4(0)
+	cfg := &Config{Control: func(string, string, syscall.RawConn) error { return foreign }}
+
+	_, err := cfg.Listen("sctp4", laddr)
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Op != "listen" || opErr.Net != "sctp4" || opErr.Source != nil {
+		t.Fatalf("err = %#v, want a *net.OpError with Op listen, Net sctp4 and a nil Source", err)
+	}
+	if got, want := opErr.Addr.String(), laddr.String(); got != want {
+		t.Errorf("Addr = %q, want %q", got, want)
+	}
+	if !errors.Is(err, root) {
+		t.Fatalf("err = %v, want it to reach the foreign error's own root cause %v", err, root)
+	}
+	if errors.Unwrap(opErr) != foreign {
+		t.Errorf("opError's cause is %#v, want the foreign *net.OpError %#v itself", errors.Unwrap(opErr), foreign)
+	}
+}
+
+// TestListenPreservesMatchingOperationError: a Control hook that returns
+// a *net.OpError which already describes exactly this listen comes back
+// unchanged, not wrapped a second time.
+func TestListenPreservesMatchingOperationError(t *testing.T) {
+	root := errors.New("control failed")
+	laddr := loopback4(0)
+	matching := &net.OpError{Op: "listen", Net: "sctp4", Addr: netAddr(laddr), Err: root}
+	cfg := &Config{Control: func(string, string, syscall.RawConn) error { return matching }}
+
+	_, err := cfg.Listen("sctp4", laddr)
+	if err != matching {
+		t.Errorf("err = %#v, want the matching *net.OpError %#v unchanged", err, matching)
+	}
+}
+
+// TestSocketConfigListenControlWithoutLocalAddress: Control still runs,
+// with an empty address string, when Listen is given a nil laddr; there
+// is no wildcard *Addr to stringify before the bind that gives the socket
+// its address.
+func TestSocketConfigListenControlWithoutLocalAddress(t *testing.T) {
+	var sawControl bool
+	var controlNetwork, controlAddress string
+	cfg := &Config{Control: func(network, address string, c syscall.RawConn) error {
+		sawControl, controlNetwork, controlAddress = true, network, address
+		return nil
+	}}
+	l, err := cfg.Listen("sctp4", nil)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	if !sawControl {
+		t.Error("Control never ran")
+	}
+	if controlNetwork != "sctp4" || controlAddress != "" {
+		t.Errorf("Control(%q, %q), want (%q, %q)", controlNetwork, controlAddress, "sctp4", "")
+	}
+}
+
+// TestListenDoesNotMutateItsAddr: the caller's *Addr survives Listen
+// unchanged (v1 TestListenDoesNotMutateItsAddr). localBindAddrs
+// (socket_linux.go) only ever reads laddr.IPs to build encodeAddrs' own
+// destination buffer, so this cannot fail today, but a regression here
+// would be exactly the kind of bug this test caught in v1: the bind path
+// once appended the wildcard address into the caller's own slice, which
+// is a data race whenever the address is shared between goroutines (the
+// ordinary way to run a client and server against one fixed endpoint)
+// and changes the address's own meaning for whoever reuses it afterward.
+func TestListenDoesNotMutateItsAddr(t *testing.T) {
+	// A wildcard laddr (no IPs) is the scenario that exercises the
+	// vulnerable path: localBindAddrs' own wildcard branch, not the one
+	// that packs the caller's own list.
+	laddr := &Addr{}
+	before := slices.Clone(laddr.IPs)
+
+	l, err := Listen("sctp4", laddr)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	if !slices.Equal(laddr.IPs, before) {
+		t.Errorf("Listen changed the caller's IPs: %v -> %v", before, laddr.IPs)
+	}
+}
+
 // TestListenerDoubleCloseDoesNotCloseRecycledFd: a second Close must not
 // close the descriptor number again, since by then the kernel may have
 // handed it to an unrelated socket, which it would tear down silently.
@@ -164,11 +290,21 @@ func TestListenerAcceptAfterCloseFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
+	local := l.Addr()
 	if err := l.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, err := l.AcceptSCTP(); !errors.Is(err, net.ErrClosed) {
+	_, err = l.AcceptSCTP()
+	if !errors.Is(err, net.ErrClosed) {
 		t.Errorf("AcceptSCTP = %v, want net.ErrClosed", err)
+	}
+	// TestClosedListenerAcceptErrorRetainsListenerContext: the closed
+	// listener's own address, not a nil one, since Addr stays readable
+	// (below) and the error the caller sees should say which listener
+	// this was.
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Op != "accept" || opErr.Addr == nil || opErr.Addr.String() != local.String() {
+		t.Errorf("AcceptSCTP = %#v, want a *net.OpError with Op accept and Addr %v", err, local)
 	}
 	if l.Addr() == nil {
 		t.Error("Addr is nil after Close; the snapshot stays readable")
@@ -231,6 +367,12 @@ func TestListenerAcceptDeadline(t *testing.T) {
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		t.Errorf("AcceptSCTP = %v, want a net.Error with Timeout() true", err)
 	}
+	// TestAcceptErrorCarriesListenerContext: the listener's own address is
+	// the error's Addr, since Accept has no remote peer to name.
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Op != "accept" || opErr.Source != nil || opErr.Addr == nil || opErr.Addr.String() != listenerAddr(t, l).String() {
+		t.Errorf("AcceptSCTP = %#v, want a *net.OpError with Op accept, a nil Source and Addr %v", err, listenerAddr(t, l))
+	}
 	if elapsed < 250*time.Millisecond || elapsed > 10*time.Second {
 		t.Errorf("Accept gave up after %v against a 300 ms deadline", elapsed)
 	}
@@ -238,6 +380,47 @@ func TestListenerAcceptDeadline(t *testing.T) {
 		t.Fatalf("clearing the deadline: %v", err)
 	}
 	dialAccept(t, nil, l)
+}
+
+// TestAcceptSurvivesSignals: Accept must retry accept4 itself when a
+// signal interrupts it, rather than reporting EINTR as an accept failure
+// (v1 TestAcceptSurvivesSignals; see signalStorm).
+func TestAcceptSurvivesSignals(t *testing.T) {
+	l := mustListen(t, nil, "sctp4", loopback4(0))
+	stop := signalStorm(t)
+	defer stop()
+
+	const peers = 20
+	accepted := make(chan error, peers)
+	go func() {
+		for range peers {
+			c, err := l.AcceptSCTP()
+			if err != nil {
+				accepted <- err
+				return
+			}
+			_ = c.Close()
+			accepted <- nil
+		}
+	}()
+
+	raddr := listenerAddr(t, l)
+	for i := range peers {
+		// A gap between dials, so Accept is usually blocked in the
+		// poller when a signal lands.
+		time.Sleep(2 * time.Millisecond)
+		c, err := Dial(testContext(t, 10*time.Second), "sctp4", nil, raddr)
+		if err != nil {
+			t.Fatalf("peer %d dial: %v", i, err)
+		}
+		if err := <-accepted; err != nil {
+			if errors.Is(err, syscall.EINTR) {
+				t.Fatalf("accept %d returned EINTR: a signal during accept4 must be retried, not reported as a failure", i)
+			}
+			t.Fatalf("accept %d: %v", i, err)
+		}
+		_ = c.Close()
+	}
 }
 
 // TestRawSocketTimeoutDoesNotBecomeListenerDeadline: SO_RCVTIMEO set

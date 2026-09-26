@@ -28,12 +28,18 @@
 // RemoteAddr, Listener.Addr, Endpoint.Addr, AssocID) return their zero
 // value here, since no Conn, Listener or Endpoint can exist on these
 // platforms to hold anything else; every other stub returns
-// ErrUnsupported. A constructor that takes a Config first checks it as on
-// Linux, so that a mistake in a Config is reported on every platform, in
-// the same *net.OpError as on Linux, and only one Linux would take
-// reaches ErrUnsupported. None of them is carried over from v1's
-// sctp_unsupported.go (git show main:sctp_unsupported.go): the API they
-// stand in for is new.
+// ErrUnsupported. Dial, Listen, ListenEndpoint, OpenEndpoint, FileConn and
+// FileListener check their Config as on Linux first, so that a mistake in
+// one is reported on every platform, in the same *net.OpError as on
+// Linux; a Config Linux would accept still reaches ErrUnsupported, but
+// wrapped in the same *net.OpError shape Linux itself builds when
+// socket(2) answers EPROTONOSUPPORT or ESOCKTNOSUPPORT (socket_linux.go:
+// openSocket, socketError), never the bare sentinel — these six
+// constructors' errors have one shape everywhere. Every other method
+// keeps the bare sentinel: no live Conn, Listener or Endpoint ever
+// exists here for it to name. None of this is carried over from v1's
+// sctp_unsupported.go (git show main:sctp_unsupported.go): the API it
+// stands in for is new.
 
 package sctp
 
@@ -54,81 +60,99 @@ type sendState struct{}
 type recvState struct{}
 
 // Dial reports ErrUnsupported: SCTP sockets exist only on Linux.
-func Dial(context.Context, string, *Addr, *Addr) (*Conn, error) { return nil, ErrUnsupported }
+func Dial(ctx context.Context, network string, laddr, raddr *Addr) (*Conn, error) {
+	return (*Config)(nil).Dial(ctx, network, laddr, raddr)
+}
 
 // Dial checks c as the Linux Dial does, then reports ErrUnsupported:
 // SCTP sockets exist only on Linux. A Config Linux would refuse is
-// refused here too, in the same *net.OpError, with Op "dial".
+// refused here too, in the same *net.OpError, with Op "dial"; a Config
+// Linux would accept reaches ErrUnsupported in that same *net.OpError
+// shape, the one Linux itself builds when socket(2) answers
+// EPROTONOSUPPORT or ESOCKTNOSUPPORT (socket_linux.go: openSocket,
+// socketError), rather than the bare sentinel — a constructor's error
+// has one shape on every platform.
 func (c *Config) Dial(_ context.Context, network string, laddr, raddr *Addr) (*Conn, error) {
 	if _, err := c.prepare(styleDial); err != nil {
 		return nil, opError("dial", canonicalName(network), netAddr(laddr), netAddr(raddr), err)
 	}
-	return nil, ErrUnsupported
+	return nil, opError("dial", canonicalName(network), netAddr(laddr), netAddr(raddr), ErrUnsupported)
 }
 
 // Listen reports ErrUnsupported: SCTP sockets exist only on Linux.
-func Listen(string, *Addr) (*Listener, error) { return nil, ErrUnsupported }
+func Listen(network string, laddr *Addr) (*Listener, error) {
+	return (*Config)(nil).Listen(network, laddr)
+}
 
 // Listen checks c as the Linux Listen does, then reports ErrUnsupported:
 // SCTP sockets exist only on Linux. A refused Config is reported in a
-// *net.OpError with Op "listen", as on Linux.
+// *net.OpError with Op "listen", as on Linux; an accepted one reaches
+// ErrUnsupported in that same shape (see Config.Dial).
 func (c *Config) Listen(network string, laddr *Addr) (*Listener, error) {
 	if _, err := c.prepare(styleListen); err != nil {
 		return nil, opError("listen", canonicalName(network), nil, netAddr(laddr), err)
 	}
-	return nil, ErrUnsupported
+	return nil, opError("listen", canonicalName(network), nil, netAddr(laddr), ErrUnsupported)
 }
 
 // FileConn reports ErrUnsupported: SCTP sockets exist only on Linux.
-func FileConn(*os.File) (*Conn, error) { return nil, ErrUnsupported }
+func FileConn(f *os.File) (*Conn, error) { return (*Config)(nil).FileConn(f) }
 
 // FileConn checks c as the Linux FileConn does, then reports
 // ErrUnsupported: SCTP sockets exist only on Linux. A refused Config is
-// reported in a *net.OpError with Op "file", as on Linux.
+// reported in a *net.OpError with Op "file", as on Linux; an accepted
+// one reaches ErrUnsupported in that same shape (see Config.Dial).
 func (c *Config) FileConn(*os.File) (*Conn, error) {
 	if _, err := c.prepare(styleFile); err != nil {
 		return nil, opError("file", "sctp", nil, nil, err)
 	}
-	return nil, ErrUnsupported
+	return nil, opError("file", "sctp", nil, nil, ErrUnsupported)
 }
 
 // FileListener reports ErrUnsupported: SCTP sockets exist only on Linux.
-func FileListener(*os.File) (*Listener, error) { return nil, ErrUnsupported }
+func FileListener(f *os.File) (*Listener, error) { return (*Config)(nil).FileListener(f) }
 
 // FileListener checks c as the Linux FileListener does, then reports
 // ErrUnsupported: SCTP sockets exist only on Linux. A refused Config is
-// reported in a *net.OpError with Op "file", as on Linux.
+// reported in a *net.OpError with Op "file", as on Linux; an accepted
+// one reaches ErrUnsupported in that same shape (see Config.Dial).
 func (c *Config) FileListener(*os.File) (*Listener, error) {
 	if _, err := c.prepare(styleFile); err != nil {
 		return nil, opError("file", "sctp", nil, nil, err)
 	}
-	return nil, ErrUnsupported
+	return nil, opError("file", "sctp", nil, nil, ErrUnsupported)
 }
 
 // ListenEndpoint reports ErrUnsupported: SCTP sockets exist only on Linux.
-func ListenEndpoint(string, *Addr) (*Endpoint, error) { return nil, ErrUnsupported }
+func ListenEndpoint(network string, laddr *Addr) (*Endpoint, error) {
+	return (*Config)(nil).ListenEndpoint(network, laddr)
+}
 
 // ListenEndpoint checks c as the Linux ListenEndpoint does, then reports
 // ErrUnsupported: SCTP sockets exist only on Linux. A refused Config is
-// reported in a *net.OpError with Op "listen", as on Linux.
+// reported in a *net.OpError with Op "listen", as on Linux; an accepted
+// one reaches ErrUnsupported in that same shape (see Config.Dial).
 func (c *Config) ListenEndpoint(network string, laddr *Addr) (*Endpoint, error) {
 	if _, err := c.prepare(styleListenEndpoint); err != nil {
 		return nil, opError("listen", canonicalName(network), nil, netAddr(laddr), err)
 	}
-	return nil, ErrUnsupported
+	return nil, opError("listen", canonicalName(network), nil, netAddr(laddr), ErrUnsupported)
 }
 
 // OpenEndpoint reports ErrUnsupported: SCTP sockets exist only on Linux.
-func OpenEndpoint(string, *Addr) (*Endpoint, error) { return nil, ErrUnsupported }
+func OpenEndpoint(network string, laddr *Addr) (*Endpoint, error) {
+	return (*Config)(nil).OpenEndpoint(network, laddr)
+}
 
 // OpenEndpoint checks c as the Linux OpenEndpoint does, then reports
 // ErrUnsupported: SCTP sockets exist only on Linux. A refused Config is
-// reported in a *net.OpError with Op "listen", as on Linux.
+// reported in a *net.OpError with Op "listen", as on Linux; an accepted
+// one reaches ErrUnsupported in that same shape (see Config.Dial).
 func (c *Config) OpenEndpoint(network string, laddr *Addr) (*Endpoint, error) {
 	if _, err := c.prepare(styleOpenEndpoint); err != nil {
 		return nil, opError("listen", canonicalName(network), nil, netAddr(laddr), err)
 	}
-	return nil, ErrUnsupported
+	return nil, opError("listen", canonicalName(network), nil, netAddr(laddr), ErrUnsupported)
 }
 
 // InstallAuthKey reports ErrUnsupported: SCTP sockets exist only on Linux.

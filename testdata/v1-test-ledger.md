@@ -43,6 +43,46 @@ order it appears in its file.
 | **files** | **71** (70 root + `example/sctp_test.go`) |
 | **total rows** | **509** |
 
+## Closure
+
+Every row but the three below is either `ported →` or `retired:`; a
+`split:` row records one property ported and a sibling property retired
+where a single v1 test covered both.
+
+| status | count |
+|---|---|
+| ported | 438 |
+| retired | 66 |
+| split | 2 |
+| pending | 3 |
+| **total** | **509** |
+
+Recount from the Rows table itself, rather than trusting this table to
+have kept up with every row edit. Only a line starting with "| " and
+having at least 4 `|`-separated fields is a row; `split` is checked
+after `ported`/`retired` since the one legacy row worded "split and
+ported →..." (rather than this file's own `split:` convention) must
+count as split, not ported:
+
+```sh
+awk -F'|' '
+  /^\| / && NF>=4 {
+    status=$4; gsub(/^ +| +$/, "", status)
+    if (status == "" || status == "status") next
+    total++
+    if (status ~ /^ported/)       ported++
+    else if (status ~ /^retired/) retired++
+    else if (status ~ /^split/)   splitn++
+    else if (status == "pending") pending++
+    else print "unrecognised status: " $0
+  }
+  END { print "ported="ported, "retired="retired, "split="splitn, "pending="pending, "total="total }
+' testdata/v1-test-ledger.md
+```
+
+The 3 remaining `pending` rows are `example/sctp_test.go`'s: `example/main.go`
+does not exist yet, so there is nothing for them to be ported against.
+
 ## Rows
 
 | file | function | status |
@@ -63,11 +103,11 @@ order it appears in its file.
 | sctp_bench_test.go | BenchmarkBuildSndRcvCmsg | ported → BenchmarkAppendSendCmsgs (msginfo_test.go): the control message is now encoded into the connection's own buffer, SNDINFO in place of the deprecated SCTP_SNDRCV |
 | sctp_bench_test.go | BenchmarkToBuf | retired: toBuf, the binary.Write-based struct serialiser v1's send path used, no longer exists; every record is written field by field at abi.go's offsets, and BenchmarkAppendSendCmsgs measures the encoder that replaced it |
 | sctp_bench_test.go | BenchmarkParseSndRcvInfo | retired: parseSndRcvInfo and SCTP_SNDRCV are gone; RCVINFO and NXTINFO are parsed by parseRecvCmsgs into a MsgInfo value, which TestParseRecvCmsgsAllocatesNothing (msginfo_test.go) and TestRecvZeroAllocs (recv_linux_test.go) pin at zero allocations |
-| sctp_bench_test.go | BenchmarkResolveSCTPAddr | pending |
-| sctp_bench_test.go | BenchmarkToRawSockAddrBuf | pending |
-| sctp_bench_test.go | BenchmarkDial | pending |
-| sctp_bench_test.go | BenchmarkTransportEcho | pending |
-| sctp_bench_test.go | BenchmarkConcurrentEcho | pending |
+| sctp_bench_test.go | BenchmarkResolveSCTPAddr | ported → BenchmarkResolveAddr (addr_test.go), the same "single" and "multihomed" cases |
+| sctp_bench_test.go | BenchmarkToRawSockAddrBuf | ported → BenchmarkEncodeAddrs (sockaddr_test.go), with a two-address list matching v1's own multihomed literal, for encodeAddrs (the multi-address form ToRawSockAddrBuf measured) rather than the single-address encodeAddr |
+| sctp_bench_test.go | BenchmarkDial | ported → BenchmarkDial (dial_linux_test.go), the same shape: a listener that accepts and closes as fast as it can, one dial-and-close round trip per iteration |
+| sctp_bench_test.go | BenchmarkTransportEcho | ported → BenchmarkTransportEcho (send_linux_test.go), the same SCTP-vs-TCP comparison at the same three message sizes, over net.Conn on both sides |
+| sctp_bench_test.go | BenchmarkConcurrentEcho | ported → BenchmarkConcurrentEcho (send_linux_test.go), the same peer counts (1, 4, 16, 64) spreading b.N round trips across concurrently dialed peers |
 | sctp_bindx_test.go | TestNormalizeDynamicBindAddr | retired: BindAdd and BindRemove take netip.Addr values and always use the bound port (packed with port 0, which Linux reads as the bound port), so there is no caller port to normalise or compare; the argument refusals that remain (no address, the zero netip.Addr, the wrong family) are pinned by TestNilAddressesReturnErrors and TestListenerBindAddRemoveRefreshesAddr |
 | sctp_bindx_test.go | TestRemovesEveryLocalAddress | ported → TestRemovesEveryLocalAddress (listener_linux_test.go), over netip.Addr: IPv4 in mapped and plain form compares equal, zones stay distinct, and the unspecified address counts as every address |
 | sctp_bindx_test.go | FuzzDynamicBindAddressPreparation | ported → FuzzBindxAddrs (listener_linux_test.go): arbitrary addresses are refused with EINVAL or packed as whole entries with port 0, and the set comparison accepts anything |
@@ -89,8 +129,8 @@ order it appears in its file.
 | sctp_close_fuzz_test.go | FuzzCloseWithTimeout | ported → FuzzLifecycleClose (close_test.go) for the state machine: for every grace period, including zero, negative and sub-microsecond ones, close returns, releases the descriptor exactly once and leaves every later call reporting net.ErrClosed, now also with scripted status polls, failing steps and an Abort during the wait; the half that needs a live socket (checking that the descriptor is really closed) stays pending until the Linux close path exists |
 | sctp_close_fuzz_test.go | TestCloseTimeoutZeroIsImmediate | ported → TestLifecycleCloseNonPositiveGraceAborts (close_test.go) for the state machine: a zero or negative grace goes straight to the abortive close, with no SHUTDOWN, poll or wait; the half that needs a live socket stays pending until the Linux close path exists |
 | sctp_close_fuzz_test.go | TestCloseSubMicrosecondTimeout | ported → TestLifecycleCloseSubMicrosecondGrace (close_test.go); the timeval conversion it guarded no longer exists (the wait is a timer), so the property is that a grace below the first 200 µs backoff step still bounds the one wait and ends in the abortive close |
-| sctp_close_fuzz_test.go | TestCloseChurnUnderLoad | pending |
-| sctp_close_fuzz_test.go | TestCloseRacesWithReadAndWrite | pending |
+| sctp_close_fuzz_test.go | TestCloseChurnUnderLoad | ported → TestDialUnderChurnSucceeds (dial_linux_test.go: churn dialing against concurrent accept goroutines), TestCloseDoesNotLeakDescriptors (close_linux_test.go: no descriptor leak over repeated dial/close/abort cycles) and TestManyClientsCloseDoesNotDisturbPeers (endpoint_linux_test.go: independent concurrent teardown leaves other peers alone): the same worker-pool churn property, split across tests already written for the dial, close and multi-peer paths rather than one combined test |
+| sctp_close_fuzz_test.go | TestCloseRacesWithReadAndWrite | ported → TestCloseReleasesParkedReaderAndWriter (close_linux_test.go): Close proven concurrent with both a parked Read and a parked Write together, across dialed, accepted and peeled connections, under -race |
 | sctp_close_fuzz_test.go | TestAbortDoesNotWait | ported → TestLifecycleAbortFromOpenDoesNotWait (close_test.go) for the state machine: an Abort from open starts no SHUTDOWN, polls nothing and never waits; the half that needs a live socket (against an already aborted peer) stays pending until the Linux close path exists |
 | sctp_close_fuzz_test.go | TestPeelOffRacesWithClose | ported → TestPeelOffRacesWithEndpointClose (endpoint_linux_test.go) |
 | sctp_close_fuzz_test.go | TestClosingAPeeledConnectionShutsDownGracefully | ported → TestPeeledCloseShutsDownGracefully (endpoint_linux_test.go) |
@@ -129,7 +169,7 @@ order it appears in its file.
 | sctp_contract_test.go | TestPrimaryAddrSettersRejectMultipleAddresses | retired: SetPrimaryAddr and RequestPeerPrimary take one netip.Addr, so there is no list whose tail could be dropped; the zero address is refused before any system call (TestZeroPathAddrRefusedBeforeAnySyscall, options_linux_test.go) |
 | sctp_contract_test.go | TestIPv6AssociationRoundTrip | ported → TestIPv6AssociationRoundTrip (recv_linux_test.go): sctp6 sockets are dual-stack in this package, so the association carries IPv4 addresses too, and the check is that ::1 is among the peer addresses rather than that none is IPv4 |
 | sctp_contract_test.go | TestSetSelectReadFDUsesNativeWordSize | retired: setSelectReadFD was a test-only select(2) helper for waiting until a socket was readable; the tests now wait through the runtime poller, with a read deadline |
-| sctp_crosscompile_test.go | TestCrossCompileSmoke | pending |
+| sctp_crosscompile_test.go | TestCrossCompileSmoke | ported → TestCrossCompileSmoke (crosscompile_test.go), its 13 targets unchanged |
 | sctp_deadline_test.go | TestReadDeadlineExpires | ported → TestReadDeadlines (recv_linux_test.go) |
 | sctp_deadline_test.go | TestReadDeadlineInThePast | ported → TestReadDeadlines (recv_linux_test.go); TestDeadlineFlipFlop (send_linux_test.go) also passes a deadline with a message queued, for Read, RecvMsg and ReadMsg |
 | sctp_deadline_test.go | TestReadDeadlineCleared | ported → TestReadDeadlines (recv_linux_test.go) |
@@ -153,12 +193,12 @@ order it appears in its file.
 | sctp_dialcontext_test.go | TestSocketConfigDialContext | ported → TestSocketConfigDialContext (dial_linux_test.go), with Config.Control |
 | sctp_dialpolicy_test.go | TestAbandonDialSocketUsesPolicy | ported → TestAbandonDialUsesPolicy (dial_linux_test.go), against closeOps; the out-of-range policy case moved to validation (TestDialContextInvalidAbandonPolicyOpensNoSocket, and prepare's own tests) |
 | sctp_eintr_test.go | TestReadSurvivesSignals | ported → TestReadSurvivesSignals (recv_linux_test.go), across Read, RecvMsg and ReadMsg |
-| sctp_eintr_test.go | TestAcceptSurvivesSignals | pending |
-| sctp_eintr_test.go | TestGracefulCloseSurvivesSignals | pending |
+| sctp_eintr_test.go | TestAcceptSurvivesSignals | ported → TestAcceptSurvivesSignals (listener_linux_test.go), against signalStorm (v2's eintrSignaller) |
+| sctp_eintr_test.go | TestGracefulCloseSurvivesSignals | ported → TestGracefulCloseSurvivesSignals (close_linux_test.go), against signalStorm: a graceful Close under continuous signals must still read as io.EOF at the peer, never ECONNRESET |
 | sctp_eintr_test.go | TestDialNeverReturnsAnUnestablishedAssociation | ported → TestDialNeverReturnsAnUnestablishedAssociation (send_linux_test.go), with Write as the probe and SCTP_STATUS read directly; EINTR on sends is pinned by TestSendRetriesEINTR and TestSendSurvivesSignals |
 | sctp_eintr_test.go | TestSCTPReadRetriesEINTRDeterministically | ported → TestReadRetriesEINTR (recv_linux_test.go): scripted EINTR before data and between the pieces of a notification, for every reader |
 | sctp_eintr_test.go | TestSCTPReadRetriesEINTRUnderLoad | ported → TestReadSurvivesSignals (recv_linux_test.go) |
-| sctp_eintr_test.go | TestCloseTerminatesPromptlyUnderSignals | pending |
+| sctp_eintr_test.go | TestCloseTerminatesPromptlyUnderSignals | ported → TestCloseTerminatesPromptlyUnderSignals (close_linux_test.go), against signalStorm: CloseWithTimeout's retry loop stays bounded by its grace period under continuous signals |
 | sctp_endpoint_linux_test.go | TestSCTPEndpointSetDeadlineAppliesToReceiveAndSend | ported → TestEndpointSetDeadlineAppliesToReceiveAndSend (endpoint_linux_test.go) |
 | sctp_endpoint_linux_test.go | TestSCTPEndpointRejectsZeroLengthMessagesWithAncillaryData | ported → TestEndpointRefusesEmptyMessages (endpoint_linux_test.go) |
 | sctp_endpoint_linux_test.go | TestSCTPEndpointRoundTripAndPeelOffOwnership | ported → TestEndpointRoundTripAndPeelOff (endpoint_linux_test.go) |
@@ -196,26 +236,26 @@ order it appears in its file.
 | sctp_eor_test.go | TestMsgEORMatchesKernel | ported → TestRecvFlagsMatchKernel (recv_linux_test.go), with MSG_CTRUNC and MSG_NOTIFICATION |
 | sctp_eor_test.go | TestWrappedConnZeroesInfoWhenAbsent | retired: SCTPSndRcvInfoWrappedConn, which wrote an SCTP_SNDRCV header into the caller's buffer, is removed; metadata is a MsgInfo value that parseRecvCmsgs zeroes before it fills it (TestParseRecvCmsgs* in msginfo_test.go) |
 | sctp_eor_test.go | TestEverySendIsACompleteRecord | ported → TestEverySendIsACompleteRecord (recv_linux_test.go), with SendOptions.More in place of a raw MSG_MORE |
-| sctp_error_contract_linux_test.go | TestDialErrorCarriesOperationAndAddresses | pending |
-| sctp_error_contract_linux_test.go | TestDialWrapsForeignOperationError | pending |
-| sctp_error_contract_linux_test.go | TestDialPreservesMatchingOperationError | pending |
-| sctp_error_contract_linux_test.go | TestListenErrorCarriesOperationAndAddress | pending |
-| sctp_error_contract_linux_test.go | TestDialContextErrorCarriesOperationAndAddresses | pending |
-| sctp_error_contract_linux_test.go | TestAcceptErrorCarriesListenerContext | pending |
+| sctp_error_contract_linux_test.go | TestDialErrorCarriesOperationAndAddresses | ported → TestDialErrorCarriesOperationAndAddresses (dial_linux_test.go): a Control failure reports a *net.OpError with Op dial, Source laddr and Addr raddr — both checked against the addresses themselves, not only for internal consistency — immune to the caller mutating either afterward |
+| sctp_error_contract_linux_test.go | TestDialWrapsForeignOperationError | ported → TestDialWrapsForeignOperationError (dial_linux_test.go): a Control hook returning a *net.OpError from an unrelated operation gets it wrapped as this dial's own cause, with Op dial, Net sctp4 and this call's own Source and Addr, errors.Is still reaching the foreign error's root cause — opError (errors.go) wraps any *net.OpError that does not already describe exactly this operation (same Op, Net, Source and Addr) |
+| sctp_error_contract_linux_test.go | TestDialPreservesMatchingOperationError | ported → TestDialPreservesMatchingOperationError (dial_linux_test.go), through a live Dial call, and TestOpErrorNoDoubleWrap (errors_test.go) at the opError level directly: a *net.OpError that already describes exactly this operation comes back unchanged |
+| sctp_error_contract_linux_test.go | TestListenErrorCarriesOperationAndAddress | ported → TestListenErrorCarriesOperationAndAddress (listener_linux_test.go): a Control failure reports a *net.OpError with Op listen, a nil Source and Addr laddr — checked against the address itself — immune to the caller mutating laddr afterward; TestListenWrapsForeignOperationError and TestListenPreservesMatchingOperationError (listener_linux_test.go) cover the foreign and matching cases Dial's twin tests do |
+| sctp_error_contract_linux_test.go | TestDialContextErrorCarriesOperationAndAddresses | ported → TestDialContextAlreadyCancelledOpensNoSocket (dial_linux_test.go): the same property (a cancelled context reports context.Canceled inside a *net.OpError with Op dial, a nil Source and Addr raddr, both checked), additionally checking that no socket was opened for it |
+| sctp_error_contract_linux_test.go | TestAcceptErrorCarriesListenerContext | ported → TestListenerAcceptDeadline (listener_linux_test.go): a deadline-exceeded Accept reports a *net.OpError with Op accept, a nil Source and Addr the listener's own address |
 | sctp_error_contract_linux_test.go | TestNetConnIOErrorsCarryConnectionContext | ported → TestSendErrorsCarryConnectionContext (send_linux_test.go) for the write half, TestReadErrorsCarryConnectionContext (recv_linux_test.go) for the read half, on Read, RecvMsg and ReadMsg |
 | sctp_error_contract_linux_test.go | TestNetConnIOErrorsPreserveExplicitNetwork | ported → TestSendErrorsCarryConnectionContext/sctp4 (send_linux_test.go), TestReadErrorsCarryConnectionContext/sctp4 (recv_linux_test.go) |
 | sctp_error_contract_linux_test.go | TestClosedNetConnErrorsRetainConnectionContext | ported → TestSendErrorsCarryConnectionContext (send_linux_test.go), TestReadErrorsCarryConnectionContext (recv_linux_test.go): net.ErrClosed wrapped once, never nested |
 | sctp_error_contract_linux_test.go | TestNetConnGracefulCloseReturnsDirectEOF | ported → TestReadErrorsCarryConnectionContext (recv_linux_test.go), TestGracefulEndReachesEOF (recv_linux_test.go): io.EOF itself, unwrapped, from Read, RecvMsg and ReadMsg |
-| sctp_error_contract_linux_test.go | TestClosedListenerAcceptErrorRetainsListenerContext | pending |
-| sctp_error_contract_linux_test.go | TestRawConnectErrorRemainsUnwrapped | pending |
+| sctp_error_contract_linux_test.go | TestClosedListenerAcceptErrorRetainsListenerContext | ported → TestListenerAcceptAfterCloseFails (listener_linux_test.go): Accept after Close reports a *net.OpError with Op accept and Addr the listener's own address, which Addr() keeps reporting after Close |
+| sctp_error_contract_linux_test.go | TestRawConnectErrorRemainsUnwrapped | retired: SCTPConnect, the raw connect helper for a caller-supplied descriptor, is not part of the redesigned API; every connect path is internal to Dial/Config.Dial and Endpoint.Connect, whose errors are always a *net.OpError with Op dial (Endpoint.Connect's doc), so there is no unwrapped raw connect surface left |
 | sctp_error_contract_test.go | TestClosedOperationErrorRetainsNetErrorContract | ported → TestReadErrorsCarryConnectionContext (recv_linux_test.go): a read on a released, nil or zero Conn is a *net.OpError, a net.Error, around net.ErrClosed itself |
-| sctp_event_test.go | TestEventStructMatchesKernel | pending |
+| sctp_event_test.go | TestEventStructMatchesKernel | ported → TestOptionStructLayouts (its sizeEvent/eventAssocIDOff/eventTypeOff/eventOnOff rows; abi_test.go), the same struct sctp_event layout |
 | sctp_event_test.go | TestSubscribeEventRoundTrip | ported → TestSubscribe (recv_linux_test.go), for every EventType: Subscribed reports the caller's set and the kernel subscription follows, except EventAssocChange's, which stays on |
 | sctp_event_test.go | TestSubscribeEventScopeOnConnectedSocket | ported → TestSubscribe (recv_linux_test.go): read back with association id 0, which on a connected socket answers for the association (sctp_getsockopt_event) |
-| sctp_event_test.go | TestSubscribeEventVisibleInBulkBeforeConnect | pending |
+| sctp_event_test.go | TestSubscribeEventVisibleInBulkBeforeConnect | retired: SCTP_EVENTS/EventSubscribe, the deprecated bulk-events option this checked against per-type SCTP_EVENT, is not implemented — RFC 6458 §8.7 deprecates it in favour of SCTP_EVENT, and grep -rn EventSubscribe finds no such type in the package; there is no bulk view left to reconcile a per-type subscription against |
 | sctp_event_test.go | TestSubscribeEventRejectsUnknownType | ported → TestSubscribe (recv_linux_test.go), for Subscribe and Subscribed, before any system call |
 | sctp_event_test.go | TestSubscribeEventOnClosedConn | ported → TestSubscribe (recv_linux_test.go): net.ErrClosed inside a set or get *net.OpError |
-| sctp_event_test.go | TestSetRecvInfoOptions | pending |
+| sctp_event_test.go | TestSetRecvInfoOptions | split: its SCTP_RECVNXTINFO half ported → TestOptionsRoundTrip (ReceiveNxtInfo rows) and TestReceiveNxtInfoOnALiveConnection (options_linux_test.go); its SCTP_RECVRCVINFO half retired, since this package always enables SCTP_RECVRCVINFO itself, unconditionally, on every socket it creates or adopts (no Config field or Conn setter exists to toggle it) |
 | sctp_extensions_test.go | TestDefaultSndInfoRoundTrip | ported → TestDefaultInfoRoundTrip (send_linux_test.go) |
 | sctp_extensions_test.go | TestDefaultSndInfoRejectsShortOption | ported → TestDefaultInfoRoundTrip (send_linux_test.go): a 12-byte SCTP_DEFAULT_SNDINFO is still refused with EINVAL |
 | sctp_extensions_test.go | TestAutoAsconfNeedsBoundSocket | ported → TestAutoASCONFNeedsAWildcardBind and TestOptionsRoundTrip (its AutoASCONF rows on a wildcard-bound connection) (options_linux_test.go) |
@@ -244,16 +284,16 @@ order it appears in its file.
 | sctp_fdleak_test.go | TestFileListenerDoesNotLeakDescriptors | ported → TestFileListenerDoesNotLeakDescriptors (file_linux_test.go) |
 | sctp_fragment_test.go | TestMessagesAcrossTheFragmentationPoint | ported → TestFragmentedMessages (recv_linux_test.go), with SCTP_MAXSEG set so that loopback fragments too |
 | sctp_fragment_test.go | TestFragmentedMessageReportsEORCorrectly | ported → TestFragmentedMessages (recv_linux_test.go), with RecvMsg's EOR |
-| sctp_hardening_test.go | TestAcceptedAssociationIsCloseOnExec | pending |
-| sctp_hardening_test.go | TestListenDoesNotMutateItsAddr | pending |
-| sctp_hardening_test.go | TestDialDoesNotMutateItsAddr | pending |
-| sctp_hardening_test.go | TestUnknownNetworkIsRejected | pending |
-| sctp_hardening_test.go | TestEmptyNetworkDoesNotPanic | pending |
-| sctp_hardening_test.go | TestUnknownNetworkErrorIsTheStandardType | pending |
+| sctp_hardening_test.go | TestAcceptedAssociationIsCloseOnExec | ported → TestDescriptorsAreNonBlockingAndCloseOnExec (socket_linux_test.go), its "accepted" case |
+| sctp_hardening_test.go | TestListenDoesNotMutateItsAddr | ported → TestListenDoesNotMutateItsAddr (listener_linux_test.go), against a wildcard laddr, the scenario that exercises localBindAddrs' wildcard branch (socket_linux.go); mutation-checked against a reintroduced append into the caller's own laddr.IPs |
+| sctp_hardening_test.go | TestDialDoesNotMutateItsAddr | ported → TestDialDoesNotMutateItsAddr (dial_linux_test.go), including v1's second-dial check: the same laddr, reused, must still mean the wildcard; mutation-checked the same way as its Listen twin |
+| sctp_hardening_test.go | TestUnknownNetworkIsRejected | ported → TestCanonicalNetworkRejectsUnknownNames, TestCanonicalNetworkFamilySelection (addr_test.go): the same accepted ("", sctp, sctp4, sctp6) and rejected (tcp, sctp5, SCTP, padded) network-name table, proven once on socketFamily's shared canonicalNetwork call that Dial, Listen and the Endpoint constructors all make before any socket exists |
+| sctp_hardening_test.go | TestEmptyNetworkDoesNotPanic | retired: canonicalNetwork (addr.go) switches on the whole network string, never indexes it, so the last-byte-indexing panic v1's vendored favoriteAddrFamily could raise on an empty string cannot recur by construction; TestCanonicalNetworkFamilySelection's "empty network, no ips" row confirms "" is still accepted as sctp's synonym |
+| sctp_hardening_test.go | TestUnknownNetworkErrorIsTheStandardType | retired: v2 does not report net.UnknownNetworkError; every network-name validation refusal matches syscall.EINVAL through invalidArg (errors.go), the one error contract every constructor argument shares (TestCanonicalNetworkRejectsUnknownNames, addr_test.go) |
 | sctp_hardening_test.go | TestReadMsgSkipsNotifications | ported → TestReadMsgSkipsNotifications (recv_linux_test.go), with and without a handler |
 | sctp_hardening_test.go | TestReadWithoutDeadlineWaitsForData | ported → TestPendingReadObservesLaterDeadline (recv_linux_test.go) |
 | sctp_hardening_test.go | TestReadWithDeadlineStillReportsTheDeadline | ported → TestPendingReadObservesLaterDeadline (recv_linux_test.go), TestReadDeadlines (recv_linux_test.go) |
-| sctp_kernelpaths_test.go | TestNxtInfoLayoutMatchesKernel | pending |
+| sctp_kernelpaths_test.go | TestNxtInfoLayoutMatchesKernel | ported → TestCmsgStructLayouts (its sizeNxtInfo/nxtInfoStreamOff/nxtInfoFlagsOff/nxtInfoPPIDOff/nxtInfoLengthOff/nxtInfoAssocIDOff rows; abi_test.go): the same struct sctp_nxtinfo layout, pinned as the wire byte offsets msginfo.go's decoder reads directly, since v2 decodes NxtInfo field by field rather than mapping the kernel struct onto Go memory with unsafe.Offsetof |
 | sctp_kernelpaths_test.go | TestSCTPReadNextInfoReportsTheQueuedMessage | ported → TestRecvMsgNxtInfoOnlyWithTheOption (recv_linux_test.go), TestRecvMsgControlBufferHoldsEveryRecord (recv_linux_test.go): MsgInfo.Nxt names the next message's stream, PPID and length |
 | sctp_kernelpaths_test.go | TestSCTPReadNextInfoIsNilWithoutTheOption | ported → TestRecvMsgNxtInfoOnlyWithTheOption (recv_linux_test.go): HasNxt false without ReceiveNxtInfo |
 | sctp_kernelpaths_test.go | TestSetPrimaryPeerAddrSelectsThePath | ported → TestSetPrimaryAddrSelectsThePath (options_linux_test.go) |
@@ -263,13 +303,13 @@ order it appears in its file.
 | sctp_kernelpaths_test.go | TestStreamChangeReportsAddedStreamsNotTheNewWidth | ported → TestAddStreamsWidensTheAssociation (options_ext_linux_test.go) |
 | sctp_kernelpaths_test.go | TestStreamChangeReportsDeniedWhenThePeerRefuses | ported → TestAddStreamsDeniedByThePeer (options_ext_linux_test.go) |
 | sctp_layout_test.go | TestStructLayoutsMatchKernel | ported → TestCmsgStructLayouts, TestOptionStructLayouts, TestSockaddrStorageOptionLayouts, TestKernel64Layouts, TestSockaddrStorageLayoutFormula (abi_test.go); its EventSubscribe subtest retired: this package does not implement SCTP_EVENTS, the deprecated RFC 6458 mechanism it configures. Its AssocStats subtest is only half covered by that port: the layout-pinning half (assocStatsCounters, assocStatsSize) moved to TestSockaddrStorageOptionLayouts/TestKernel64Layouts (abi_test.go), and the decoding half (AssocStats.unmarshal against a hand-built buffer) to TestAssocStatsBothLayouts (options_test.go), for both layouts a 32-bit build can meet |
-| sctp_linux_test.go | TestNotificationHandlerAssignmentOnDialing | pending |
-| sctp_linux_test.go | TestNotificationHandlerAssignmentOnListening | pending |
-| sctp_linux_test.go | TestDialUseControlFuncWithoutLocalAddress | pending |
-| sctp_linux_test.go | TestListenUseControlFuncWithoutLocalAddress | pending |
-| sctp_linux_test.go | TestSyscallConn | pending |
-| sctp_linux_test.go | TestSCTPListenerNameFromFd | pending |
-| sctp_linux_test.go | TestListenerSurvivesGCAfterFileListener | pending |
+| sctp_linux_test.go | TestNotificationHandlerAssignmentOnDialing | ported → TestReadMsgHandlerReassemblesNotification, TestHandlerReentry (recv_linux_test.go), whose client Config carries NotificationHandler: prepare (config.go) assigns it identically for every style, and these prove it not merely assigned but invoked and correctly reassembling notifications on a dialed connection |
+| sctp_linux_test.go | TestNotificationHandlerAssignmentOnListening | ported → the same tests' server Config (the accepted side of connPair) and TestManyClientsNotificationsCarryAssociationID (endpoint_linux_test.go) for the listening/Endpoint side at scale: one shared prepare() assignment, proven working end to end on both roles rather than poked as a private field |
+| sctp_linux_test.go | TestDialUseControlFuncWithoutLocalAddress | ported → TestSocketConfigDialContext (dial_linux_test.go): dialAccept's own Dial call always passes a nil laddr, so Control's (network, address) arguments are proven correct for exactly this case on every run, not merely tolerated once |
+| sctp_linux_test.go | TestListenUseControlFuncWithoutLocalAddress | ported → TestSocketConfigListenControlWithoutLocalAddress (listener_linux_test.go): Control still runs, with an empty address string, when Listen is given a nil laddr |
+| sctp_linux_test.go | TestSyscallConn | ported → TestDescriptorsAreNonBlockingAndCloseOnExec (socket_linux_test.go: listener, dialed and accepted SyscallConn all hand out a real descriptor through Control) and TestSyscallConnAfterCloseReturnsNetErrClosed (close_linux_test.go: net.ErrClosed after Close) |
+| sctp_linux_test.go | TestSCTPListenerNameFromFd | ported → TestFileListenerAdoptsQueuedAssociations (file_linux_test.go): the adopted listener's Addr port matches the original bound socket's, now built from a raw syscall-created socket rather than a duplicate of an existing *Listener |
+| sctp_linux_test.go | TestListenerSurvivesGCAfterFileListener | ported → TestListenerSurvivesGCAfterFileListener (file_linux_test.go), same mechanism and property: two forced collections after the adopting *os.File is dropped must not let its finalizer close the original listener's still-owned descriptor |
 | sctp_listener_test.go | TestListenerDoubleCloseDoesNotCloseRecycledFd | ported → TestListenerDoubleCloseDoesNotCloseRecycledFd (listener_linux_test.go) |
 | sctp_listener_test.go | TestListenerCloseIsIdempotent | ported → TestListenerCloseIsIdempotent (listener_linux_test.go) |
 | sctp_listener_test.go | TestListenerConcurrentClose | ported → TestListenerConcurrentClose (listener_linux_test.go) |
@@ -447,14 +487,14 @@ order it appears in its file.
 | sctp_readmsg_test.go | FuzzReadMsg | ported → FuzzReadMsg (recv_linux_test.go) |
 | sctp_resolve_linux_test.go | TestExplicitNetworkRejectsTheOtherAddressFamily | ported → TestExplicitNetworkRejectsTheOtherAddressFamily (socket_linux_test.go), with a changed invariant: an IPv6 address on sctp4 is still refused (now EINVAL, before any socket exists), but an IPv4 address on sctp6 is accepted and used in IPv4-mapped form, since an AF_INET6 socket carries both families |
 | sctp_resolve_portable_test.go | TestNilSCTPAddrString | ported → TestNilAddrString (addr_test.go) |
-| sctp_resolve_portable_test.go | TestDirectSCTPAddrValuesAreValidated | ported → its zone and empty-address validation moved into the sockaddr codec: TestEncodeAddrRejectsTheZeroAddr, TestEncodeAddrRejectsZoneOnIPv4, TestEncodeAddrRejectsNonLinkLocalZone, TestEncodeAddrRejectsUnknownZone (sockaddr_test.go); its "malformed IP length" case has no counterpart — netip.Addr admits no such value — and its SCTPBind/SCTPConnect/SetPrimaryPeerAddr call sites stay pending for whichever task ports those calls |
-| sctp_resolve_portable_test.go | TestSCTPBindRejectsUnknownFlagsBeforeTouchingTheAddress | pending |
+| sctp_resolve_portable_test.go | TestDirectSCTPAddrValuesAreValidated | ported → its zone and empty-address validation moved into the sockaddr codec: TestEncodeAddrRejectsTheZeroAddr, TestEncodeAddrRejectsZoneOnIPv4, TestEncodeAddrRejectsNonLinkLocalZone, TestEncodeAddrRejectsUnknownZone (sockaddr_test.go); its "malformed IP length" case has no counterpart — netip.Addr admits no such value — and its SCTPBind/SCTPConnect/SetPrimaryPeerAddr call sites have no v2 counterpart to port: BindAdd, BindRemove and SetPrimaryAddr take a typed netip.Addr with no raw flags argument (see TestSCTPBindRejectsUnknownFlagsBeforeTouchingTheAddress, sctp_resolve_portable_test.go, above) |
+| sctp_resolve_portable_test.go | TestSCTPBindRejectsUnknownFlagsBeforeTouchingTheAddress | retired: BindAdd and BindRemove, the v2 successors, take no flags argument — every bind is SCTP_SOCKOPT_BINDX_ADD or _REM with nothing else to validate — as sctp_untested_test.go's TestSCTPBindRemoveAndInvalidFlags row above already established for the twin case in that file |
 | sctp_resolve_portable_test.go | TestResolveSCTPAddrRejectsMalformedInput | ported → TestResolveAddrRejectsMalformedInput (addr_test.go); a bare ":port" stays the wildcard, as in v1, but any other empty element in a multi-address list is still refused |
 | sctp_resolve_portable_test.go | TestResolveSCTPAddrAcceptsTheDocumentedForms | ported → TestResolveAddrAcceptsTheDocumentedForms (addr_test.go), including its "bare port is the wildcard" row, unchanged from v1 |
 | sctp_resolve_portable_test.go | TestResolveSCTPAddrNeverReturnsANilAddress | ported → TestResolveAddrNeverReturnsANilAddress (addr_test.go) |
 | sctp_resolve_portable_test.go | FuzzResolveSCTPAddr | ported → FuzzResolveAddr (addr_test.go) |
 | sctp_resolve_portable_test.go | FuzzSCTPAddrMarshal | retired: it fuzzed SCTPAddr's raw net.IP/Zone fields for a malformed value MarshalSockaddr must catch (a bad IP length, an invalid zone string). netip.Addr, encodeAddr's argument type, admits no such malformed value by construction — every netip.Addr is either the invalid zero value (TestEncodeAddrRejectsTheZeroAddr, sockaddr_test.go) or a well-formed address — so the field-level fuzz surface this test exercised no longer exists; FuzzDecodeAddrs (sockaddr_fuzz_test.go) covers the remaining untrusted-bytes surface, the decode direction |
-| sctp_resolveraw_kernel_test.go | TestKernelAddrsRoundTrip | pending |
+| sctp_resolveraw_kernel_test.go | TestKernelAddrsRoundTrip | ported → TestMultihomedAssociationExchangesAddresses (listener_linux_test.go): decodeAddrs is proven against the kernel's own reply for a real multi-homed association (LocalAddrs/PeerAddrs on both ends), not only against hand-built buffers |
 | sctp_resolveraw_portable_test.go | TestResolveFromRawAddrMixedFamilies | ported → TestDecodeAddrsMixedFamilies/v4_first (sockaddr_test.go) |
 | sctp_resolveraw_portable_test.go | TestResolveFromRawAddrV6First | ported → TestDecodeAddrsMixedFamilies/v6_first (sockaddr_test.go) |
 | sctp_resolveraw_portable_test.go | TestResolveFromRawAddrUnknownFamilyIsRejected | ported → TestDecodeAddrsRejectsUnknownFamily (sockaddr_test.go) |
@@ -488,10 +528,10 @@ order it appears in its file.
 | sctp_sndinfo_test.go | TestSCTPWriteInfoInteropWithSCTPWrite | retired: it pinned that the deprecated SCTP_SNDRCV send path (SCTPWrite) and the non-deprecated one (SCTPWriteInfo) interoperate on one association. v2 has a single send path (SendMsg/Write, where Write is SendMsg with no control records), not two different wire formats to interoperate between |
 | sctp_sndinfo_test.go | TestSCTPWriteInfoHonoursWriteDeadline | ported → TestWriteDeadlineInThePast (send_linux_test.go) |
 | sctp_sndinfo_test.go | TestSCTPWriteInfoWithAuthInfo | ported → TestAppendSendCmsgsEncodesAuthInfoWhenKeySet (msginfo_test.go) for the AUTHINFO byte encoding, and TestSendMsgWithAuthKey (send_linux_test.go) for the live socket, with AUTH on through Config.Authentication and DATA authenticated, so an unknown key is refused |
-| sctp_sockopt_stack_test.go | TestSubscribedEventsSurvivesStackGrowth | pending |
+| sctp_sockopt_stack_test.go | TestSubscribedEventsSurvivesStackGrowth | retired: SCTP_EVENTS/EventSubscribe/SubscribedEvents, the deprecated bulk-events mechanism this measured, is not implemented (RFC 6458 §8.7 deprecates it in favour of SCTP_EVENT; no such type exists in the package); the raw syscall layer's own stack-growth survival, which every option including Subscribe/Subscribed relies on, is proven generically by TestRawSockoptStackStorage (syscall_linux_test.go) |
 | sctp_sockopt_stack_test.go | TestRawGetsockoptSurvivesStackGrowth | ported → TestRawSockoptStackStorage (syscall_linux_test.go); the wrapper it exercised, SCTPConn.Getsockopt, has no v2 equivalent (raw option access is SyscallConn), so this now proves the same stack-growth-survives-a-syscall property directly against rawSetsockopt/rawGetsockopt, the layer that wrapper used to sit on |
 | sctp_sockopt_stack_test.go | TestInternalRawGetsockoptSurvivesStackGrowth | retired: there is no EINVAL-retry path for the threshold options; a 32-bit build picks the layout once with a probe (TestSelectStorageLayout, options_test.go; TestStorageLayoutOnThisKernel, options_linux_test.go), and option storage across a stack move is TestRawSockoptStackStorage (syscall_linux_test.go) |
-| sctp_sockopt_stack_test.go | TestSubscribeEventsSurvivesStackGrowth | pending |
+| sctp_sockopt_stack_test.go | TestSubscribeEventsSurvivesStackGrowth | retired: same reason as TestSubscribedEventsSurvivesStackGrowth — SubscribeEvents does not exist, and TestRawSockoptStackStorage already covers the generic raw-layer property every option, Subscribe and Subscribed included, depends on |
 | sctp_sockopt_stack_test.go | TestSetRtoInfoKeepsOptionAlive | retired: SetRTOInfo takes a value it lays out in its own buffer, not a caller's struct the kernel reads through a pointer, and the raw layer's keep-alive is TestRawSockoptStackStorage (syscall_linux_test.go) |
 | sctp_sockopt_stack_test.go | TestRawSetsockoptKeepsOptionAlive | ported → TestRawSockoptStackStorage (syscall_linux_test.go); same reasoning as TestRawGetsockoptSurvivesStackGrowth above — SCTPConn.Setsockopt has no v2 equivalent, and the property now lives directly on rawSetsockopt/rawGetsockopt |
 | sctp_sockopt_test.go | TestFragmentInterleaveRoundTrip | ported → TestOptionsRoundTrip (FragmentInterleave rows) and TestFragmentInterleaveLevels (options_linux_test.go): InterleaveStreams is now refused with ErrUnsupported before any system call rather than read back |
@@ -510,21 +550,21 @@ order it appears in its file.
 | sctp_syscall_linux_test.go | TestRawSockoptSyscalls | ported → TestRawSockoptRoundTrip (syscall_linux_test.go); exercises a real SCTP socket and SCTP_NODELAY instead of an AF_UNIX pair and SO_PASSCRED, per the new rawSetsockopt/rawGetsockopt signature (unsafe.Pointer instead of a caller-converted uintptr) |
 | sctp_syscall_linux_test.go | TestRawMessageSyscalls | ported → TestRawMessageSyscalls (syscall_linux_test.go), unchanged in substance (an AF_UNIX pair; the syscalls do not care what kind of socket they are handed) |
 | sctp_syscall_linux_test.go | TestRawRecvmsgStackStorage | ported → TestRawRecvmsgStackStorage (syscall_linux_test.go), unchanged in substance; still the regression test for the 386 storage fix (commit b6f3db1) |
-| sctp_test.go | TestSCTPAddrString | pending |
-| sctp_test.go | TestResolveSCTPAddr | pending |
-| sctp_test.go | TestSCTPListenerName | pending |
-| sctp_test.go | TestSCTPConcurrentAccept | pending |
+| sctp_test.go | TestSCTPAddrString | ported → TestAddrStringFormsPinsExactly, TestAddrStringEmptyIPsIsJustThePort (addr_test.go) |
+| sctp_test.go | TestResolveSCTPAddr | ported → TestResolveAddrAcceptsTheDocumentedForms, TestResolveAddrStringRoundTrips (addr_test.go) |
+| sctp_test.go | TestSCTPListenerName | ported → listenerAddr (socket_linux_test.go), the shared helper every Linux listener test calls, which fails any test whose listener reports a zero port |
+| sctp_test.go | TestSCTPConcurrentAccept | ported → TestDialUnderChurnSucceeds (dial_linux_test.go): 10 goroutines call AcceptSCTP concurrently on one listener while dials race against it, with ECONNREFUSED (a momentarily full backlog) tolerated and any other dial failure failing the test |
 | sctp_test.go | TestSCTPCloseRecv | ported → TestAbortWakesAParkedReader/Close (recv_linux_test.go) |
 | sctp_test.go | TestGetStatus | ported → TestStatusReportsNegotiatedStreams (options_linux_test.go): OutStreams is the peer's MaxInStreams, and a send on the stream past them fails |
 | sctp_test.go | TestGetStatusUsage | ported → TestStatusReportsNegotiatedStreams (options_linux_test.go): every stream below OutStreams accepts a send |
 | sctp_tobuf_test.go | TestToBufSerialisesFixedSizeStructs | retired: toBuf and the syscall.RawSockaddrInet4/6 and SndRcvInfo struct-to-bytes marshalling it served are gone; the package now writes and reads every kernel structure byte-wise at offsets abi.go pins and abi_test.go's layout tests check directly, so there is no generic struct serialiser left to size-check |
 | sctp_tobuf_test.go | TestToBufPanicsOnUnserialisableType | retired: same reason — there is no toBuf, so there is nothing that can be handed a type it cannot serialise |
-| sctp_unsupported_test.go | TestUnsupportedHighLevelErrorsCarryOperationContext | pending |
-| sctp_unsupported_test.go | TestUnsupportedRawConnectErrorRemainsUnwrapped | pending |
-| sctp_unsupported_test.go | TestNewSCTPConnClosesOwnedDescriptorOnUnsupportedPlatform | pending |
-| sctp_unsupported_test.go | TestDialContextWithAbandonPolicyValidatesPolicyOnUnsupportedPlatform | pending |
-| sctp_unsupported_test.go | TestDynamicBindEntryPointsReportUnsupported | pending |
-| sctp_unsupported_test.go | TestUnsupportedEntryPointsReportTheSentinel | ported → TestUnsupportedEntryPointsReportTheSentinel (unsupported_test.go), same mechanism (calls every case in the stub manifest, requires ErrUnsupported and errors.ErrUnsupported); the manifest itself is empty for now, since unsupported.go declares no stubs until a later task adds a Linux constructor or method for it to stand in for |
+| sctp_unsupported_test.go | TestUnsupportedHighLevelErrorsCarryOperationContext | ported → TestUnsupportedConstructorsCheckConfigFirst, TestUnsupportedConstructorErrorsHaveOneShapeOnEveryPlatform (unsupported_test.go), narrowed to the six constructors this now covers (Dial, Listen, ListenEndpoint, OpenEndpoint, FileConn, FileListener and their Config forms): each now wraps ErrUnsupported in the same *net.OpError shape Linux without SCTP reports, for a valid Config too, not only a refused one. Accept, Read and Write keep the bare sentinel deliberately: no live Conn, Listener or Endpoint ever exists on this platform for their error to name |
+| sctp_unsupported_test.go | TestUnsupportedRawConnectErrorRemainsUnwrapped | retired: SCTPConnect does not exist in the redesigned API (see the Linux-side TestRawConnectErrorRemainsUnwrapped row, sctp_error_contract_linux_test.go, above) |
+| sctp_unsupported_test.go | TestNewSCTPConnClosesOwnedDescriptorOnUnsupportedPlatform | retired: NewSCTPConn does not exist; adoption on this platform goes through FileConn, whose stub never duplicates or otherwise touches the *os.File it is handed (the caller keeps ownership of f on every platform, by FileConn's own documented contract), so there is no descriptor for it to close |
+| sctp_unsupported_test.go | TestDialContextWithAbandonPolicyValidatesPolicyOnUnsupportedPlatform | ported → TestUnsupportedConstructorsCheckConfigFirst (unsupported_test.go): the same "validation precedes ErrUnsupported" property, generalised to every field prepare (config.go, portable) validates — Config.AbandonPolicy among them — rather than one field re-checked per platform |
+| sctp_unsupported_test.go | TestDynamicBindEntryPointsReportUnsupported | retired: in v2, Conn.BindAdd/BindRemove, Listener.BindAdd/BindRemove and Endpoint.BindAdd/BindRemove are declared directly in unsupported.go, not in a portable shared file a stub-manifest check could miss; TestUnsupportedStubManifestIsComplete already requires every function unsupported.go declares, these included, to have a case in unsupportedStubCases, so the gap this test guarded against cannot arise by construction |
+| sctp_unsupported_test.go | TestUnsupportedEntryPointsReportTheSentinel | ported → TestUnsupportedEntryPointsReportTheSentinel (unsupported_test.go), same mechanism (calls every case in the stub manifest, requires ErrUnsupported and errors.ErrUnsupported); the manifest lists every function and method unsupported.go currently declares (Dial, Listen, ListenEndpoint, OpenEndpoint, FileConn, FileListener, every Conn, Listener and Endpoint method, and their Config forms) |
 | sctp_unsupported_test.go | TestUnsupportedStubManifestIsComplete | ported → TestUnsupportedStubManifestIsComplete (unsupported_test.go), same mechanism (parses unsupported.go with go/ast and requires its declarations to match the manifest by name exactly) |
 | sctp_untested_test.go | TestSubscribedEventsReportsEachFlagIndependently | retired: it exercised SubscribedEvents over the deprecated SCTP_EVENTS; subscriptions are one type at a time through SCTP_EVENT (Subscribe, Subscribed), covered by TestSubscribe (recv_linux_test.go) |
 | sctp_untested_test.go | TestSubscribedEventsRoundTripsTheWholeSet | retired: as above, SCTP_EVENTS is not implemented |
@@ -551,8 +591,8 @@ order it appears in its file.
 | sctp_varlen_test.go | TestSetHmacIdent | retired: the HMAC identifiers are Config.HMACIdentifiers only, set before the association exists and checked by Config's validation (only HMACSHA1 and HMACSHA256, HMACSHA1 required; config_test.go); HMACIdentifiers reads them back (TestAuthListsReadBack, options_ext_linux_test.go) |
 | sctp_varlen_test.go | TestSetAuthChunk | retired: the chunk list is Config.AuthChunks only, set before the association exists; LocalAuthChunks and PeerAuthChunks read it back on both ends (TestAuthListsReadBack, options_ext_linux_test.go) |
 | sctp_varlen_test.go | TestAuthOptionsWithoutSysctl | ported → TestAuthOptionsWithoutAuth (options_ext_linux_test.go) |
-| sctp_wrappedconn_test.go | TestWrappedConnReportsSubscribeFailure | pending |
-| sctp_wrappedconn_test.go | TestWrappedConnWorksWhenSubscribed | pending |
-| sctp_wrappedconn_test.go | TestWrappedConnWriteDoesNotCountAnUnsentHeader | pending |
-| sctp_wrappedconn_test.go | TestWrappedConnPartialResultsKeepTheInlineHeaderInTheCount | pending |
-| sctp_wrappedconn_test.go | TestDecodeWrappedSndRcvInfoDoesNotRequireAlignment | pending |
+| sctp_wrappedconn_test.go | TestWrappedConnReportsSubscribeFailure | retired: SCTPSndRcvInfoWrappedConn and the deprecated SCTP_SNDRCV wire record it wrapped (RFC 6458 §5.3.2) are removed from the redesigned API; SendOptions and MsgInfo encode SCTP_SNDINFO/SCTP_RCVINFO/SCTP_PRINFO/SCTP_AUTHINFO directly, with no inline-header wrapper left to subscribe anything for |
+| sctp_wrappedconn_test.go | TestWrappedConnWorksWhenSubscribed | retired: same reason as TestWrappedConnReportsSubscribeFailure |
+| sctp_wrappedconn_test.go | TestWrappedConnWriteDoesNotCountAnUnsentHeader | retired: same reason as TestWrappedConnReportsSubscribeFailure — there is no inline SCTP_SNDRCV header for a partial write to omit |
+| sctp_wrappedconn_test.go | TestWrappedConnPartialResultsKeepTheInlineHeaderInTheCount | retired: same reason as TestWrappedConnReportsSubscribeFailure |
+| sctp_wrappedconn_test.go | TestDecodeWrappedSndRcvInfoDoesNotRequireAlignment | retired: same reason as TestWrappedConnReportsSubscribeFailure — there is no wrapped SndRcvInfo left to decode; RcvInfo and NxtInfo are parsed directly by parseRecvCmsgs (msginfo.go) |

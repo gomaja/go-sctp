@@ -39,32 +39,74 @@ jobs:
         run: git diff --check
 
   test-linux:
-    name: test-linux / Go ${{ matrix.go }}
+    name: test-linux / Go ${{ matrix.go }}, sysctl ${{ matrix.sysctl }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        go: ['1.21.x', stable]
+        go: ['1.26.x', stable]
+        sysctl: [on, off]
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-go@v7.0.0
         with:
           go-version: ${{ matrix.go }}
           cache: true
-      - name: Prepare SCTP support
+      - name: Build the test environment
         run: |
-          sudo modprobe sctp
-          test -e /proc/net/sctp/snmp
-          sudo sysctl -w net.sctp.auth_enable=1 >/dev/null 2>&1 || true
-          sudo sysctl -w net.sctp.intl_enable=1 >/dev/null 2>&1 || true
-          for ip in 127.0.0.2 127.0.0.3 127.0.0.4; do
-            sudo ip addr add "$ip/8" dev lo 2>/dev/null || true
-          done
+          if [ "${{ matrix.sysctl }}" = on ]; then
+            sudo testdata/docker/setup-env.sh 1 1
+          else
+            sudo testdata/docker/setup-env.sh 0 0
+          fi
+      - name: Build the tests
+        # Compiled as the normal user, so the build cache actions/setup-go
+        # set up is owned by it, not by root: -run '^$' compiles every
+        # test binary and runs none of them.
+        run: go test -run '^$' -count=1 ./...
       - name: go test
-        run: go test ./... -count=1 -timeout 900s
+        # Run as root, matching the Docker suite (setup-env.sh runs
+        # inside a --privileged container, already root): a plain
+        # `runner` user cannot write /proc/sys/net/ipv6/bindv6only, which
+        # TestSctp6CarriesIPv4WhateverBindv6only needs, and it would
+        # silently skip instead of running. -E keeps HOME (among the
+        # rest of the environment), which is where GOCACHE defaults to
+        # ($HOME/.cache/go-build, unset by actions/setup-go): without
+        # -E, sudo's own root gets a different HOME, and root's go test
+        # would rebuild everything the "Build the tests" step just
+        # populated instead of reusing it. PATH is passed explicitly
+        # because sudo resets it by default and go must still resolve
+        # on it.
+        run: sudo -E env "PATH=$PATH" go test ./... -count=1 -timeout 900s
 
   test-linux-race:
-    name: test-linux race
+    name: test-linux race, sysctl ${{ matrix.sysctl }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sysctl: [on, off]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+          cache: true
+      - name: Build the test environment
+        run: |
+          if [ "${{ matrix.sysctl }}" = on ]; then
+            sudo testdata/docker/setup-env.sh 1 1
+          else
+            sudo testdata/docker/setup-env.sh 0 0
+          fi
+      - name: Build the tests
+        run: go test -race -run '^$' -count=1 ./...
+      - name: go test -race
+        # Root, for the same reason as test-linux's go test step.
+        run: sudo -E env "PATH=$PATH" go test ./... -race -count=1 -timeout 900s
+
+  test-linux-checkptr:
+    name: test-linux checkptr
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -72,17 +114,22 @@ jobs:
         with:
           go-version: stable
           cache: true
-      - name: Prepare SCTP support
+      - name: Build the test environment
+        run: sudo testdata/docker/setup-env.sh 1 1
+      - name: go test -gcflags=all=-d=checkptr
+        # checkptr instruments every unsafe.Pointer conversion in the
+        # files that import "unsafe" (grep -l '"unsafe"' *.go): abi.go,
+        # config_linux.go, dial_linux.go, endpoint_linux.go,
+        # options_linux.go, send_linux.go, socket_linux.go,
+        # syscall_linux_386.go and syscall_linux_other.go. It catches a
+        # conversion that violates Go's pointer rules even though it
+        # happens to work on today's compiler and allocator. Root, for
+        # the same reason as test-linux's go test step; the build first,
+        # as the normal user, keeps the build cache actions/setup-go set
+        # up owned by it.
         run: |
-          sudo modprobe sctp
-          test -e /proc/net/sctp/snmp
-          sudo sysctl -w net.sctp.auth_enable=1 >/dev/null 2>&1 || true
-          sudo sysctl -w net.sctp.intl_enable=1 >/dev/null 2>&1 || true
-          for ip in 127.0.0.2 127.0.0.3 127.0.0.4; do
-            sudo ip addr add "$ip/8" dev lo 2>/dev/null || true
-          done
-      - name: go test -race
-        run: go test ./... -race -count=1 -timeout 900s
+          go test -gcflags=all=-d=checkptr -run '^$' -count=1 ./...
+          sudo -E env "PATH=$PATH" go test ./... -gcflags=all=-d=checkptr -count=1 -timeout 900s
 
   vet:
     name: vet
@@ -153,24 +200,25 @@ jobs:
         with:
           go-version: stable
           cache: true
-      - name: Prepare SCTP support
-        run: |
-          sudo modprobe sctp
-          test -e /proc/net/sctp/snmp
-          sudo sysctl -w net.sctp.auth_enable=1 >/dev/null 2>&1 || true
-          sudo sysctl -w net.sctp.intl_enable=1 >/dev/null 2>&1 || true
-          for ip in 127.0.0.2 127.0.0.3 127.0.0.4; do
-            sudo ip addr add "$ip/8" dev lo 2>/dev/null || true
-          done
+      - name: Build the test environment
+        run: sudo testdata/docker/setup-env.sh 1 1
       - name: Build the 32-bit test binary
         run: CGO_ENABLED=0 GOOS=linux GOARCH=386 go test -c -o sctp-386.test .
       - name: Run it against the host kernel
-        # The runner is x86_64, so a static i686 binary executes natively. This
-        # runs the socketcall path in syscall_linux_386.go against a real
-        # SCTP stack rather than only compiling it. It is the one architecture
-        # besides the host's own that can run the socket-backed suite in public
-        # CI.
-        run: ./sctp-386.test -test.count=1 -test.timeout=900s
+        # The runner is x86_64, so a static i686 binary executes natively.
+        # This runs the socketcall path in syscall_linux_386.go against a
+        # real SCTP stack, with the same network and sysctl environment
+        # every other Linux job gets, rather than only compiling it. It is
+        # the one architecture besides the host's own that can run the
+        # socket-backed suite in public CI. Root, for the same reason as
+        # test-linux's go test step: TestSctp6CarriesIPv4WhateverBindv6only
+        # needs to write /proc/sys/net/ipv6/bindv6only. -E and PATH, for
+        # the same reason as test-linux's go test step too: this binary
+        # also carries TestCrossCompileSmoke, which needs the go tool on
+        # PATH for its own cross-compiles, and plain sudo would reset
+        # PATH to one without it, skipping that test silently rather
+        # than running it.
+        run: sudo -E env "PATH=$PATH" ./sctp-386.test -test.count=1 -test.timeout=900s
       - name: Exercise stack relocation across socketcall
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=386 go test -c \
@@ -180,6 +228,75 @@ jobs:
             -test.run '^TestRaw(Recvmsg|Sockopt)StackStorage$' \
             -test.count=10 \
             -test.timeout=120s
+
+  big-endian:
+    name: portability / big-endian (s390x, qemu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+          cache: true
+      - name: Install qemu-user-static
+        # Registers the s390x binfmt_misc handler on the runner's own
+        # kernel: from here on, executing an s390x ELF directly invokes
+        # qemu-s390x-static transparently, the same way the kernel invokes
+        # any native binary. No container or --platform flag is needed for
+        # that, and it sidesteps the official golang image publishing no
+        # s390x variant at all (confirmed: docker manifest inspect lists
+        # only amd64, arm/v7, arm64/v8, 386 and ppc64le for it).
+        run: sudo apt-get -qq update && sudo apt-get -qq install -y qemu-user-static
+      - name: Build the portable test binary for s390x
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=s390x go test -c -o sctp-s390x.test .
+      - name: Run the portable tests under s390x emulation
+        # qemu-user blocks SOL_SCTP (confirmed against qemu-user-static),
+        # so every socket-backed test — every file named *_linux_test.go,
+        # by this package's own convention — would hang or fail for a
+        # reason that has nothing to do with byte order. The regex below
+        # is built from every Test and Fuzz function declared in the
+        # portable files instead, which covers the actual point of this
+        # job: struct layouts, cmsg encoding, address parsing and every
+        # other byte-order-sensitive decision this package makes without
+        # a socket, exercised for real on a big-endian machine rather
+        # than only cross-vetted. TestCrossCompileSmoke is excluded on
+        # purpose: it only shells out to "go build" for its own 13
+        # targets, so running it a second time under emulation would
+        # spend qemu's extra time for no additional coverage the
+        # ubuntu-latest cross-compile job does not already give.
+        run: |
+          portable=()
+          for f in *_test.go; do
+            case "$f" in
+            *_linux_test.go | crosscompile_test.go) continue ;;
+            esac
+            portable+=("$f")
+          done
+          names="$(grep -h -E '^func (Test|Fuzz)[A-Za-z0-9_]*\(' -- "${portable[@]}" |
+            sed -E 's/^func ([A-Za-z0-9_]+).*/\1/' | sort -u | paste -sd '|' -)"
+          echo "running: ^($names)\$"
+          ./sctp-s390x.test -test.run "^($names)\$" -test.v -test.count=1 -test.timeout=900s
+
+  wire:
+    name: wire harness (two hosts, tshark)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Load the SCTP kernel modules
+        # The wire harness's containers are --privileged but share the
+        # runner's kernel, so the sctp module (for the sysctls run.sh
+        # sets) and xt_sctp (for the iptables sctp match its INPUT drops
+        # need) have to be loaded on the runner itself, not inside a
+        # container that cannot load a module a second time for itself.
+        # run.sh fails with a clear message naming whichever is still
+        # missing; this step is what keeps that message from ever firing
+        # in practice.
+        run: |
+          sudo modprobe sctp
+          sudo modprobe xt_sctp
+          test -e /proc/net/sctp/snmp
+      - name: Run the wire harness
+        run: testdata/wire/run.sh
 
   vuln:
     name: vuln

@@ -508,3 +508,25 @@ func FuzzResolveAddr(f *testing.F) {
 		}
 	})
 }
+
+// BenchmarkResolveAddr (v1 BenchmarkResolveSCTPAddr): resolving one
+// address is the common case; a multi-homed literal is the other form
+// ResolveAddr's own documentation names.
+func BenchmarkResolveAddr(b *testing.B) {
+	b.Run("single", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := ResolveAddr("sctp", "127.0.0.1:0"); err != nil {
+				b.Fatalf("resolve: %v", err)
+			}
+		}
+	})
+	b.Run("multihomed", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := ResolveAddr("sctp", "127.0.0.1/127.0.0.2/127.0.0.3:0"); err != nil {
+				b.Fatalf("resolve: %v", err)
+			}
+		}
+	})
+}

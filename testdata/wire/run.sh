@@ -175,7 +175,7 @@ prepare() {
 	# PR-SCTP on (RFC 3758), which the partial-reliability claims need;
 	# I-DATA off (RFC 8260), so that messages travel in DATA chunks.
 	docker exec "$c" sysctl -q -w net.sctp.prsctp_enable=1 net.sctp.intl_enable=0 ||
-		die "$c: could not set the SCTP sysctls"
+		die "$c: could not set the SCTP sysctls; the sctp kernel module is probably not loaded on the host (modprobe sctp) — a --privileged container shares the host's kernel and cannot load it a second time for itself"
 	# Ephemeral ports from 49152 up only (the IANA dynamic range, RFC 6335
 	# §6), clear of the case ports (41001-41109) and the control port
 	# (7411), so that no dialer's own port can equal a case's server port;

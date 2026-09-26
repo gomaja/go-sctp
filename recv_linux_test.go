@@ -1650,6 +1650,50 @@ func TestReadMsgSkipsNotifications(t *testing.T) {
 	}
 }
 
+// TestNotificationHandlerForeignOpErrorWrapsAsRead: a NotificationHandler
+// that returns a *net.OpError from some other operation entirely — a TCP
+// connection it also manages, say — must not have that operation's Op
+// and Net leak into the error Read, RecvMsg or ReadMsg report for this
+// one. Each still reports Op "read" on this connection, and errors.Is
+// still reaches the foreign error's own root cause.
+func TestNotificationHandlerForeignOpErrorWrapsAsRead(t *testing.T) {
+	root := errors.New("handler failed")
+	foreign := &net.OpError{Op: "read", Net: "tcp", Err: root}
+	for name, read := range map[string]func(c *Conn) error{
+		"Read":    func(c *Conn) error { _, err := c.Read(make([]byte, 16)); return err },
+		"RecvMsg": func(c *Conn) error { _, _, err := c.RecvMsg(make([]byte, 16)); return err },
+		"ReadMsg": func(c *Conn) error { _, _, err := c.ReadMsg(16); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &Config{
+				Notifications:       []EventType{EventAssocChange},
+				NotificationHandler: func(Notification) error { return foreign },
+			}
+			client, server := connPair(t, cfg, nil)
+			setReadDeadline(t, client, 5*time.Second)
+			if err := server.Abort(); err != nil {
+				t.Fatalf("server.Abort: %v", err)
+			}
+
+			err := read(client)
+			var opErr *net.OpError
+			if !errors.As(err, &opErr) || opErr.Op != "read" || opErr.Net != client.network() {
+				t.Fatalf("%s = %#v, want a *net.OpError with Op read, Net %s", name, err, client.network())
+			}
+			if !reflect.DeepEqual(opErr.Source, client.LocalAddr()) || !reflect.DeepEqual(opErr.Addr, client.RemoteAddr()) {
+				t.Errorf("%s: Source/Addr = %v/%v, want this connection's own LocalAddr/RemoteAddr %v/%v",
+					name, opErr.Source, opErr.Addr, client.LocalAddr(), client.RemoteAddr())
+			}
+			if !errors.Is(err, root) {
+				t.Fatalf("%s = %v, want it to reach the foreign error's own root cause %v", name, err, root)
+			}
+			if errors.Unwrap(opErr) != foreign {
+				t.Errorf("%s: opError's cause is %#v, want the foreign *net.OpError %#v itself", name, errors.Unwrap(opErr), foreign)
+			}
+		})
+	}
+}
+
 // TestReadMsgPeerAbortMidMessage: an ABORT while a long message is still
 // arriving surfaces as an error, never as a short message reported whole
 // (v1 TestReadMsgPeerAbortMidMessage).

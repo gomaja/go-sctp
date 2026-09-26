@@ -163,14 +163,29 @@ func isFileClosingErr(err error) bool {
 	return false
 }
 
-// opError wraps err for a read, write, message or constructor operation. It
-// never double-wraps: an error that is already a *net.OpError is returned
-// unchanged. io.EOF is returned unwrapped, so err == io.EOF keeps working.
-// An error matching net.ErrClosed or os.ErrClosed, or one isFileClosingErr
+// opError wraps err for a read, write, message or constructor operation,
+// so that the error a caller sees always describes the operation that
+// failed — Op, Net, Source and Addr all naming this call, never some
+// other one. It never double-wraps an error that already describes this
+// exact operation: a *net.OpError already matching op, network, source
+// and addr (by their String() forms; a nil Source or Addr matches only a
+// nil one) is returned unchanged. Any other *net.OpError — one a
+// Config.Control hook or a NotificationHandler returned, from some other
+// call entirely — is wrapped as this operation's cause exactly as given,
+// so its own Op and Net never leak into a caller reading this one;
+// errors.Is and errors.As still reach it and everything it wraps, since
+// *net.OpError implements Unwrap. That foreign error's own cause is never
+// inspected for net.ErrClosed: the closed-descriptor collapse below is
+// for a cause this package's own code reports directly, and running a
+// foreign *net.OpError through it too would discard that error's Op and
+// Net (and everything else about it) in favour of a bare net.ErrClosed,
+// making it unreachable through errors.As. io.EOF is returned unwrapped,
+// so err == io.EOF keeps working. For any other, non-*net.OpError cause,
+// one matching net.ErrClosed or os.ErrClosed, or one isFileClosingErr
 // recognizes — the three different ways the standard library reports a
 // closed descriptor — collapses to a single net.ErrClosed wrap, never
-// nested and never carrying any of the three's own text. Anything else is
-// wrapped as the *net.OpError's cause, unchanged: os.ErrDeadlineExceeded
+// nested and never carrying any of the three's own text. Anything else
+// is wrapped as the *net.OpError's cause, unchanged: os.ErrDeadlineExceeded
 // already implements net.Error (Timeout, Temporary), so op.Timeout() and
 // errors.Is(op, os.ErrDeadlineExceeded) hold with no special case here.
 func opError(op, network string, source, addr net.Addr, err error) error {
@@ -181,12 +196,65 @@ func opError(op, network string, source, addr net.Addr, err error) error {
 		return io.EOF
 	}
 	if opErr, ok := err.(*net.OpError); ok {
-		return opErr
+		if sameOpError(opErr, op, network, source, addr) {
+			return opErr
+		}
+		return &net.OpError{Op: op, Net: network, Source: source, Addr: addr, Err: opErr}
 	}
 	if errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed) || isFileClosingErr(err) {
 		err = net.ErrClosed
 	}
 	return &net.OpError{Op: op, Net: network, Source: source, Addr: addr, Err: err}
+}
+
+// sameOpError reports whether opErr already describes exactly the
+// operation opError is about to build one for: the same Op, the same
+// Net, and Source and Addr that compare equal by their String() forms,
+// with a nil net.Addr equal only to another nil one (never to a non-nil
+// value whose String() happens to render the same way, and never
+// dereferenced itself — calling String() on a nil net.Addr interface
+// panics, which is what the explicit nil checks below avoid).
+func sameOpError(opErr *net.OpError, op, network string, source, addr net.Addr) bool {
+	return opErr.Op == op &&
+		opErr.Net == network &&
+		sameAddr(opErr.Source, source) &&
+		sameAddr(opErr.Addr, addr)
+}
+
+// sameAddr reports whether a and b are both nil, or both non-nil with
+// equal String() forms.
+func sameAddr(a, b net.Addr) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.String() == b.String()
+}
+
+// joinAbortCause joins err with the outcome of the Abort a read's own
+// interruption triggered, for a caller (abortInterrupted, recv_linux.go;
+// abortInterruptedNotification, endpoint_linux.go) whose result is
+// itself about to be wrapped once by opError/ioOpError. aerr is never
+// joined in as the *net.OpError it already is: Abort's own error is
+// already a *net.OpError with Op "close" (Conn.Close's doc), and joining
+// it whole would put that *net.OpError inside the read's own joined
+// error, which the read's later single wrap would then carry as its
+// cause — two *net.OpError values in one chain from a path that never
+// meant to double-wrap. Its cause (aerr.Err) is joined instead, which
+// errors.Is/errors.As still reach through the join. aerr == nil joins
+// nothing; aerr matching net.ErrClosed (a released connection, the
+// ordinary case) joins the bare sentinel, as before this function
+// existed.
+func joinAbortCause(err, aerr error) error {
+	switch {
+	case aerr == nil:
+		return err
+	case errors.Is(aerr, net.ErrClosed):
+		return errors.Join(err, net.ErrClosed)
+	}
+	if opErr, ok := aerr.(*net.OpError); ok {
+		return errors.Join(err, opErr.Err)
+	}
+	return errors.Join(err, aerr)
 }
 
 // ioOpError is opError for an error that may join several causes, such as
