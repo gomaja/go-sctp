@@ -68,6 +68,19 @@ $SUDO ip addr replace 127.0.0.2/8 dev lo
 $SUDO ip addr replace 127.0.0.3/8 dev lo
 $SUDO ip addr replace 127.0.0.4/8 dev lo
 
+# ensure_dummy creates the dummy link $1, or reuses it when a previous run
+# created it. A link of that name that is not a dummy device belongs to
+# something else: routing the tests through it would test the wrong
+# topology and change a link this script does not own, so it stops instead.
+ensure_dummy() {
+	if ! ip link show "$1" >/dev/null 2>&1; then
+		$SUDO ip link add "$1" type dummy
+	elif ! ip -d link show "$1" | grep -qw dummy; then
+		echo "setup-env.sh: $1 exists and is not a dummy link; refusing to reuse it" >&2
+		exit 1
+	fi
+}
+
 # A dummy-routed, unlistened peer: 192.0.2.1 (RFC 5737 TEST-NET-1) is
 # routed out a dummy link with nothing behind it. A dummy interface has no
 # peer to answer and raises no ICMP unreachable, so packets sent to it are
@@ -76,9 +89,7 @@ $SUDO ip addr replace 127.0.0.4/8 dev lo
 # needs that genuine silence: a fast, synthetic ECONNREFUSED would return
 # before the timeout or cancellation ever had anything to interrupt, and
 # the test would pass for the wrong reason.
-if ! ip link show silent0 >/dev/null 2>&1; then
-	$SUDO ip link add silent0 type dummy
-fi
+ensure_dummy silent0
 $SUDO ip link set silent0 up
 $SUDO ip route replace 192.0.2.1/32 dev silent0
 # fe80::9 is a known link-local address on silent0, which the link-local
@@ -91,9 +102,7 @@ $SUDO ip -6 addr replace fe80::9/64 dev silent0 nodad
 # of skipping for want of a matching interface. fe80::3 on the same link
 # lets two endpoints bind link-local addresses of that one link only, for
 # the tests of link-local paths given without a zone.
-if ! ip link show zone0 >/dev/null 2>&1; then
-	$SUDO ip link add zone0 type dummy
-fi
+ensure_dummy zone0
 $SUDO ip link set zone0 up
 $SUDO ip -6 addr replace fe80::1/64 dev zone0 nodad
 $SUDO ip -6 addr replace fe80::3/64 dev zone0 nodad
