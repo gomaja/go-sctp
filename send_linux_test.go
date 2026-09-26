@@ -1797,7 +1797,7 @@ func TestSendMsgRetainsNothing(t *testing.T) {
 
 // TestSendFlags: every send passes MSG_DONTWAIT, so a full buffer is a
 // wait in the runtime poller rather than in the kernel, and MSG_NOSIGNAL;
-// More adds MSG_MORE (Linux 4.11: net/sctp/socket.c sets
+// More adds MSG_MORE (net/sctp/socket.c sets
 // asoc->force_delay from it in sctp_sendmsg_to_asoc). A send without Path
 // has no destination, and one without Info or PR no SNDINFO or PRINFO.
 func TestSendFlags(t *testing.T) {

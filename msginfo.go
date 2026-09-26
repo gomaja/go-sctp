@@ -88,7 +88,7 @@ type SendOptions struct {
 	Path netip.Addr
 
 	// More says more messages follow at once, so the kernel may hold this
-	// one briefly to bundle it with them (MSG_MORE, Linux 4.11). The last
+	// one briefly to bundle it with them (MSG_MORE). The last
 	// message of a burst must leave More false, or it can sit until the next
 	// send.
 	More bool

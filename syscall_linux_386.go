@@ -17,11 +17,10 @@
 //go:build linux && 386
 
 // syscall_linux_386.go is syscall_linux_other.go's counterpart for
-// linux/386. The i386 kernel has had its own direct getsockopt(2),
-// setsockopt(2), sendmsg(2) and recvmsg(2) entries since Linux 4.3
-// (arch/x86/entry/syscalls/syscall_32.tbl, v6.12: 365, 366, 370, 372;
-// confirmed absent at v4.2 and present at v4.3), so the kernel itself is
-// not the reason this file exists. The standard library is: the syscall
+// linux/386. Every kernel this package supports has direct i386
+// getsockopt(2), setsockopt(2), sendmsg(2) and recvmsg(2) entries
+// (arch/x86/entry/syscalls/syscall_32.tbl, v6.12: 365, 366, 370, 372), so
+// the kernel is not the reason this file exists. The standard library is: the syscall
 // package's GOARCH=386 build defines SYS_SOCKETCALL and no per-operation
 // SYS_SETSOCKOPT/SYS_GETSOCKOPT/SYS_SENDMSG/SYS_RECVMSG at all (confirmed
 // with "go doc syscall.SYS_SETSOCKOPT" under GOOS=linux GOARCH=386 —

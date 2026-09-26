@@ -271,7 +271,7 @@ func (s *sendState) send(sock *socket, b []byte, opts *SendOptions, name []byte,
 	}
 	s.flags = sendFlags
 	if opts.More {
-		// MSG_MORE (Linux 4.11) sets asoc->force_delay, which lets the
+		// MSG_MORE sets asoc->force_delay, which lets the
 		// kernel hold this message to bundle it with the next
 		// (net/sctp/socket.c: sctp_sendmsg_to_asoc).
 		s.flags |= syscall.MSG_MORE

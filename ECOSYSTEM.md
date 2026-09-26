@@ -47,7 +47,7 @@ accepted.
 | `SendFailed` per DATA chunk, with the chunk's own bits | The Java and Erlang notification models | `net/sctp/chunk.c` emits one event per chunk; `net/sctp/ulpevent.c` copies the chunk's flags into `snd_flags` |
 | Peeled-off connections end with `io.EOF` after a graceful end, and inherit the endpoint's settings | lksctp-tools #70; erlang/otp PRs #8804 and #11007 | `sctp_cmd_new_state` marks only one-to-one sockets shut for reading |
 | `SendOptions.Path`, on connections from `Dial`, `Accept` and `FileConn` | Java's `MessageInfo.createOutgoing(address)`, Erlang's `addr_over` | `sctp_sendmsg` sends a one-to-one socket's message on `msg_name`'s path; a peeled socket ignores it (`sctp_sendmsg_get_daddr`) |
-| `SendOptions.More` | Batching requests in other bindings | `asoc->force_delay` follows `MSG_MORE`, since Linux 4.11 |
+| `SendOptions.More` | Batching requests in other bindings | `asoc->force_delay` follows `MSG_MORE` |
 | `ErrUnsupported` for Linux without SCTP too | JDK-8267938 | `inet_create` returns `EPROTONOSUPPORT` once loading the module fails |
 | A typed `AddrChangeReason` | Review of the UAPI | `enum sctp_sn_error`; Linux also sends 0 for "no reason" (`sm_sideeffect.c`) |
 | Kernel requirements stated per facility, and the RHEL 8 claim corrected | The UAPI headers of every release from 2.6.31 to 6.12 | CentOS Stream 8 lacks `SCTP_SS_FC` and `SCTP_SS_WFQ` |
