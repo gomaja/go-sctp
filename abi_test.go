@@ -92,7 +92,8 @@ func TestOptionNumbers(t *testing.T) {
 		{"optDefaultSndInfo", optDefaultSndInfo, 34},
 		{"optAuthDeactivateKey", optAuthDeactivateKey, 35},
 		{"optReusePort", optReusePort, 36},
-		{"optPathThresholds", optPathThresholds, 37}, // SCTP_PEER_ADDR_THLDS_V2
+		{"optPathThresholds", optPathThresholds, 37},           // SCTP_PEER_ADDR_THLDS_V2
+		{"optPathThresholdsProbe", optPathThresholdsProbe, 31}, // SCTP_PEER_ADDR_THLDS
 
 		{"optSockoptBindxAdd", optSockoptBindxAdd, 100},
 		{"optSockoptBindxRemove", optSockoptBindxRemove, 101},
@@ -197,6 +198,69 @@ func TestPRPolicyBitsDoNotOverlapSendFlags(t *testing.T) {
 				p, uint16(p), prPolicyMask)
 		}
 	}
+}
+
+// TestPathParamsFlagBits pins spp_flags' bits against
+// include/uapi/linux/sctp.h, v6.12, lines 791-803 (enum sctp_spp_flags).
+// A bit swapped between two switches would round-trip through the kernel
+// unnoticed and change the wrong setting.
+func TestPathParamsFlagBits(t *testing.T) {
+	checkNumbers(t, []numberCase{
+		{"sppHBEnable", sppHBEnable, 0x001},
+		{"sppHBDisable", sppHBDisable, 0x002},
+		{"sppHBDemand", sppHBDemand, 0x004},
+		{"sppPMTUDEnable", sppPMTUDEnable, 0x008},
+		{"sppPMTUDDisable", sppPMTUDDisable, 0x010},
+		{"sppSACKDelayEnable", sppSACKDelayEnable, 0x020},
+		{"sppSACKDelayDisable", sppSACKDelayDisable, 0x040},
+		{"sppHBTimeIsZero", sppHBTimeIsZero, 0x080},
+		{"sppIPv6FlowLabel", sppIPv6FlowLabel, 0x100},
+		{"sppDSCP", sppDSCP, 0x200},
+	})
+}
+
+// TestKernelLimits pins the kernel limits the option methods check before
+// any system call: include/linux/sctp.h, v6.12, lines 800 and 802
+// (SCTP_DSCP_VAL_MASK, SCTP_FLOWLABEL_VAL_MASK), include/net/sctp/
+// constants.h, v6.12, lines 297 and 443 (SCTP_DEFAULT_MINSEGMENT,
+// SCTP_PROBE_TIMER_MIN), the 500 ms net/sctp/socket.c compares SACK delays
+// with, and the two reply bounds derived in abi.go.
+func TestKernelLimits(t *testing.T) {
+	checkNumbers(t, []numberCase{
+		{"dscpMask", dscpMask, 0xfc},
+		{"flowLabelMask", flowLabelMask, 0xfffff},
+		{"minPathMTU", minPathMTU, 512},
+		{"maxSACKDelayMS", maxSACKDelayMS, 500},
+		{"minProbeIntervalMS", minProbeIntervalMS, 5000},
+		{"maxHMACIdents", maxHMACIdents, 16},
+		{"maxAuthChunkList", maxAuthChunkList, 256},
+		{"sizeAssocID", sizeAssocID, 4},
+	})
+}
+
+// TestAssocStatsCounterOrder pins the order of struct sctp_assoc_stats'
+// counters, include/uapi/linux/sctp.h, v6.12, lines 1044-1058: each
+// counter's index times 8 is its offset after the header.
+func TestAssocStatsCounterOrder(t *testing.T) {
+	checkNumbers(t, []numberCase{
+		{"assocStatsMaxRTO", assocStatsMaxRTO, 0},
+		{"assocStatsISACKs", assocStatsISACKs, 1},
+		{"assocStatsOSACKs", assocStatsOSACKs, 2},
+		{"assocStatsOPackets", assocStatsOPackets, 3},
+		{"assocStatsIPackets", assocStatsIPackets, 4},
+		{"assocStatsRtxChunks", assocStatsRtxChunks, 5},
+		{"assocStatsOutOfSeqTSNs", assocStatsOutOfSeqTSNs, 6},
+		{"assocStatsIDupChunks", assocStatsIDupChunks, 7},
+		{"assocStatsGapCount", assocStatsGapCount, 8},
+		{"assocStatsOUODChunks", assocStatsOUODChunks, 9},
+		{"assocStatsIUODChunks", assocStatsIUODChunks, 10},
+		{"assocStatsOODChunks", assocStatsOODChunks, 11},
+		{"assocStatsIODChunks", assocStatsIODChunks, 12},
+		{"assocStatsOCtrlChunks", assocStatsOCtrlChunks, 13},
+		{"assocStatsICtrlChunks", assocStatsICtrlChunks, 14},
+		{"assocStatsCounters", assocStatsCounters, 15},
+		{"sizeAssocStats - sizeAssocStatsHeader", sizeAssocStats - sizeAssocStatsHeader, 8 * assocStatsCounters},
+	})
 }
 
 // TestSockaddrLayouts pins sockaddr_in (include/uapi/linux/in.h, v6.12, from
@@ -609,16 +673,16 @@ func TestSockaddrStorageOptionLayouts(t *testing.T) {
 	// describe sctp_assoc_stats specifically, where 386's u64Align=4 (not
 	// arm/mips' or amd64/arm64's 8) changes where the __u64 counters land.
 	wantAddr, wantTail := 8, 136
-	wantUDP, wantProbe, wantThlds := 144, 144, 144
+	wantUDP, wantProbe, wantThlds, wantProbeThlds := 144, 144, 144, 144
 	wantStatsHeader, wantStatsSize := 136, 256
 	switch {
 	case bits.UintSize == 32 && runtime.GOARCH == "386":
 		wantAddr, wantTail = 4, 132
-		wantUDP, wantProbe, wantThlds = 136, 136, 140
+		wantUDP, wantProbe, wantThlds, wantProbeThlds = 136, 136, 140, 136
 		wantStatsHeader, wantStatsSize = 132, 252
 	case bits.UintSize == 32:
 		wantAddr, wantTail = 4, 132
-		wantUDP, wantProbe, wantThlds = 136, 136, 140
+		wantUDP, wantProbe, wantThlds, wantProbeThlds = 136, 136, 140, 136
 		wantStatsHeader, wantStatsSize = 136, 256
 	}
 
@@ -639,6 +703,10 @@ func TestSockaddrStorageOptionLayouts(t *testing.T) {
 		{"pathThresholdsPFThresholdOff", pathThresholdsPFThresholdOff, wantTail + 2},
 		{"pathThresholdsSwitchoverOff", pathThresholdsSwitchoverOff, wantTail + 4},
 		{"sizePathThresholds", sizePathThresholds, wantThlds},
+
+		// struct sctp_paddrthlds, the two-field form the layout probe
+		// asks for: 136 bytes on a 32-bit target, 144 on a 64-bit one.
+		{"sizePathThresholdsProbe", sizePathThresholdsProbe, wantProbeThlds},
 
 		{"assocStatsAddrOff", assocStatsAddrOff, wantAddr},
 		{"sizeAssocStatsHeader", sizeAssocStatsHeader, wantStatsHeader},
@@ -671,6 +739,12 @@ func TestKernel64Layouts(t *testing.T) {
 
 		{"pathThresholdsAddressOffKernel64", pathThresholdsAddressOffKernel64, 8},
 		{"sizePathThresholdsKernel64", sizePathThresholdsKernel64, 144},
+
+		{"udpEncapsPortOffKernel64", udpEncapsPortOffKernel64, 136},
+		{"probeIntervalIntervalOffKernel64", probeIntervalIntervalOffKernel64, 136},
+		{"pathThresholdsMaxRxtOffKernel64", pathThresholdsMaxRxtOffKernel64, 136},
+		{"pathThresholdsPFThresholdOffKernel64", pathThresholdsPFThresholdOffKernel64, 138},
+		{"pathThresholdsSwitchoverOffKernel64", pathThresholdsSwitchoverOffKernel64, 140},
 
 		{"assocStatsAddrOffKernel64", assocStatsAddrOffKernel64, 8},
 		{"sizeAssocStatsHeaderKernel64", sizeAssocStatsHeaderKernel64, 136},

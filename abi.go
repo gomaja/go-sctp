@@ -30,7 +30,10 @@
 // does not use (the old CONNECTX and CONNECTX_OLD in favor of CONNECTX3
 // alone, the original SCTP_SOCKOPT_PEELOFF in favor of its _FLAGS form,
 // and the two-field SCTP_PEER_ADDR_THLDS in favor of _V2) — none of their
-// numbers or layouts are defined below. SO_RCVBUF, SO_SNDBUF, SO_PROTOCOL,
+// numbers or layouts are defined below, with one exception: the two-field
+// SCTP_PEER_ADDR_THLDS number and size, which only the word-size layout
+// probe uses (optPathThresholdsProbe), never to read or set a threshold.
+// SO_RCVBUF, SO_SNDBUF, SO_PROTOCOL,
 // SO_TYPE and SO_ACCEPTCONN are SOL_SOCKET options with no SCTP-specific
 // meaning; the package uses the constants the standard syscall package
 // already exports for those (syscall.SO_RCVBUF and so on) instead of
@@ -116,6 +119,12 @@ const (
 	optAuthDeactivateKey    = 35 // SCTP_AUTH_DEACTIVATE_KEY
 	optReusePort            = 36 // SCTP_REUSE_PORT
 	optPathThresholds       = 37 // SCTP_PEER_ADDR_THLDS_V2
+
+	// optPathThresholdsProbe is the two-field SCTP_PEER_ADDR_THLDS. The
+	// package never reads or sets thresholds through it; it asks it once
+	// per process, on a 32-bit build, which word size the kernel has
+	// (probeKernelWordSize, socket_linux.go).
+	optPathThresholdsProbe = 31 // SCTP_PEER_ADDR_THLDS
 
 	optSockoptBindxAdd              = 100 // SCTP_SOCKOPT_BINDX_ADD
 	optSockoptBindxRemove           = 101 // SCTP_SOCKOPT_BINDX_REM
@@ -799,6 +808,77 @@ const (
 	// takes no association id (SCTP_NODELAY, SCTP_RECVRCVINFO,
 	// SCTP_FRAGMENT_INTERLEAVE, SO_RCVBUF and the like).
 	sizeInt = 4
+
+	// sctp_assoc_t alone: the value SCTP_RESET_ASSOC takes.
+	sizeAssocID = 4
+)
+
+// ---------------------------------------------------------------------
+// spp_flags bits of struct sctp_paddrparams, enum sctp_spp_flags
+// (include/uapi/linux/sctp.h, v6.12, lines 790-804; RFC 6458 §8.1.12).
+// Each ENABLE/DISABLE pair is one setting: neither bit leaves it as it
+// is, and both at once is refused (net/sctp/socket.c:
+// sctp_setsockopt_peer_addr_params).
+// ---------------------------------------------------------------------
+
+const (
+	sppHBEnable         = 1 << 0 // SPP_HB_ENABLE
+	sppHBDisable        = 1 << 1 // SPP_HB_DISABLE
+	sppHBDemand         = 1 << 2 // SPP_HB_DEMAND
+	sppPMTUDEnable      = 1 << 3 // SPP_PMTUD_ENABLE
+	sppPMTUDDisable     = 1 << 4 // SPP_PMTUD_DISABLE
+	sppSACKDelayEnable  = 1 << 5 // SPP_SACKDELAY_ENABLE
+	sppSACKDelayDisable = 1 << 6 // SPP_SACKDELAY_DISABLE
+	sppHBTimeIsZero     = 1 << 7 // SPP_HB_TIME_IS_ZERO
+	sppIPv6FlowLabel    = 1 << 8 // SPP_IPV6_FLOWLABEL
+	sppDSCP             = 1 << 9 // SPP_DSCP
+)
+
+// ---------------------------------------------------------------------
+// Kernel limits the option methods check before any system call, so that
+// a refusal names the argument (include/linux/sctp.h and
+// include/net/sctp/constants.h are kernel-internal headers, not UAPI).
+// ---------------------------------------------------------------------
+
+const (
+	// flowLabelMask is SCTP_FLOWLABEL_VAL_MASK (include/linux/sctp.h,
+	// v6.12, line 802): the 20 bits of an IPv6 flow label, all
+	// spp_ipv6_flowlabel carries (RFC 6458 §8.1.12).
+	flowLabelMask = 0xfffff
+
+	// dscpMask is SCTP_DSCP_VAL_MASK (include/linux/sctp.h, v6.12, line
+	// 800): spp_dscp holds the DSCP in its 6 most significant bits (RFC
+	// 6458 §8.1.12), and Linux drops the other two.
+	dscpMask = 0xfc
+
+	// minPathMTU is SCTP_DEFAULT_MINSEGMENT (include/net/sctp/constants.h,
+	// v6.12, line 297), the smallest spp_pathmtu Linux accepts
+	// (net/sctp/socket.c: sctp_setsockopt_peer_addr_params).
+	minPathMTU = 512
+
+	// maxSACKDelayMS is the largest SACK delay, in milliseconds, RFC 9260
+	// §6.2 allows and Linux accepts (net/sctp/socket.c:
+	// __sctp_setsockopt_delayed_ack, sctp_setsockopt_peer_addr_params).
+	maxSACKDelayMS = 500
+
+	// minProbeIntervalMS is SCTP_PROBE_TIMER_MIN (include/net/sctp/
+	// constants.h, v6.12, line 443): the shortest non-zero PLPMTUD probe
+	// interval Linux accepts (net/sctp/socket.c:
+	// sctp_setsockopt_probe_interval).
+	minProbeIntervalMS = 5000
+
+	// maxHMACIdents bounds the SCTP_HMAC_IDENT reply: SCTP_AUTH_NUM_HMACS
+	// (include/net/sctp/constants.h, v6.12, line 427) is 4, and a list
+	// holds each identifier at most once (net/sctp/auth.c:
+	// sctp_auth_ep_set_hmacs), so 16 leaves room to spare.
+	maxHMACIdents = 16
+
+	// maxAuthChunkList bounds a SCTP_LOCAL_AUTH_CHUNKS or
+	// SCTP_PEER_AUTH_CHUNKS reply: a CHUNKS parameter is at most 260
+	// bytes, 4 of them its header (RFC 4895 §3.2; net/sctp/sm_make_chunk.c:
+	// sctp_verify_param refuses a longer one), and the local list is
+	// shorter still (sctpNumChunkTypes).
+	maxAuthChunkList = 256
 )
 
 // connectx3Arg is struct sctp_getaddrs_old { sctp_assoc_t assoc_id; int
@@ -917,6 +997,44 @@ const (
 	assocStatsAddrOffKernel64    = ssAddrOffsetKernel64
 	sizeAssocStatsHeaderKernel64 = (ssTailOffsetKernel64 + 8 - 1) &^ (8 - 1)
 	sizeAssocStatsKernel64       = sizeAssocStatsHeaderKernel64 + 15*8
+
+	// The fields after the address in the 64-bit shape, for the three
+	// structs whose tail the package reads or writes.
+	udpEncapsPortOffKernel64             = ssTailOffsetKernel64
+	probeIntervalIntervalOffKernel64     = ssTailOffsetKernel64
+	pathThresholdsMaxRxtOffKernel64      = ssTailOffsetKernel64
+	pathThresholdsPFThresholdOffKernel64 = ssTailOffsetKernel64 + 2
+	pathThresholdsSwitchoverOffKernel64  = ssTailOffsetKernel64 + 4
+
+	// sizePathThresholdsProbe is sizeof(struct sctp_paddrthlds), the
+	// two-field form optPathThresholdsProbe takes (include/uapi/linux/
+	// sctp.h, v6.12, lines 1086-1091): { spt_assoc_id(4) spt_address(128)
+	// spt_pathmaxrxt(2) spt_pathpfthld(2) }, not packed, so 136 on a
+	// 32-bit target and 144 on a 64-bit one.
+	sizePathThresholdsProbe = (ssTailOffset + 4 + ssAlign - 1) &^ (ssAlign - 1)
+)
+
+// The counters of struct sctp_assoc_stats, in the order the header
+// declares them (include/uapi/linux/sctp.h, v6.12, lines 1044-1058): each
+// is a __u64 at sizeAssocStatsHeader (or its Kernel64 counterpart) plus 8
+// times its index.
+const (
+	assocStatsMaxRTO       = iota // sas_maxrto
+	assocStatsISACKs              // sas_isacks
+	assocStatsOSACKs              // sas_osacks
+	assocStatsOPackets            // sas_opackets
+	assocStatsIPackets            // sas_ipackets
+	assocStatsRtxChunks           // sas_rtxchunks
+	assocStatsOutOfSeqTSNs        // sas_outofseqtsns
+	assocStatsIDupChunks          // sas_idupchunks
+	assocStatsGapCount            // sas_gapcnt
+	assocStatsOUODChunks          // sas_ouodchunks
+	assocStatsIUODChunks          // sas_iuodchunks
+	assocStatsOODChunks           // sas_oodchunks
+	assocStatsIODChunks           // sas_iodchunks
+	assocStatsOCtrlChunks         // sas_octrlchunks
+	assocStatsICtrlChunks         // sas_ictrlchunks
+	assocStatsCounters            // how many there are: 15
 )
 
 // ---------------------------------------------------------------------

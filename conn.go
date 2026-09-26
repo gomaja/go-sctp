@@ -32,10 +32,28 @@ type Conn struct {
 	laddr atomic.Pointer[Addr]
 	raddr atomic.Pointer[Addr]
 
+	// pathScope is the scope id a link-local path without a zone gets, in a
+	// path option or SendOptions.Path: linkLocalPathScope over the address
+	// snapshots, worked out whenever they are taken or refreshed, so that
+	// no send pays for it. 0 means none.
+	pathScope atomic.Uint32
+
 	// bindMu serialises BindAdd and BindRemove, each with the snapshot
 	// refresh that follows it, so that an older refresh never replaces the
 	// snapshots a newer one stored.
 	bindMu sync.Mutex
+
+	// optMu serialises every option sequence that reads and writes one
+	// kernel object in more than one system call, so that no concurrent
+	// call sees it half done or loses its update: SetPathThresholds'
+	// read-modify-write, with SetPathParams, which writes the same
+	// retransmission limit; and SetDefaultSndInfo, which writes
+	// SCTP_DEFAULT_SNDINFO and then the default PR-SCTP policy that write
+	// clears, with DefaultSndInfo and DefaultPrInfo reading under it. It
+	// is a leaf: nothing else is locked while it is held, and the one lock
+	// ever held when it is taken is send.mu, by SetDefaultSndInfo and
+	// SetDefaultPrInfo, which update the send path's cached defaults.
+	optMu sync.Mutex
 
 	handler   NotificationHandler
 	closeWait time.Duration // Config.CloseTimeout, resolved: the grace period of Close

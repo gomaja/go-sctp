@@ -182,3 +182,219 @@ func (c *Conn) Subscribe(EventType, bool) error { return ErrUnsupported }
 
 // Subscribed reports ErrUnsupported: SCTP sockets exist only on Linux.
 func (c *Conn) Subscribed(EventType) (bool, error) { return false, ErrUnsupported }
+
+// ReadBuffer reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) ReadBuffer() (int, error) { return 0, ErrUnsupported }
+
+// SetReadBuffer reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetReadBuffer(int) error { return ErrUnsupported }
+
+// WriteBuffer reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) WriteBuffer() (int, error) { return 0, ErrUnsupported }
+
+// SetWriteBuffer reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetWriteBuffer(int) error { return ErrUnsupported }
+
+// PrimaryAddr reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) PrimaryAddr() (netip.Addr, error) { return netip.Addr{}, ErrUnsupported }
+
+// SetPrimaryAddr reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetPrimaryAddr(netip.Addr) error { return ErrUnsupported }
+
+// RequestPeerPrimary reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) RequestPeerPrimary(netip.Addr) error { return ErrUnsupported }
+
+// PathInfo reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) PathInfo(netip.Addr) (*PathInfo, error) { return nil, ErrUnsupported }
+
+// PathParams reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) PathParams(netip.Addr) (*PathParams, error) { return nil, ErrUnsupported }
+
+// SetPathParams reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetPathParams(netip.Addr, *PathParams) error { return ErrUnsupported }
+
+// RequestHeartbeat reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) RequestHeartbeat(netip.Addr) error { return ErrUnsupported }
+
+// PathThresholds reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) PathThresholds(netip.Addr) (*PathThresholds, error) { return nil, ErrUnsupported }
+
+// SetPathThresholds reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetPathThresholds(netip.Addr, *PathThresholds) error { return ErrUnsupported }
+
+// PFExposure reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) PFExposure() (PFExposure, error) { return 0, ErrUnsupported }
+
+// SetPFExposure reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetPFExposure(PFExposure) error { return ErrUnsupported }
+
+// AutoASCONF reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) AutoASCONF() (bool, error) { return false, ErrUnsupported }
+
+// SetAutoASCONF reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetAutoASCONF(bool) error { return ErrUnsupported }
+
+// RemoteUDPEncapsPort reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) RemoteUDPEncapsPort(netip.Addr) (uint16, error) { return 0, ErrUnsupported }
+
+// SetRemoteUDPEncapsPort reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetRemoteUDPEncapsPort(netip.Addr, uint16) error { return ErrUnsupported }
+
+// PLPMTUDProbeInterval reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) PLPMTUDProbeInterval(netip.Addr) (time.Duration, error) { return 0, ErrUnsupported }
+
+// SetPLPMTUDProbeInterval reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetPLPMTUDProbeInterval(netip.Addr, time.Duration) error { return ErrUnsupported }
+
+// Status reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) Status() (*Status, error) { return nil, ErrUnsupported }
+
+// Stats reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) Stats() (*AssocStats, error) { return nil, ErrUnsupported }
+
+// AssocInfo reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) AssocInfo() (*AssocInfo, error) { return nil, ErrUnsupported }
+
+// SetAssocInfo reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetAssocInfo(*AssocInfo) error { return ErrUnsupported }
+
+// RTOInfo reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) RTOInfo() (*RTOInfo, error) { return nil, ErrUnsupported }
+
+// SetRTOInfo reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetRTOInfo(*RTOInfo) error { return ErrUnsupported }
+
+// InitMsg reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) InitMsg() (*InitMsg, error) { return nil, ErrUnsupported }
+
+// DelayedSACK reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) DelayedSACK() (*DelayedSACK, error) { return nil, ErrUnsupported }
+
+// SetDelayedSACK reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetDelayedSACK(*DelayedSACK) error { return ErrUnsupported }
+
+// AdaptationLayer reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) AdaptationLayer() (uint32, error) { return 0, ErrUnsupported }
+
+// NoDelay reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) NoDelay() (bool, error) { return false, ErrUnsupported }
+
+// SetNoDelay reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetNoDelay(bool) error { return ErrUnsupported }
+
+// MaxSeg reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) MaxSeg() (int, error) { return 0, ErrUnsupported }
+
+// SetMaxSeg reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetMaxSeg(int) error { return ErrUnsupported }
+
+// MaxBurst reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) MaxBurst() (int, error) { return 0, ErrUnsupported }
+
+// SetMaxBurst reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetMaxBurst(int) error { return ErrUnsupported }
+
+// FragmentsDisabled reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) FragmentsDisabled() (bool, error) { return false, ErrUnsupported }
+
+// SetFragmentsDisabled reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetFragmentsDisabled(bool) error { return ErrUnsupported }
+
+// FragmentInterleave reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) FragmentInterleave() (FragmentInterleave, error) { return 0, ErrUnsupported }
+
+// SetFragmentInterleave reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetFragmentInterleave(FragmentInterleave) error { return ErrUnsupported }
+
+// PartialDeliveryPoint reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) PartialDeliveryPoint() (int, error) { return 0, ErrUnsupported }
+
+// SetPartialDeliveryPoint reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetPartialDeliveryPoint(int) error { return ErrUnsupported }
+
+// ReceiveNxtInfo reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) ReceiveNxtInfo() (bool, error) { return false, ErrUnsupported }
+
+// SetReceiveNxtInfo reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetReceiveNxtInfo(bool) error { return ErrUnsupported }
+
+// DefaultContext reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) DefaultContext() (uint32, error) { return 0, ErrUnsupported }
+
+// SetDefaultContext reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetDefaultContext(uint32) error { return ErrUnsupported }
+
+// PRSupported reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) PRSupported() (bool, error) { return false, ErrUnsupported }
+
+// ReconfigSupported reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) ReconfigSupported() (bool, error) { return false, ErrUnsupported }
+
+// ASCONFSupported reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) ASCONFSupported() (bool, error) { return false, ErrUnsupported }
+
+// AuthSupported reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) AuthSupported() (bool, error) { return false, ErrUnsupported }
+
+// InterleavingSupported reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) InterleavingSupported() (bool, error) { return false, ErrUnsupported }
+
+// ECNSupported reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) ECNSupported() (bool, error) { return false, ErrUnsupported }
+
+// SetAuthKey reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetAuthKey(uint16, []byte) error { return ErrUnsupported }
+
+// ActiveAuthKey reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) ActiveAuthKey() (uint16, error) { return 0, ErrUnsupported }
+
+// SetActiveAuthKey reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetActiveAuthKey(uint16) error { return ErrUnsupported }
+
+// DeactivateAuthKey reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) DeactivateAuthKey(uint16) error { return ErrUnsupported }
+
+// DeleteAuthKey reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) DeleteAuthKey(uint16) error { return ErrUnsupported }
+
+// HMACIdentifiers reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) HMACIdentifiers() ([]HMACID, error) { return nil, ErrUnsupported }
+
+// LocalAuthChunks reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) LocalAuthChunks() ([]uint8, error) { return nil, ErrUnsupported }
+
+// PeerAuthChunks reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) PeerAuthChunks() ([]uint8, error) { return nil, ErrUnsupported }
+
+// StreamResetMask reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) StreamResetMask() (StreamResetMask, error) { return 0, ErrUnsupported }
+
+// SetStreamResetMask reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetStreamResetMask(StreamResetMask) error { return ErrUnsupported }
+
+// ResetStreams reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) ResetStreams(ResetDirection, ...uint16) error { return ErrUnsupported }
+
+// ResetAssoc reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) ResetAssoc() error { return ErrUnsupported }
+
+// AddStreams reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) AddStreams(uint16, uint16) error { return ErrUnsupported }
+
+// StreamScheduler reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) StreamScheduler() (Scheduler, error) { return 0, ErrUnsupported }
+
+// SetStreamScheduler reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetStreamScheduler(Scheduler) error { return ErrUnsupported }
+
+// StreamSchedulerValue reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) StreamSchedulerValue(uint16) (uint16, error) { return 0, ErrUnsupported }
+
+// SetStreamSchedulerValue reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SetStreamSchedulerValue(uint16, uint16) error { return ErrUnsupported }
+
+// PRStreamStatus reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) PRStreamStatus(uint16, PRPolicy) (*PRStatus, error) { return nil, ErrUnsupported }
+
+// PRAssocStatus reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) PRAssocStatus(PRPolicy) (*PRStatus, error) { return nil, ErrUnsupported }

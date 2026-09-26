@@ -63,6 +63,20 @@ type SendOptions struct {
 	// Accept only. SendMsg refuses it on an Endpoint (where the kernel would
 	// look the association up by address, not by id) and on a connection from
 	// Endpoint.PeelOff (where Linux silently ignores the destination).
+	//
+	// A link-local Path without a zone, the form PeerAddrs reports a peer
+	// address in when the peer listed it in its INIT or INIT ACK, gets its
+	// zone from the association. Three sources are tried in order: the
+	// zones of its own zoned link-local addresses, those of its peer's
+	// zoned link-local addresses, and the interfaces holding its own
+	// link-local addresses that carry no zone. The first source that
+	// yields any zone decides, and the zone is filled in only if that
+	// source yields exactly one; otherwise give the zone yourself, since
+	// Linux refuses a link-local address without one with EINVAL
+	// (net/sctp/ipv6.c: sctp_inet6_send_verify). The zone is worked out
+	// when the connection is set up and when BindAdd or BindRemove refresh
+	// its addresses. The path options (PathInfo, SetPathParams and the
+	// others) complete a link-local address the same way.
 	Path netip.Addr
 
 	// More says more messages follow at once, so the kernel may hold this

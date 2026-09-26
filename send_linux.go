@@ -201,7 +201,7 @@ func (c *Conn) checkSend(b []byte, opts *SendOptions, name *[sizeSockaddrIn6]byt
 	if c.kind == kindPeeled {
 		return 0, invalidArg("SendOptions.Path is set on a connection peeled off an Endpoint, whose sends Linux never directs (net/sctp/socket.c: sctp_sendmsg_get_daddr ignores msg_name there)")
 	}
-	n, err := encodeAddr(name[:], c.sock.family, opts.Path, c.peerPort)
+	n, err := encodePathAddr(name[:], c.sock.family, opts.Path, c.peerPort, c.pathScope.Load())
 	if err != nil {
 		return 0, invalidArg("SendOptions.Path: %s", strings.TrimPrefix(err.Error(), "sctp: "))
 	}
@@ -375,6 +375,8 @@ func (c *Conn) DefaultSndInfo() (*SndInfo, error) {
 	if !c.opened() {
 		return nil, c.optionError("get", net.ErrClosed)
 	}
+	c.optMu.Lock()
+	defer c.optMu.Unlock()
 	var snd SndInfo
 	if err := c.sock.control(func(fd int) error {
 		var err error
@@ -394,8 +396,10 @@ func (c *Conn) DefaultSndInfo() (*SndInfo, error) {
 // before any system call. Linux keeps the default PR-SCTP policy in the
 // same word as the default flags and overwrites it here, so the package
 // sets the default PrInfo again afterwards: the two defaults stay
-// independent. It takes the connection's send lock, so it waits for a
-// send in progress. Errors are *net.OpError with Op "set".
+// independent, and the connection's option lock keeps DefaultPrInfo from
+// seeing the policy between the two writes. It takes the connection's send
+// lock, so it waits for a send in progress. Errors are *net.OpError with
+// Op "set".
 func (c *Conn) SetDefaultSndInfo(info *SndInfo) error {
 	if !c.opened() {
 		return c.optionError("set", net.ErrClosed)
@@ -409,6 +413,8 @@ func (c *Conn) SetDefaultSndInfo(info *SndInfo) error {
 	v := *info
 	c.send.mu.Lock()
 	defer c.send.mu.Unlock()
+	c.optMu.Lock()
+	defer c.optMu.Unlock()
 	if err := c.sock.control(func(fd int) error {
 		return setDefaultSndInfo(fd, v.Stream, uint16(v.Flags), networkOrderUint32(v.PPID), v.Context)
 	}); err != nil {
@@ -426,6 +432,8 @@ func (c *Conn) DefaultPrInfo() (*PrInfo, error) {
 	if !c.opened() {
 		return nil, c.optionError("get", net.ErrClosed)
 	}
+	c.optMu.Lock()
+	defer c.optMu.Unlock()
 	var pr PrInfo
 	if err := c.sock.control(func(fd int) error {
 		var err error
@@ -457,6 +465,8 @@ func (c *Conn) SetDefaultPrInfo(pr *PrInfo) error {
 	policy, value := resolvePrInfo(pr)
 	c.send.mu.Lock()
 	defer c.send.mu.Unlock()
+	c.optMu.Lock()
+	defer c.optMu.Unlock()
 	if err := c.sock.control(func(fd int) error {
 		return setDefaultPrInfo(fd, policy, value)
 	}); err != nil {

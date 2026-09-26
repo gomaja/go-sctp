@@ -291,6 +291,7 @@ func TestSendMsgZeroAllocs(t *testing.T) {
 		network, listen string
 		auth            bool
 		zone            string // an interface the case needs
+		laddr           string // the address the client binds, when not the wildcard
 		opts            func(peer *Addr) SendOptions
 		write           bool
 		inline          bool // build the options in each call, as a caller would
@@ -305,6 +306,14 @@ func TestSendMsgZeroAllocs(t *testing.T) {
 		{
 			name: "zoned link-local Path", network: "sctp6", listen: "[fe80::1%zone0]:0", zone: "zone0",
 			opts: func(p *Addr) SendOptions { return SendOptions{Path: p.IPs[0]} },
+		},
+		{
+			// A link-local Path without a zone takes the association's
+			// link-local scope id, worked out when the Conn was set up, so
+			// the fill costs nothing per send. The client binds one
+			// address of zone0, so that the association has one link.
+			name: "zoneless link-local Path", network: "sctp6", listen: "[fe80::1%zone0]:0", zone: "zone0", laddr: "[fe80::3%zone0]:0",
+			opts: func(p *Addr) SendOptions { return SendOptions{Path: p.IPs[0].WithZone("")} },
 		},
 		{name: "More", opts: func(*Addr) SendOptions { return SendOptions{More: true} }},
 		{name: "options built per call", inline: true},
@@ -329,11 +338,22 @@ func TestSendMsgZeroAllocs(t *testing.T) {
 			if tc.auth {
 				cfg.Authentication = new(true)
 			}
-			client, err := cfg.Dial(testContext(t, 10*time.Second), network, nil, peer)
+			var laddr *Addr
+			if tc.laddr != "" {
+				a, err := ResolveAddr(network, tc.laddr)
+				if err != nil {
+					t.Fatalf("ResolveAddr(%q): %v", tc.laddr, err)
+				}
+				laddr = a
+			}
+			client, err := cfg.Dial(testContext(t, 10*time.Second), network, laddr, peer)
 			if err != nil {
-				t.Fatalf("Dial %v: %v", peer, err)
+				t.Fatalf("Dial %v from %v: %v", peer, laddr, err)
 			}
 			defer func() { _ = client.Close() }()
+			if tc.laddr != "" && client.pathScope.Load() == 0 {
+				t.Fatalf("the association over one link has no link-local scope for a zoneless Path")
+			}
 
 			var opts SendOptions
 			if tc.opts != nil {
