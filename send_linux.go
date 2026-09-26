@@ -148,8 +148,11 @@ func (s *sendState) bind(term *termState) {
 // runtime poller, until the write deadline passes or the connection is
 // closed; with NoWait, a send that finds no space fails at once with an
 // error matching syscall.EAGAIN, and nothing of the message is queued. A
-// successful SendMsg makes no allocation, and SendMsg keeps nothing of b
-// or opts after it returns.
+// successful SendMsg makes no allocation with no Path zone or a numeric
+// zone. A zone given by interface name allocates only when the package
+// reads the host's interface table again (at most once a minute, or for a
+// name it has not seen). SendMsg keeps nothing of b or opts after it
+// returns.
 //
 // A nil opts.Info or opts.PR means the socket's default, in every
 // combination (see SendOptions). A message has at least one byte: an

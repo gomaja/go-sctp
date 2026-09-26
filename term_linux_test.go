@@ -226,6 +226,38 @@ func TestTermReadRules(t *testing.T) {
 	}
 }
 
+// TestAbortedErrorRepeatsOnReadsAndSends checks the public paths over a
+// scripted connection after the association error has been latched.
+func TestAbortedErrorRepeatsOnReadsAndSends(t *testing.T) {
+	c := fakeConn(&fakeRawConn{}, nil)
+	var recvCalls, sendCalls int
+	hookRecvmsg(t, func(int, *syscall.Msghdr, int) (int, error) {
+		recvCalls++
+		return 0, syscall.ECONNABORTED
+	})
+	hookSendmsg(t, func(int, *syscall.Msghdr, int) (int, error) {
+		sendCalls++
+		return 0, syscall.EIO
+	})
+	for i := range 3 {
+		if _, err := c.Read(make([]byte, 16)); !errors.Is(err, syscall.ECONNABORTED) {
+			t.Errorf("Read %d = %v, want ECONNABORTED", i, err)
+		}
+		if _, _, err := c.RecvMsg(make([]byte, 16)); !errors.Is(err, syscall.ECONNABORTED) {
+			t.Errorf("RecvMsg %d = %v, want ECONNABORTED", i, err)
+		}
+		if _, err := c.Write([]byte("x")); !errors.Is(err, syscall.ECONNABORTED) {
+			t.Errorf("Write %d = %v, want ECONNABORTED", i, err)
+		}
+		if _, err := c.SendMsg([]byte("x"), SendOptions{}); !errors.Is(err, syscall.ECONNABORTED) {
+			t.Errorf("SendMsg %d = %v, want ECONNABORTED", i, err)
+		}
+	}
+	if recvCalls != 1 || sendCalls != 0 {
+		t.Errorf("system calls after latching ECONNABORTED: %d recvmsg, %d sendmsg; want 1 and 0", recvCalls, sendCalls)
+	}
+}
+
 // --- every ordering of the end ------------------------------------------------
 
 // latchWorld is a model of one socket at the moment its association fails:

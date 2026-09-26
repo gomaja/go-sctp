@@ -578,7 +578,9 @@ func (c *Conn) RemoteUDPEncapsPort(path netip.Addr) (uint16, error) {
 
 // SetRemoteUDPEncapsPort sets the peer's UDP port for SCTP over UDP (RFC
 // 6951 §6.1, updated by RFC 8899) on one path, or, for the zero
-// netip.Addr, on the association and every path it has; 0 sends plain
+// netip.Addr, on the association and every path it has. RFC 6951 §6.1
+// applies a wildcard only to future paths; Linux also changes existing
+// paths (net/sctp/socket.c: sctp_setsockopt_encap_port). 0 sends plain
 // SCTP. port is in host byte order, and the package sends it in the
 // network byte order RFC 6951 §6.1 specifies. Linux encapsulates only
 // while net.sctp.udp_port is set. A path that is not the peer's is refused

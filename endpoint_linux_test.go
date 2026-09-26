@@ -47,6 +47,24 @@ import (
 // fails a test instead of stalling the suite.
 const endpointWait = 5 * time.Second
 
+// TestEndpointRecvMsgReleasesCallerBuffer checks that a completed read does
+// not leave the endpoint's receive state pointing into its caller's slice.
+func TestEndpointRecvMsgReleasesCallerBuffer(t *testing.T) {
+	server, client, _, clientID := endpointPair(t, nil, nil)
+	if _, err := client.SendMsg(clientID, []byte("data"), SendOptions{}); err != nil {
+		t.Fatalf("SendMsg: %v", err)
+	}
+	if n, info, err := server.RecvMsg(make([]byte, 32)); n != 4 || err != nil || info.Notification {
+		t.Fatalf("RecvMsg = %d, %+v, %v", n, info, err)
+	}
+	server.recv.mu.Lock()
+	base := server.recv.iov.Base
+	server.recv.mu.Unlock()
+	if base != nil {
+		t.Errorf("receive state still points at the caller's buffer: %p", base)
+	}
+}
+
 // --- helpers ------------------------------------------------------------------
 
 // listenEndpoint opens a listening Endpoint with cfg and aborts it on
@@ -1539,6 +1557,49 @@ func TestEndpointCloseGracefullyEndsEveryAssociation(t *testing.T) {
 	wantOp(t, "Abort after Close", "close", client.Abort(), net.ErrClosed)
 }
 
+// TestEndpointCloseShutsDownNewAssociation checks the association list
+// again while Close waits: a peer arriving after the initial shutdowns
+// must receive its own graceful end before the endpoint is released.
+func TestEndpointCloseShutsDownNewAssociation(t *testing.T) {
+	const grace = 5 * time.Second
+	e := listenEndpoint(t, &Config{CloseTimeout: grace, WriteBuffer: new(1 << 20)}, "sctp4", loopback4(0))
+	_, _ = stalledEndpoint(t, e, &Config{ReadBuffer: new(4096)})
+	done := make(chan error, 1)
+	go func() { done <- e.Close() }()
+	deadline := time.Now().Add(time.Second)
+	for lifeState(e.life.state.Load()) != lifeClosing {
+		if time.Now().After(deadline) {
+			t.Fatal("Close did not enter its wait")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	peer, err := Dial(testContext(t, time.Second), "sctp4", nil, endpointAddr(t, e))
+	if err != nil {
+		t.Fatalf("Dial while Close waits: %v", err)
+	}
+	t.Cleanup(func() { _ = peer.Abort() })
+	setReadDeadline(t, peer, 2*time.Second)
+	if _, err := peer.Read(make([]byte, 64)); err != io.EOF {
+		t.Fatalf("new peer Read = %v, want io.EOF", err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Close returned %v before the stalled associations ended", err)
+	default:
+	}
+	if err := e.Abort(); err != nil {
+		t.Fatalf("Abort after the new peer's graceful end: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Close after Abort = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return after Abort")
+	}
+}
+
 // stalledEndpoint connects e to two one-to-one peers, opened with
 // peerCfg, that do not read, and fills e's send buffer with messages to
 // both for good (fillEndpointStable), so that neither SHUTDOWN can
@@ -1774,6 +1835,52 @@ func TestEndpointCloseReleasesParkedCalls(t *testing.T) {
 	}()
 	if after := openFds(t); after != before {
 		t.Errorf("descriptor count went %d -> %d", before, after)
+	}
+}
+
+// TestEndpointCloseBoundsParkedSendMsg checks the endpoint's grace while a
+// send waits for room in its full send buffer.
+func TestEndpointCloseBoundsParkedSendMsg(t *testing.T) {
+	const grace = 300 * time.Millisecond
+	e := openEndpoint(t, &Config{CloseTimeout: grace}, "sctp4", loopback4(0))
+	_, _ = stalledEndpoint(t, e, &Config{ReadBuffer: new(4096)})
+	ids, err := e.AssocIDs()
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("AssocIDs = %v, %v", ids, err)
+	}
+	parked := make(chan struct{})
+	var once sync.Once
+	hookSendmsg(t, func(fd int, msg *syscall.Msghdr, flags int) (int, error) {
+		n, err := rawSendmsg(fd, msg, flags)
+		if err == syscall.EAGAIN {
+			once.Do(func() { close(parked) })
+		}
+		return n, err
+	})
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := e.SendMsg(ids[0], fill(512), SendOptions{})
+		sendDone <- err
+	}()
+	select {
+	case <-parked:
+	case <-time.After(time.Second):
+		t.Fatal("SendMsg did not park on the full buffer")
+	}
+	start := time.Now()
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if d := time.Since(start); d > grace+200*time.Millisecond {
+		t.Errorf("Close took %v with a %v grace", d, grace)
+	}
+	select {
+	case err := <-sendDone:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Errorf("parked SendMsg = %v, want net.ErrClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parked SendMsg did not return after Close")
 	}
 }
 
@@ -2779,6 +2886,70 @@ func TestPeeledCloseWithFullSendBuffer(t *testing.T) {
 	}
 	if d := time.Since(start); d >= grace {
 		t.Errorf("Close took %v, its whole grace period", d)
+	}
+}
+
+// TestPeeledCloseEOFSendsWithoutBufferSpace checks the SCTP_EOF system call
+// while the peer's closed receive window keeps the send buffer full.
+func TestPeeledCloseEOFSendsWithoutBufferSpace(t *testing.T) {
+	e := listenEndpoint(t, nil, "sctp4", loopback4(0))
+	peer, err := (&Config{ReadBuffer: new(closingReadBuffer)}).Dial(testContext(t, endpointWait), "sctp4", nil, endpointAddr(t, e))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = peer.Abort() })
+	peeled, err := e.PeelOff(onlyAssoc(t, e))
+	if err != nil {
+		t.Fatalf("PeelOff: %v", err)
+	}
+	t.Cleanup(func() { _ = peeled.Abort() })
+	if err := peeled.SetWriteBuffer(1 << 20); err != nil {
+		t.Fatalf("SetWriteBuffer: %v", err)
+	}
+	payload := fill(4096)
+	queued := fillSendBufferStable(t, peeled, peer, payload)
+	eofDuration := make(chan time.Duration, 1)
+	hookSendmsg(t, func(fd int, msg *syscall.Msghdr, flags int) (int, error) {
+		start := time.Now()
+		n, err := rawSendmsg(fd, msg, flags)
+		if msg.Iovlen == 0 {
+			eofDuration <- time.Since(start)
+		}
+		return n, err
+	})
+	const grace = 5 * time.Second
+	done := make(chan error, 1)
+	go func() { done <- peeled.CloseWithTimeout(grace) }()
+	select {
+	case d := <-eofDuration:
+		if d >= 100*time.Millisecond {
+			t.Errorf("SCTP_EOF send took %v with a full buffer", d)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SCTP_EOF send did not return promptly")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Close returned %v before the peer drained its window", err)
+	default:
+	}
+	setReadDeadline(t, peer, grace)
+	buf := make([]byte, 4096)
+	for i := range queued {
+		if n, err := peer.Read(buf); n != len(payload) || err != nil {
+			t.Fatalf("peer Read %d/%d = %d, %v", i+1, queued, n, err)
+		}
+	}
+	if _, err := peer.Read(buf); err != io.EOF {
+		t.Fatalf("peer Read after queued data = %v, want io.EOF", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("CloseWithTimeout: %v", err)
+		}
+	case <-time.After(grace):
+		t.Fatal("Close did not return after the peer drained")
 	}
 }
 

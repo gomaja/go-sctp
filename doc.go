@@ -59,7 +59,8 @@
 //
 // # Reading
 //
-// [Conn.RecvMsg] reads with one recvmsg(2), and returns in a [MsgInfo] what
+// [Conn.RecvMsg] reads through recvmsg(2); with a handler it may consume
+// notification records and read again. It returns in a [MsgInfo] what
 // the kernel reports about the bytes: whether they end a message (EOR),
 // whether they are a notification, and the message's [RcvInfo], its stream,
 // payload protocol identifier (PPID) and TSN among them. A message longer
@@ -95,8 +96,11 @@
 // deadline passes or the socket is closed. With NoWait it makes one attempt
 // instead, and a refusal queues nothing of the message. More tells the
 // kernel that more messages follow at once, so that it may bundle them
-// (MSG_MORE). A successful SendMsg makes no allocation and keeps nothing of
-// its arguments.
+// (MSG_MORE). A successful SendMsg with no Path zone or a numeric zone
+// makes no allocation; a zone given by interface name allocates only when
+// the package reads the host's interface table again (at most once a
+// minute, or for a name it has not seen). SendMsg keeps nothing of its
+// arguments.
 //
 // # Concurrency
 //
@@ -112,18 +116,24 @@
 //
 // # Errors
 //
-// The errors of the constructors and of the methods of Conn, Listener and
-// Endpoint are *net.OpError values whose Op names the call: "dial" for Dial
-// and Endpoint.Connect, "listen" for Listen, ListenEndpoint and
-// OpenEndpoint, "accept", "file" for FileConn and FileListener, "read",
-// "write", "close" for Close, CloseWithTimeout, Abort, Shutdown and the
-// Endpoint's CloseAssoc and AbortAssoc, "get" and "set" for options,
-// "bindx" for BindAdd and BindRemove, and "peeloff". ResolveAddr,
-// ParseNotification, InstallAuthKey and ActivateAuthKey return their causes
-// as they are. Test a cause with errors.Is:
+// On Linux, the errors of the constructors and of the methods of Conn,
+// Listener and Endpoint are *net.OpError values whose Op names the call:
+// "dial" for Dial and Endpoint.Connect, "listen" for Listen,
+// ListenEndpoint and OpenEndpoint, "accept", "file" for FileConn and
+// FileListener, "read", "write", "close" for Close, CloseWithTimeout,
+// Abort, Shutdown and the Endpoint's CloseAssoc and AbortAssoc, "get" and
+// "set" for options, "bindx" for BindAdd and BindRemove, "peeloff",
+// "syscallconn", and "raw-control", "raw-read" and "raw-write" for the
+// methods of the value SyscallConn returns. On platforms without SCTP
+// every constructor fails, so no Conn, Listener or Endpoint can be
+// obtained there; the method stubs return ErrUnsupported unwrapped.
+// ResolveAddr, ParseNotification, InstallAuthKey and ActivateAuthKey return
+// their causes as they are. Test a cause with errors.Is:
 //
 //   - io.EOF is returned unwrapped, so that err == io.EOF works: the
-//     association ended gracefully, and every message has been read.
+//     association ended gracefully, and every message visible to the
+//     package has been read. A record consumed through SyscallConn is
+//     never seen by the package.
 //   - An argument the package refuses, a Config field, a SendOptions field
 //     or a method argument, matches syscall.EINVAL, and the message names
 //     it. Nothing reaches the kernel then.
@@ -148,7 +158,8 @@
 // # The end of an association
 //
 // After a graceful end, started by either side, reads return the messages
-// still queued and then io.EOF, on every kind of Conn. Sends fail with an
+// still queued and then io.EOF, on every kind of Conn. A record consumed
+// through SyscallConn is never seen by the package. Sends fail with an
 // error matching syscall.ESHUTDOWN while the shutdown is in progress, and
 // with syscall.EPIPE once the association is gone.
 //

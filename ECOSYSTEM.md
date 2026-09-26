@@ -15,6 +15,8 @@ It holds three surveys, newest first: the research behind the current API,
 a refresh of the direct comparators, and the original survey of every Go
 SCTP implementation. Each is a point-in-time record; the counts are those
 of the trackers when the survey was made.
+The research recorded counts per source, without per-repository snapshot
+revisions.
 
 ## API redesign research
 

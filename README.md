@@ -135,15 +135,19 @@ multi-homing, streams, buffer sizes and notifications.
 - **Messages.** `SendMsg` takes a `SendOptions`: stream, PPID and flags,
   a PR-SCTP policy, an AUTH key, the peer address to send to, and a
   single-attempt mode (`NoWait`). `RecvMsg` reports each read's metadata,
-  and `ReadMsg` reassembles whole messages. A successful `SendMsg`, and a
-  `RecvMsg` or `Read` of data, make no allocation.
+  and `ReadMsg` reassembles whole messages. A successful `SendMsg` with no
+  `Path` zone or a numeric zone, and a `RecvMsg` or `Read` of data, make no
+  allocation. A zone given by interface name allocates only when the
+  package reads the host's interface table again (at most once a minute,
+  or for a name it has not seen).
 - **Notifications.** Subscribe with `Config.Notifications` or
   `Conn.Subscribe`; a `NotificationHandler` receives parsed values such as
   `*AssocChange` and `*SendFailed`.
 - **The end of an association.** Reads end with `io.EOF` after a graceful
-  end on every kind of connection, and after a failure every read and send
-  returns the same error (`ECONNRESET`, `ETIMEDOUT` or `ECONNABORTED`)
-  instead of hanging.
+  end on every kind of connection, except that a record consumed through
+  `SyscallConn` is never seen by the package. After a failure every read
+  and send returns the same error (`ECONNRESET`, `ETIMEDOUT` or
+  `ECONNABORTED`) instead of hanging.
 - **Errors.** The errors of socket calls are `*net.OpError` values that
   name the call; test them with `errors.Is`. A refused argument matches `syscall.EINVAL` and
   names the field, and an option the kernel lacks matches
