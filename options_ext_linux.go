@@ -247,10 +247,13 @@ func (c *Conn) SetStreamResetMask(m StreamResetMask) error {
 	return c.setAssocValueOption(optEnableStreamReset, uint32(m))
 }
 
-// ResetStreams asks to reset the sequence numbers of streams, or of every
-// stream when none are named, in direction dir: ResetOutgoing for this
-// side's outgoing streams, ResetIncoming to ask the peer to reset its
-// outgoing ones, or both (SCTP_RESET_STREAMS, RFC 6525 §6.3.2). It returns
+// ResetStreams asks to reset the sequence numbers of streams in direction
+// dir: ResetOutgoing for this side's outgoing streams, ResetIncoming to ask
+// the peer to reset its outgoing ones, or both (SCTP_RESET_STREAMS, RFC 6525
+// §6.3.2). An empty list resets every stream (net/sctp/stream.c:
+// sctp_send_reset_streams); before Linux 7.2, a list of more than 32771
+// streams fails with EINVAL (net/sctp/socket.c:
+// sctp_setsockopt_reset_streams). It returns
 // once the request is sent; an EventStreamReset reports the outcome,
 // including a refusal. Reconfiguration must have been negotiated, with
 // EnableResetStreamReq in the mask, or Linux refuses with ENOPROTOOPT; a

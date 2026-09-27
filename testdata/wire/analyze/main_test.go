@@ -63,7 +63,7 @@ func check(t *testing.T, c claim, frames []frame, caseFacts map[string]string) r
 	t.Helper()
 	fs := setupFacts()
 	fs[c.name] = caseFacts
-	e, err := newEnv(append(frames, sentinels(t0.Add(time.Hour))...), fs, 1500)
+	e, err := newEnv(append(append([]frame(nil), frames...), sentinels(t0.Add(time.Hour))...), fs, 1500)
 	if err != nil {
 		t.Fatalf("newEnv: %v", err)
 	}
@@ -108,9 +108,9 @@ func line(cols ...string) string { return strings.Join(cols, "\t") }
 
 func TestParseFramesReadsChunksAndDATAFields(t *testing.T) {
 	out := line("7", "1800000000.000123000", "98", "10.0.1.3", "10.0.1.2", "40000", "41005",
-		"3,0,0", "10,11", "0,1", "1464401921,16909060", "1,0", "0,1", "99", "", "") + "\n" +
+		"3,0,0", "10,11", "0,1", "1464401921,16909060", "1,0", "0,1", "99", "", "", "1,1") + "\n" +
 		line("8", "1800000000.000200000", "70", "10.0.1.3", "10.0.1.2", "40000", "41005",
-			"6", "", "", "", "", "", "", "", "12") + "\n"
+			"6", "", "", "", "", "", "", "", "12", "") + "\n"
 	frames, err := parseFrames(out)
 	if err != nil {
 		t.Fatal(err)
@@ -128,18 +128,56 @@ func TestParseFramesReadsChunksAndDATAFields(t *testing.T) {
 	}
 }
 
+func TestParseFramesReadsIDATAFields(t *testing.T) {
+	out := line("7", "1800000000.000123000", "98", "10.0.1.3", "10.0.1.2", "40000", "41025",
+		"64,64", "10,11", "0,0", "1464401939", "0,0", "0,0", "", "", "", "1,0") + "\n"
+	frames, err := parseFrames(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames[0].data) != 2 || frames[0].data[0].kind != chunkIDATA ||
+		!frames[0].data[0].b || frames[0].data[0].ppid != ppidInterleave ||
+		frames[0].data[1].b || frames[0].data[1].ppid != 0 {
+		t.Fatalf("I-DATA = %+v", frames[0].data)
+	}
+	if _, err := parseFrames(strings.Replace(out, "1,0\n", "\n", 1)); err == nil {
+		t.Error("I-DATA without B bits parsed")
+	}
+}
+
+func TestCheckMessageInterleaving(t *testing.T) {
+	c := claimNamed(t, "message-interleaving")
+	facts := map[string]string{"port": "41025", "received": "2", "eof": "1", "dropped": "4"}
+	idata := func(n, sid int, begin bool) frame {
+		f := c2s(n, float64(n), 41025, chunkIDATA)
+		f.data = []dataChunk{{tsn: uint32(n), sid: uint16(sid), kind: chunkIDATA, b: begin}}
+		if begin {
+			f.data[0].ppid = ppidInterleave + uint32(sid)
+		}
+		return f
+	}
+	good := []frame{idata(1, 0, true), idata(2, 1, true), idata(3, 0, false), idata(4, 1, false)}
+	wantPass(t, check(t, c, good, facts))
+	wantFail(t, check(t, c, []frame{c2s(1, 0, 41025, chunkINIT)}, facts), "no I-DATA")
+	wantFail(t, check(t, c, append(append([]frame(nil), good...), withData(c2s(5, 5, 41025), dataChunk{})), facts), "DATA chunk")
+	wantFail(t, check(t, c, []frame{idata(1, 0, true), idata(2, 0, false), idata(3, 1, true), idata(4, 1, false)}, facts), "interleaved")
+	noDrop := map[string]string{"port": "41025", "received": "2", "eof": "1", "dropped": "0"}
+	wantFail(t, check(t, c, good, noDrop), "INPUT drop matched 0")
+}
+
 func TestParseFramesFailsClosed(t *testing.T) {
-	good := []string{"7", "1800000000.000123000", "98", "10.0.1.3", "10.0.1.2", "40000", "41005", "0", "10", "0", "5", "0", "0", "", "", ""}
+	good := []string{"7", "1800000000.000123000", "98", "10.0.1.3", "10.0.1.2", "40000", "41005", "0", "10", "0", "5", "0", "0", "", "", "", "1"}
 	for name, mutate := range map[string]func([]string) []string{
-		"a missing column":             func(c []string) []string { return c[:len(c)-1] },
-		"a DATA chunk without its TSN": func(c []string) []string { c[8] = ""; return c },
-		"a TSN without a DATA chunk":   func(c []string) []string { c[7] = "3"; c[13] = "4"; return c },
-		"a SACK without its ack":       func(c []string) []string { c[7] = "0,3"; return c },
-		"a malformed time":             func(c []string) []string { c[1] = "soon"; return c },
-		"a malformed address":          func(c []string) []string { c[3] = "10.0.1"; return c },
-		"a malformed bit":              func(c []string) []string { c[11] = "maybe"; return c },
-		"no chunk at all":              func(c []string) []string { c[7] = ""; return c },
-		"a malformed cause":            func(c []string) []string { c[15] = "user"; return c },
+		"a missing column":               func(c []string) []string { return c[:len(c)-1] },
+		"a DATA chunk without its TSN":   func(c []string) []string { c[8] = ""; return c },
+		"a DATA chunk without its B bit": func(c []string) []string { c[16] = ""; return c },
+		"a TSN without a DATA chunk":     func(c []string) []string { c[7] = "3"; c[13] = "4"; return c },
+		"a SACK without its ack":         func(c []string) []string { c[7] = "0,3"; return c },
+		"a malformed time":               func(c []string) []string { c[1] = "soon"; return c },
+		"a malformed address":            func(c []string) []string { c[3] = "10.0.1"; return c },
+		"a malformed bit":                func(c []string) []string { c[11] = "maybe"; return c },
+		"no chunk at all":                func(c []string) []string { c[7] = ""; return c },
+		"a malformed cause":              func(c []string) []string { c[15] = "user"; return c },
 	} {
 		t.Run(name, func(t *testing.T) {
 			cols := mutate(append([]string(nil), good...))
@@ -401,6 +439,47 @@ func TestCheckRequestHeartbeat(t *testing.T) {
 	wantFail(t, check(t, c, append(good, hb(4, 100, serverA)), facts), "nothing requested")
 	wantFail(t, check(t, c, []frame{hb(1, 400.1, serverA), good[1], good[2]}, facts), "want exactly one, to server-b")
 	wantFail(t, check(t, c, []frame{good[0], good[1]}, facts), "one to server-a and one to server-b")
+}
+
+func TestCheckPeriodicHeartbeat(t *testing.T) {
+	c := claimNamed(t, "periodic-heartbeat")
+	facts := map[string]string{
+		"port": "41024", "start_ns": ns(0), "end_ns": ns(4100),
+		"interval_ns": fmt.Sprint(time.Second.Nanoseconds()),
+		"rto_min_ns":  fmt.Sprint((200 * time.Millisecond).Nanoseconds()),
+		"rto_max_ns":  fmt.Sprint((200 * time.Millisecond).Nanoseconds()),
+	}
+	beat := func(n int, ms float64, dst netip.Addr) frame {
+		f := c2s(n, ms, 41024, chunkHEARTBEAT)
+		f.dst = dst
+		if dst == serverB {
+			f.src = clientB
+		}
+		return f
+	}
+	ack := func(n int, ms float64, src netip.Addr) frame {
+		f := s2c(n, ms, 41024, chunkHEARTBEATACK)
+		f.src = src
+		if src == serverB {
+			f.dst = clientB
+		}
+		return f
+	}
+	good := []frame{
+		beat(1, 1100, serverA), ack(2, 1110, serverA),
+		beat(3, 1200, serverB), ack(4, 1210, serverB),
+		beat(5, 2300, serverA), ack(6, 2310, serverA),
+		beat(7, 2400, serverB), ack(8, 2410, serverB),
+	}
+	wantPass(t, check(t, c, good, facts))
+	wantFail(t, check(t, c, []frame{c2s(1, 0, 41024, chunkINIT)}, facts), "no HEARTBEAT")
+	wantFail(t, check(t, c, good[:4], facts), "fewer than two")
+	missingAck := append([]frame(nil), good[:len(good)-1]...)
+	wantFail(t, check(t, c, missingAck, facts), "no HEARTBEAT ACK")
+	badSpacing := append([]frame(nil), good...)
+	badSpacing[4].at = t0.Add(3 * time.Second)
+	badSpacing[5].at = t0.Add(3010 * time.Millisecond)
+	wantFail(t, check(t, c, badSpacing, facts), "spacing")
 }
 
 // TestClaimsIgnoreAnEphemeralPortEqualToTheCasePort: a frame of another

@@ -7,6 +7,7 @@ client: --- PASS: TestTwoHost/pr-default-ttl-config
 client: --- PASS: TestTwoHost/pr-default-ttl-setters
 client: --- PASS: TestTwoHost/pr-default-ttl-endpoint
 client: --- PASS: TestTwoHost/eshutdown-while-blocked
+client: --- PASS: TestTwoHost/pr-send-failed-ttl
 server: --- PASS: TestTwoHost/local-addrs-wildcard-sctp4
 server: --- PASS: TestTwoHost/local-addrs-wildcard-sctp
 server: --- PASS: TestTwoHost/etimedout-dialed
@@ -16,16 +17,17 @@ server: --- PASS: TestTwoHost/pr-default-ttl-config
 server: --- PASS: TestTwoHost/pr-default-ttl-setters
 server: --- PASS: TestTwoHost/pr-default-ttl-endpoint
 server: --- PASS: TestTwoHost/eshutdown-while-blocked
-eshutdown-while-blocked dropped 3
+server: --- PASS: TestTwoHost/pr-send-failed-ttl
+eshutdown-while-blocked dropped 4
 eshutdown-while-blocked eshutdown_sends 40
 eshutdown-while-blocked port 41109
 etimedout-accepted client_dropped 5
-etimedout-accepted failed_after_ms 876
+etimedout-accepted failed_after_ms 886
 etimedout-accepted port 41104
-etimedout-dialed failed_after_ms 812
+etimedout-dialed failed_after_ms 1019
 etimedout-dialed port 41103
 etimedout-dialed server_dropped 5
-etimedout-peeled failed_after_ms 981
+etimedout-peeled failed_after_ms 912
 etimedout-peeled port 41105
 etimedout-peeled server_dropped 5
 local-addrs-wildcard-sctp assoc_addrs client-a,client-b
@@ -37,9 +39,10 @@ local-addrs-wildcard-sctp4 port 41101
 pr-default-ttl-config dropped 6
 pr-default-ttl-config port 41106
 pr-default-ttl-config ttl_abandoned 3
-pr-default-ttl-endpoint dropped 5
+pr-default-ttl-endpoint dropped 7
 pr-default-ttl-endpoint port 41108
 pr-default-ttl-endpoint ttl_abandoned 2
-pr-default-ttl-setters dropped 5
+pr-default-ttl-setters dropped 6
 pr-default-ttl-setters port 41107
 pr-default-ttl-setters ttl_abandoned 3
+pr-send-failed-ttl port 41110

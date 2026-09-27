@@ -7,6 +7,7 @@ package sctp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -680,24 +681,25 @@ func iptables(t *testing.T, args ...string) string {
 // PPIDs that mark the messages the analyzer looks for, one per role in the
 // cases; testdata/wire/analyze/claims.go names the same values.
 const (
-	wirePPIDPlain     uint32 = 0x57490001
-	wirePPIDSACKNow   uint32 = 0x57490002
-	wirePPIDUnordered uint32 = 0x57490003
-	wirePPIDOrdered   uint32 = 0x57490004
-	wirePPIDDefault   uint32 = 0x57490005
-	wirePPIDFill      uint32 = 0x57490006
-	wirePPIDRefused   uint32 = 0x57490007
-	wirePPIDLast      uint32 = 0x57490008
-	wirePPIDPrimary   uint32 = 0x57490009
-	wirePPIDPath      uint32 = 0x5749000a
-	wirePPIDAlone1    uint32 = 0x5749000b
-	wirePPIDAlone2    uint32 = 0x5749000c
-	wirePPIDMore1     uint32 = 0x5749000d
-	wirePPIDMore2     uint32 = 0x5749000e
-	wirePPIDBurst     uint32 = 0x5749000f
-	wirePPIDAbandoned uint32 = 0x57490010
-	wirePPIDAfter     uint32 = 0x57490011
-	wirePPIDGraceful  uint32 = 0x57490012
+	wirePPIDPlain      uint32 = 0x57490001
+	wirePPIDSACKNow    uint32 = 0x57490002
+	wirePPIDUnordered  uint32 = 0x57490003
+	wirePPIDOrdered    uint32 = 0x57490004
+	wirePPIDDefault    uint32 = 0x57490005
+	wirePPIDFill       uint32 = 0x57490006
+	wirePPIDRefused    uint32 = 0x57490007
+	wirePPIDLast       uint32 = 0x57490008
+	wirePPIDPrimary    uint32 = 0x57490009
+	wirePPIDPath       uint32 = 0x5749000a
+	wirePPIDAlone1     uint32 = 0x5749000b
+	wirePPIDAlone2     uint32 = 0x5749000c
+	wirePPIDMore1      uint32 = 0x5749000d
+	wirePPIDMore2      uint32 = 0x5749000e
+	wirePPIDBurst      uint32 = 0x5749000f
+	wirePPIDAbandoned  uint32 = 0x57490010
+	wirePPIDAfter      uint32 = 0x57490011
+	wirePPIDGraceful   uint32 = 0x57490012
+	wirePPIDInterleave uint32 = 0x57490013
 )
 
 // The PPIDs of the byte-order case: each has four different bytes, so any
@@ -724,6 +726,8 @@ var wireCases = []twoHostCase{
 	{name: "sack-immediately", port: 41012, server: sackImmediatelyServer, client: sackImmediatelyClient},
 	{name: "unordered", port: 41013, server: unorderedServer, client: unorderedClient},
 	{name: "request-heartbeat", port: 41014, server: twoHomedServer, client: requestHeartbeatClient},
+	{name: "periodic-heartbeat", port: 41024, server: twoHomedServer, client: periodicHeartbeatClient},
+	{name: "message-interleaving", port: 41025, server: interleavingServer, client: interleavingClient},
 	{name: "nowait-refusal", port: 41015, server: noWaitServer, client: noWaitClient},
 	{name: "path", port: 41016, server: twoHomedServer, client: pathClient},
 	{name: "more", port: 41017, server: moreServer, client: moreClient},
@@ -1181,6 +1185,132 @@ func requestHeartbeatClient(s *hostStep) {
 	window("quiet", func() error { return nil })
 	window("one", func() error { return c.RequestHeartbeat(s.h.peer[1]) })
 	window("every", func() error { return c.RequestHeartbeat(netip.Addr{}) })
+	s.closeGracefully(c)
+}
+
+// periodicHeartbeatClient leaves a confirmed two-path association idle
+// while Linux sends timer-driven probes on both paths (RFC 9260 §8.3;
+// net/sctp/transport.c: sctp_transport_timeout,
+// sctp_transport_reset_hb_timer).
+func periodicHeartbeatClient(s *hostStep) {
+	s.expect("ready")
+	rto := wireFastRTO
+	c := s.twoHomedDial(&Config{RTOInfo: rto})
+	const interval = time.Second
+	if err := c.SetPathParams(netip.Addr{}, &PathParams{Heartbeat: new(true), HeartbeatInterval: new(interval)}); err != nil {
+		s.t.Fatalf("SetPathParams(periodic heartbeats): %v", err)
+	}
+	for _, p := range s.h.peer {
+		params, err := c.PathParams(p)
+		if err != nil {
+			s.t.Fatalf("PathParams(%v): %v", p, err)
+		}
+		if params.Heartbeat == nil || !*params.Heartbeat || params.HeartbeatInterval == nil || *params.HeartbeatInterval != interval {
+			s.t.Fatalf("PathParams(%v) = %+v, want heartbeats every %v", p, params, interval)
+		}
+		info, err := c.PathInfo(p)
+		if err != nil {
+			s.t.Fatalf("PathInfo(%v): %v", p, err)
+		}
+		if info.RTO < rto.Min || info.RTO > rto.Max {
+			s.t.Fatalf("PathInfo(%v).RTO = %v, want %v..%v", p, info.RTO, rto.Min, rto.Max)
+		}
+	}
+	s.fact("interval_ns", interval.Nanoseconds())
+	s.fact("rto_min_ns", rto.Min.Nanoseconds())
+	s.fact("rto_max_ns", rto.Max.Nanoseconds())
+	s.fact("start_ns", time.Now().UnixNano())
+	time.Sleep(4500 * time.Millisecond)
+	s.fact("end_ns", time.Now().UnixNano())
+	s.closeGracefully(c)
+}
+
+// enableWireInterleaving sets the network namespace's I-DATA switch for
+// this case and restores its previous value at the end.
+func enableWireInterleaving(t *testing.T) {
+	t.Helper()
+	const path = "/proc/sys/net/sctp/intl_enable"
+	previous, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte("1\n"), 0o644); err != nil {
+		t.Fatalf("enabling %s: %v", path, err)
+	}
+	t.Cleanup(func() {
+		if err := os.WriteFile(path, previous, 0o644); err != nil {
+			t.Errorf("restoring %s: %v", path, err)
+		}
+	})
+}
+
+func interleavingConfig() *Config {
+	return &Config{MessageInterleaving: true, FragmentInterleave: new(InterleaveAssocs),
+		WriteBuffer: new(256 << 10), RTOInfo: wireFastRTO, CloseTimeout: 15 * time.Second}
+}
+
+func interleavingServer(s *hostStep) {
+	enableWireInterleaving(s.t)
+	l := s.listen(interleavingConfig(), s.port, s.h.local[0])
+	s.send("ready")
+	c := s.accept(l)
+	drop := s.dropInput("--dport", portArg(s.port))
+	s.send("drop-ready")
+	s.expect("queued")
+	// Keep the first congestion window unacknowledged until both messages
+	// have entered the sender's scheduler.
+	time.Sleep(100 * time.Millisecond)
+	if n := drop.lift(); n == 0 {
+		s.t.Fatal("the INPUT drop matched no packet before both messages were queued")
+	} else {
+		s.fact("dropped", n)
+	}
+	got, err := readMessagesToEOF(c)
+	s.recordEnd(got, err)
+	if len(got) != 2 {
+		s.t.Fatalf("received %d messages, want two", len(got))
+	}
+	seen := [2]bool{}
+	for _, m := range got {
+		stream := int(m.info.Stream)
+		if stream > 1 || seen[stream] || m.info.PPID != wirePPIDInterleave+uint32(stream) ||
+			!bytes.Equal(m.data, wireMessage(stream, 32<<10)) {
+			s.t.Fatalf("message on stream %d: PPID %#x, size %d, content matches %v", stream, m.info.PPID, len(m.data), bytes.Equal(m.data, wireMessage(stream, 32<<10)))
+		}
+		seen[stream] = true
+	}
+}
+
+// interleavingClient queues two fragmented messages on different streams.
+// RFC 8260 §§2.1-2.2 permits their fragments to interleave as I-DATA.
+func interleavingClient(s *hostStep) {
+	enableWireInterleaving(s.t)
+	s.expect("ready")
+	c := s.dialA(interleavingConfig())
+	if err := c.SetStreamScheduler(SchedRR); err != nil {
+		s.t.Fatalf("SetStreamScheduler(SchedRR): %v", err)
+	}
+	s.expect("drop-ready")
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for stream := range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := c.SendMsg(wireMessage(stream, 32<<10), SendOptions{
+				Info: &SndInfo{Stream: uint16(stream), PPID: wirePPIDInterleave + uint32(stream)},
+			})
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			s.t.Fatalf("sending interleaved messages: %v", err)
+		}
+	}
+	s.send("queued")
 	s.closeGracefully(c)
 }
 

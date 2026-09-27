@@ -933,7 +933,7 @@ func TestNilDialContextReturnsEINVAL(t *testing.T) {
 // TestDoubleCloseRegression is georgeyanev/go-sctp PR #7's failure mode: a
 // failed dial that closed its descriptor twice, the second close landing
 // on whatever the kernel had reused the number for. A port nobody listens
-// on is dialed 200 times, each attempt failing with the peer's ABORT,
+// on is dialed at least 200 times, each attempt failing with the peer's ABORT,
 // while other goroutines keep opening, using and closing pipes, whose
 // descriptor numbers the kernel hands out from the same table. A second
 // close would show as a pipe that stops working under its owner.
@@ -987,7 +987,8 @@ func TestDoubleCloseRegression(t *testing.T) {
 		}()
 	}
 
-	for range 200 {
+	deadline := time.Now().Add(time.Second)
+	for attempts := 0; attempts < 200 || rounds.Load() == 0 && time.Now().Before(deadline); attempts++ {
 		c, err := Dial(testContext(t, 5*time.Second), "sctp4", nil, dead)
 		if err == nil {
 			// A connection to itself, which Dial refuses, or a socket that

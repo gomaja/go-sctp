@@ -1,102 +1,116 @@
-sentinel: frame 541 client-a -> server-a [INIT] to closed port 9; the capture is complete up to it
-sentinel: frame 543 client-b -> server-b [INIT] to closed port 9; the capture is complete up to it
+sentinel: frame 668 client-a -> server-a [INIT] to closed port 9; the capture is complete up to it
+sentinel: frame 670 client-b -> server-b [INIT] to closed port 9; the capture is complete up to it
 PASS abandon-abort-cookie-wait
-     frame 1 client-a -> server-a [INIT] at deadline -499.918 ms
+     frame 1 client-a -> server-a [INIT] at deadline -499.953 ms
      no chunk from the server: the setup is in COOKIE-WAIT
-     frame 2 client-a -> server-a [ABORT] at deadline +0.969 ms with the User-Initiated Abort cause, before Dial returned at deadline +1.066 ms
+     frame 2 client-a -> server-a [ABORT] at deadline +1.204 ms with the User-Initiated Abort cause, before Dial returned at deadline +1.293 ms
 PASS abandon-quiet-cookie-wait
-     frame 3 client-a -> server-a [INIT] at deadline -499.960 ms
+     frame 3 client-a -> server-a [INIT] at deadline -499.916 ms
      no chunk from the server: the setup is in COOKIE-WAIT
-     nothing from the client from the deadline to the end of the capture, deadline +25311.396 ms
+     nothing from the client from the deadline to the end of the capture, deadline +31150.204 ms
 PASS abandon-abort-cookie-echoed
-     frame 4 client-a -> server-a [INIT] at deadline -499.942 ms
-     frame 5 server-a -> client-a [INIT ACK] at deadline -499.904 ms
-     frame 6 client-a -> server-a [COOKIE ECHO] at deadline -499.899 ms: the setup is in COOKIE-ECHOED, and no COOKIE ACK ever comes
-     frame 7 client-a -> server-a [ABORT] at deadline +0.434 ms with the User-Initiated Abort cause, before Dial returned at deadline +0.548 ms
+     frame 4 client-a -> server-a [INIT] at deadline -499.945 ms
+     frame 5 server-a -> client-a [INIT ACK] at deadline -499.913 ms
+     frame 6 client-a -> server-a [COOKIE ECHO] at deadline -499.906 ms: the setup is in COOKIE-ECHOED, and no COOKIE ACK ever comes
+     frame 7 client-a -> server-a [ABORT] at deadline +0.944 ms with the User-Initiated Abort cause, before Dial returned at deadline +1.023 ms
 PASS abandon-quiet-cookie-echoed
-     frame 8 client-a -> server-a [INIT] at deadline -499.955 ms
-     frame 9 server-a -> client-a [INIT ACK] at deadline -499.920 ms
-     frame 10 client-a -> server-a [COOKIE ECHO] at deadline -499.913 ms: the setup is in COOKIE-ECHOED, and no COOKIE ACK ever comes
-     nothing from the client from the deadline to the end of the capture, deadline +21890.588 ms
+     frame 8 client-a -> server-a [INIT] at deadline -499.947 ms
+     frame 9 server-a -> client-a [INIT ACK] at deadline -499.916 ms
+     frame 10 client-a -> server-a [COOKIE ECHO] at deadline -499.911 ms: the setup is in COOKIE-ECHOED, and no COOKIE ACK ever comes
+     nothing from the client from the deadline to the end of the capture, deadline +27711.879 ms
 PASS abort-during-close
-     frame 15 client-a -> server-a [SHUTDOWN] at close +0.026 ms
-     frame 16 client-a -> server-a [ABORT] at abort +0.029 ms with the User-Initiated Abort cause, limit 100ms
-     nothing more from the client on port 41005 up to the end of the capture, grace expiry +17681.529 ms
+     frame 15 client-a -> server-a [SHUTDOWN] at close +0.068 ms
+     frame 16 client-a -> server-a [ABORT] at abort +0.069 ms with the User-Initiated Abort cause, limit 100ms
+     nothing more from the client on port 41005 up to the end of the capture, grace expiry +23498.294 ms
 PASS abort-during-peeled-close
-     frame 22 client-a -> server-a [SHUTDOWN] at close +0.091 ms
+     frame 22 client-a -> server-a [SHUTDOWN] at close +1.475 ms
      frame 23 client-a -> server-a [ABORT] at abort +0.034 ms with the User-Initiated Abort cause, limit 100ms
-     nothing more from the client on port 41006 up to the end of the capture, grace expiry +13969.740 ms
+     nothing more from the client on port 41006 up to the end of the capture, grace expiry +19781.138 ms
 PASS abort-during-endpoint-close
-     frame 33 client-a -> server-a [SHUTDOWN] at close +0.060 ms
-     frame 35 client-a -> server-a [ABORT] at abort +0.037 ms with the User-Initiated Abort cause, limit 100ms
-     nothing more from the client on port 41007 up to the end of the capture, grace expiry +10258.634 ms
-     frame 34 client-a -> server-a [SHUTDOWN] at close +0.067 ms
-     frame 36 client-a -> server-a [ABORT] at abort +0.075 ms with the User-Initiated Abort cause, limit 100ms
-     nothing more from the client on port 41008 up to the end of the capture, grace expiry +10258.634 ms
+     frame 33 client-a -> server-a [SHUTDOWN] at close +0.057 ms
+     frame 35 client-a -> server-a [ABORT] at abort +0.049 ms with the User-Initiated Abort cause, limit 100ms
+     nothing more from the client on port 41007 up to the end of the capture, grace expiry +16007.918 ms
+     frame 34 client-a -> server-a [SHUTDOWN] at close +0.069 ms
+     frame 36 client-a -> server-a [ABORT] at abort +0.107 ms with the User-Initiated Abort cause, limit 100ms
+     nothing more from the client on port 41008 up to the end of the capture, grace expiry +16007.918 ms
 PASS peeled-close-full-buffer
-     port 41009: 7 queued messages, TSNs 585779230 to 585779236, all on the wire and acknowledged by frame 70 at drain +34.026 ms
-     frame 71 client-a -> server-a [SHUTDOWN] at close +1034.960 ms
-     frame 72 server-a -> client-a [SHUTDOWN ACK] at close +1034.967 ms
-     frame 73 client-a -> server-a [SHUTDOWN COMPLETE] at close +1034.969 ms
-     Close returned at close +1051.597 ms, the server reached io.EOF, no ABORT
+     port 41009: 7 queued messages, TSNs 3609562716 to 3609562722, all on the wire and acknowledged by frame 72 at drain +204.590 ms
+     frame 73 client-a -> server-a [SHUTDOWN] at close +1242.975 ms
+     frame 74 server-a -> client-a [SHUTDOWN ACK] at close +1242.983 ms
+     frame 75 client-a -> server-a [SHUTDOWN COMPLETE] at close +1242.986 ms
+     Close returned at close +1251.067 ms, the server reached io.EOF, no ABORT
 PASS endpoint-close-full-buffers
-     port 41010: 10 queued messages, TSNs 1721073166 to 1721073175, all on the wire and acknowledged by frame 152 at drain +29.035 ms
-     frame 153 client-a -> server-a [SHUTDOWN] at close +1029.905 ms
-     frame 155 server-a -> client-a [SHUTDOWN ACK] at close +1029.912 ms
-     frame 156 client-a -> server-a [SHUTDOWN COMPLETE] at close +1029.915 ms
-     port 41011: 9 queued messages, TSNs 1128114757 to 1128114765, all on the wire and acknowledged by frame 146 at drain +29.010 ms
-     frame 147 client-a -> server-a [SHUTDOWN] at close +1029.882 ms
-     frame 150 server-a -> client-a [SHUTDOWN ACK] at close +1029.896 ms
-     frame 151 client-a -> server-a [SHUTDOWN COMPLETE] at close +1029.898 ms
-     Close returned at close +1044.997 ms, the server reached io.EOF, no ABORT
+     port 41010: 10 queued messages, TSNs 1349293660 to 1349293669, all on the wire and acknowledged by frame 151 at drain +200.102 ms
+     frame 152 client-a -> server-a [SHUTDOWN] at close +1225.171 ms
+     frame 153 server-a -> client-a [SHUTDOWN ACK] at close +1225.183 ms
+     frame 154 client-a -> server-a [SHUTDOWN COMPLETE] at close +1225.187 ms
+     port 41011: 9 queued messages, TSNs 3101760311 to 3101760319, all on the wire and acknowledged by frame 158 at drain +400.672 ms
+     frame 159 client-a -> server-a [SHUTDOWN] at close +1425.754 ms
+     frame 160 server-a -> client-a [SHUTDOWN ACK] at close +1425.763 ms
+     frame 161 client-a -> server-a [SHUTDOWN COMPLETE] at close +1425.766 ms
+     Close returned at close +1442.350 ms, the server reached io.EOF, no ABORT
 PASS sack-immediately
-     PPID 0x57490001: 1 DATA chunk(s), I false (frame 161, TSN 3558218183)
-     PPID 0x57490002: 1 DATA chunk(s), I true (frame 162, TSN 3558218184)
+     PPID 0x57490001: 1 DATA chunk(s), I false (frame 166, TSN 1049783808)
+     PPID 0x57490002: 1 DATA chunk(s), I true (frame 168, TSN 1049783809)
 PASS unordered
-     PPID 0x57490003: 1 DATA chunk(s), U true (frame 172, TSN 4230680223)
-     PPID 0x57490004: 1 DATA chunk(s), U false (frame 174, TSN 4230680224)
-     PPID 0x57490005: 1 DATA chunk(s), U true (frame 175, TSN 4230680225)
+     PPID 0x57490003: 1 DATA chunk(s), U true (frame 177, TSN 3644388892)
+     PPID 0x57490004: 1 DATA chunk(s), U false (frame 179, TSN 3644388893)
+     PPID 0x57490005: 1 DATA chunk(s), U true (frame 180, TSN 3644388894)
 PASS request-heartbeat
-     one window: frame 184 client-b -> server-b [HEARTBEAT] at one +0.087 ms
-     every window: frame 186 client-a -> server-a [HEARTBEAT] at every +0.023 ms
-     every window: frame 188 client-b -> server-b [HEARTBEAT] at every +0.058 ms
+     one window: frame 189 client-b -> server-b [HEARTBEAT] at one +0.189 ms
+     every window: frame 191 client-a -> server-a [HEARTBEAT] at every +0.029 ms
+     every window: frame 193 client-b -> server-b [HEARTBEAT] at every +0.075 ms
+PASS periodic-heartbeat
+     frame 202 HEARTBEAT to server-a answered by frame 203
+     frame 206 HEARTBEAT to server-a answered by frame 207
+     server-a HEARTBEAT spacing 1.146591459s (timer range 1.049s-1.601s)
+     frame 212 HEARTBEAT to server-a answered by frame 213
+     server-a HEARTBEAT spacing 1.089152958s (timer range 1.049s-1.601s)
+     frame 204 HEARTBEAT to server-b answered by frame 205
+     frame 208 HEARTBEAT to server-b answered by frame 209
+     server-b HEARTBEAT spacing 1.146630667s (timer range 1.049s-1.601s)
+     frame 214 HEARTBEAT to server-b answered by frame 215
+     server-b HEARTBEAT spacing 1.151985542s (timer range 1.049s-1.601s)
+PASS message-interleaving
+     frames 223, 234, 236: I-DATA streams 1, 0, 1 interleaved
+     23 stream-0 and 23 stream-1 I-DATA fragments, no DATA, 4 receiver INPUT drops, both complete messages received
 PASS nowait-refusal
-     7 queued messages on the wire; the refused NoWait send put no DATA with PPID 0x57490007 in any of the capture's 544 frames
-     frame 209 client-a -> server-a [DATA, DATA] at refusal +1004.030 ms carries the message sent after the refusal
+     7 queued messages on the wire; the refused NoWait send put no DATA with PPID 0x57490007 in any of the capture's 671 frames
+     frame 336 client-a -> server-a [DATA, DATA] at refusal +1041.732 ms carries the message sent after the refusal
 PASS path
-     PPID 0x5749000a: 5 DATA chunks, every one to server-b (first: frame 233)
-     PPID 0x57490009: 5 DATA chunks, every one to server-a (first: frame 218)
+     PPID 0x5749000a: 5 DATA chunks, every one to server-b (first: frame 360)
+     PPID 0x57490009: 5 DATA chunks, every one to server-a (first: frame 345)
 PASS more
-     without More: frame 230 and frame 232, one DATA chunk each
-     with More: frame 236 holds both DATA chunks, TSNs 2119474718 and 2119474719
+     without More: frame 357 and frame 359, one DATA chunk each
+     with More: frame 363 holds both DATA chunks, TSNs 3852121686 and 3852121687
 PASS ppid-byte-order
-     frame 245: DATA TSN 3606126326, PPID 0x1020304 on the wire and through both APIs
-     frame 247: DATA TSN 3606126327, PPID 0x11223344 on the wire and through both APIs
-     frame 248: DATA TSN 3606126328, PPID 0x89abcdef on the wire and through both APIs
-     frame 248: DATA TSN 3606126329, PPID 0xfedcba98 on the wire and through both APIs
+     frame 372: DATA TSN 4177247926, PPID 0x1020304 on the wire and through both APIs
+     frame 374: DATA TSN 4177247927, PPID 0x11223344 on the wire and through both APIs
+     frame 375: DATA TSN 4177247928, PPID 0x89abcdef on the wire and through both APIs
+     frame 375: DATA TSN 4177247929, PPID 0xfedcba98 on the wire and through both APIs
 PASS close-after-burst
-     100 messages, TSNs 4023293828 to 4023293927; 82 DATA transmissions after Close was called, the last in frame 488 at close +1306.434 ms
-     frame 489 acknowledges the whole burst at close +1306.491 ms
-     frame 490 client-a -> server-a [SHUTDOWN] at close +1306.505 ms
-     frame 491 server-a -> client-a [SHUTDOWN ACK] at close +1306.511 ms
-     frame 492 client-a -> server-a [SHUTDOWN COMPLETE] at close +1306.516 ms
+     100 messages, TSNs 2637782431 to 2637782530; 82 DATA transmissions after Close was called, the last in frame 615 at close +1348.711 ms
+     frame 616 acknowledges the whole burst at close +1348.829 ms
+     frame 617 client-a -> server-a [SHUTDOWN] at close +1348.852 ms
+     frame 618 server-a -> client-a [SHUTDOWN ACK] at close +1348.862 ms
+     frame 619 client-a -> server-a [SHUTDOWN COMPLETE] at close +1348.867 ms
 PASS simultaneous-close
-     frame 498 client-a -> server-a [SHUTDOWN] at client close +0.043 ms
-     frame 497 server-a -> client-a [SHUTDOWN] at client close -0.146 ms
-     frame 502 client-a -> server-a [SHUTDOWN ACK] at client close +613.479 ms: the first acknowledgement, after both SHUTDOWNs
-     frame 503 server-a -> client-a [SHUTDOWN COMPLETE] at client close +613.503 ms; no ABORT either way
+     frame 624 client-a -> server-a [SHUTDOWN] at client close +0.764 ms
+     frame 625 server-a -> client-a [SHUTDOWN] at client close +0.924 ms
+     frame 629 client-a -> server-a [SHUTDOWN ACK] at client close +612.770 ms: the first acknowledgement, after both SHUTDOWNs
+     frame 630 server-a -> client-a [SHUTDOWN COMPLETE] at client close +612.847 ms; no ABORT either way
 PASS pr-rtx-limit
-     transmission 1: frame 508 client-a -> server-a [DATA] at send +0.050 ms
-     transmission 2: frame 509 client-a -> server-a [DATA] at send +206.769 ms
-     transmission 3: frame 511 client-a -> server-a [DATA] at send +614.722 ms
-     frame 513 client-a -> server-a [FORWARD TSN] at send +1023.715 ms, new cumulative TSN 643292755
-     PRStreamStatus and PRAssocStatus count it abandoned after being sent; the server's first message is the next one, TSN 643292756
+     transmission 1: frame 635 client-a -> server-a [DATA] at send +0.127 ms
+     transmission 2: frame 636 client-a -> server-a [DATA] at send +200.986 ms
+     transmission 3: frame 638 client-a -> server-a [DATA] at send +608.709 ms
+     frame 640 client-a -> server-a [FORWARD TSN] at send +1016.756 ms, new cumulative TSN 1747311670
+     PRStreamStatus and PRAssocStatus count it abandoned after being sent; the server's first message is the next one, TSN 1747311671
 PASS graceful-close
-     frame 529 client-a -> server-a [SHUTDOWN] at close +0.085 ms
-     frame 530 server-a -> client-a [SHUTDOWN ACK] at close +0.100 ms
-     frame 531 client-a -> server-a [SHUTDOWN COMPLETE] at close +0.105 ms
+     frame 656 client-a -> server-a [SHUTDOWN] at close +0.455 ms
+     frame 657 server-a -> client-a [SHUTDOWN ACK] at close +0.468 ms
+     frame 658 client-a -> server-a [SHUTDOWN COMPLETE] at close +0.472 ms
 PASS graceful-peeled-close
-     frame 538 client-a -> server-a [SHUTDOWN] at close +0.040 ms
-     frame 539 server-a -> client-a [SHUTDOWN ACK] at close +0.050 ms
-     frame 540 client-a -> server-a [SHUTDOWN COMPLETE] at close +0.054 ms
-WIRE_SUMMARY claims=21 passed=21 failed=0
+     frame 665 client-a -> server-a [SHUTDOWN] at close +0.278 ms
+     frame 666 server-a -> client-a [SHUTDOWN ACK] at close +0.287 ms
+     frame 667 client-a -> server-a [SHUTDOWN COMPLETE] at close +0.290 ms
+WIRE_SUMMARY claims=23 passed=23 failed=0

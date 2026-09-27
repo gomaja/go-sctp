@@ -48,7 +48,9 @@ The Internet-Drafts below were checked the same day in the Datatracker
 and the relationship API with `source__name=<draft>`), on the
 [TSVWG documents page](https://datatracker.ietf.org/wg/tsvwg/documents/),
 and in the [RFC Editor queue](https://queue.rfc-editor.org/api/v1/queue/index.json),
-whose snapshot of 2026-09-26T11:39:07Z held 147 documents, none about SCTP.
+whose snapshot of 2026-09-26T11:39:07Z held 147 documents. The queue's
+SCTP-related congestion-control draft is recorded below after the
+2026-09-27 refresh.
 The [IANA SCTP Parameters registry](https://www.iana.org/assignments/sctp-parameters/sctp-parameters.xml)
 was read the same day.
 
@@ -319,21 +321,41 @@ last updated 2026-08-13 when read, agrees with the values the package uses.
 Internet-Drafts are not normative, and the package implements none. They
 are recorded because they may change the baseline:
 
-| Draft | State on 2026-09-26 | What it would do |
+| Draft | State at last check | What it would do |
 |---|---|---|
 | [`draft-ietf-tsvwg-sctp-dtls-chunk`](https://datatracker.ietf.org/doc/draft-ietf-tsvwg-sctp-dtls-chunk/) | Active working group document, revision -04, expires 2027-01-07 | A DTLS chunk protecting SCTP payloads. Its header says it obsoletes RFC 6083 and updates RFC 5061 if approved; the Datatracker records no relationship yet |
 | [`draft-ietf-tsvwg-dtls-chunk-key-management`](https://datatracker.ietf.org/doc/draft-ietf-tsvwg-dtls-chunk-key-management/) | Expired working group document, revision -01, expired 2026-09-03 | Key management for the DTLS chunk |
 | [`draft-ietf-tsvwg-dtls-over-sctp-bis`](https://datatracker.ietf.org/doc/draft-ietf-tsvwg-dtls-over-sctp-bis/) | Expired working group document, revision -08, expired 2024-11-04 | A revision of RFC 6083 |
 | [`draft-ietf-tsvwg-rfc4895-bis`](https://datatracker.ietf.org/doc/draft-ietf-tsvwg-rfc4895-bis/) | Expired working group document, revision -05, expired 2025-10-23 | A revision of RFC 4895 |
+| [`draft-ietf-ccwg-ratelimited-increase`](https://datatracker.ietf.org/doc/draft-ietf-ccwg-ratelimited-increase/) | Active CCWG document, revision -11, intended Proposed Standard; IESG state RFC Ed Queue and RFC Editor queue disposition in progress on 2026-09-27 | Its header says it will update RFC 9260 §§7.2.1–7.2.2, changing congestion-window growth when the sender is rate-limited, if approved. Linux owns that algorithm; the package has no API change |
 
-None of the four has an obsoleting or updating relationship in the
+None of the four TSVWG drafts has an obsoleting or updating relationship in the
 Datatracker. The TSVWG page also lists five active individual drafts about
 SCTP, with no working group standing: `draft-dreibholz-tsvwg-sctp-nextgen-ideas`,
 `draft-dreibholz-tsvwg-sctpsocket-multipath`,
 `draft-dreibholz-tsvwg-sctpsocket-sqinfo`,
 `draft-porfiri-tsvwg-sctp-dtls-handshake` and
-`draft-tuexen-tsvwg-sctp-multipath`. No document in the RFC Editor queue
-concerns SCTP.
+`draft-tuexen-tsvwg-sctp-multipath`. Two other active individual drafts are
+[`draft-hohendorf-secure-sctp-42`](https://datatracker.ietf.org/doc/draft-hohendorf-secure-sctp/42/)
+(Secure SCTP, expires 2027-03-20) and
+[`draft-dreibholz-rserpool-applic-mobility-40`](https://datatracker.ietf.org/doc/draft-dreibholz-rserpool-applic-mobility/40/)
+(SCTP endpoint mobility with Reliable Server Pooling, expires 2027-03-20).
+Neither is implemented by Linux; neither is a package requirement.
+
+The 2026-09-27 check used the
+[Datatracker draft record](https://datatracker.ietf.org/api/v1/doc/document/draft-ietf-ccwg-ratelimited-increase/?format=json),
+[draft relationships](https://datatracker.ietf.org/api/v1/doc/relateddocument/?source__name=draft-ietf-ccwg-ratelimited-increase&format=json),
+[incoming RFC 9260 relationships](https://datatracker.ietf.org/api/v1/doc/relateddocument/?target__name=rfc9260&relationship__slug__in=obs,updates&format=json),
+[RFC Editor RFC 9260 record](https://www.rfc-editor.org/rfc/rfc9260.json),
+[RFC 9260 errata](https://errata.rfc-editor.org/search/?rfc_number=9260&presentation=records)
+and the [RFC Editor queue](https://queue.rfc-editor.org/api/v1/queue/index.json)
+(snapshot 2026-09-27T03:39:20Z). The draft header names RFC 9260 as an
+update, but the Datatracker relationship API has no `updates` edge and the
+published RFC's Editor record still has `updated_by: []`: the draft is not
+normative yet. The queue lists revision -10 while the Datatracker has -11;
+its publication disposition is `in_progress`, while the Datatracker's
+human page says "Awaiting Editor Assignment". These are source differences,
+not evidence of a published RFC.
 
 ## Checking again
 
