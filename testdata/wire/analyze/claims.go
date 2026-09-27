@@ -314,8 +314,14 @@ func checkPeriodicHeartbeat(r *claimRun) {
 			beats = append(beats, f)
 		}
 	}
+	// A HEARTBEAT sent just before the window closes is answered after it.
+	// RFC 9260 §8.3 counts a HEARTBEAT as unacknowledged only once one RTO
+	// has passed, so its HEARTBEAT ACK is accepted up to the largest RTO
+	// after the window, and the capture must reach that far.
+	ackLimit := end.Add(rtoMax)
+	r.covered(ackLimit, "the answer to a HEARTBEAT sent as the idle window closed")
 	for _, f := range r.in(r.ports[0]) {
-		if f.has(chunkHEARTBEATACK) && !f.at.Before(start) && !f.at.After(end) {
+		if f.has(chunkHEARTBEATACK) && !f.at.Before(start) && !f.at.After(ackLimit) {
 			acks = append(acks, f)
 		}
 	}
@@ -337,10 +343,19 @@ func checkPeriodicHeartbeat(r *claimRun) {
 			if f.count(chunkHEARTBEAT) != 1 {
 				r.failf("frame %d has %d HEARTBEAT chunks, want one", f.number, f.count(chunkHEARTBEAT))
 			}
+			// The answer must come before the next HEARTBEAT on the path,
+			// inside the window or after it, so that the answer to a later
+			// probe cannot stand in for a missing one.
+			next, hasNext := time.Time{}, false
+			for _, g := range r.out(r.ports[0]) {
+				if g.has(chunkHEARTBEAT) && g.dst == addr && g.at.After(f.at) && (!hasNext || g.at.Before(next)) {
+					next, hasNext = g.at, true
+				}
+			}
 			var ack *frame
 			for j := range acks {
 				if acks[j].src == addr && acks[j].dst == f.src && acks[j].at.After(f.at) &&
-					(i+1 == len(path) || acks[j].at.Before(path[i+1].at)) {
+					(!hasNext || acks[j].at.Before(next)) {
 					ack = &acks[j]
 					break
 				}
