@@ -323,10 +323,13 @@ if [ "$ONLY" != wire ]; then
 	run_roles twohost TestTwoHost "$RUN" || VERDICT=1
 	{
 		for role in client server; do
-			grep -E '^[[:space:]]*--- (PASS|FAIL|SKIP): TestTwoHost/' "$OUT/twohost.$role.log" |
+			# A -run filter can match no two-host subtest; that is not a
+			# failure (run_roles already judged the phase).
+			{ grep -E '^[[:space:]]*--- (PASS|FAIL|SKIP): TestTwoHost/' "$OUT/twohost.$role.log" || true; } |
 				sed -E "s/^[[:space:]]*/$role: /; s/ \([0-9.]+s\)$//"
 		done
-		cat "$OUT/facts.twohost.client.txt" "$OUT/facts.twohost.server.txt" | grep -v '^setup ' | sort
+		{ cat "$OUT/facts.twohost.client.txt" "$OUT/facts.twohost.server.txt" 2>/dev/null || true; } |
+			{ grep -v '^setup ' || true; } | sort
 	} | sed -e "s/$CLIENT_A/client-a/g; s/$CLIENT_B/client-b/g; s/$SERVER_A/server-a/g; s/$SERVER_B/server-b/g" \
 		>"$OUT/expected/twohost-summary.txt"
 fi

@@ -480,6 +480,19 @@ func TestCheckPeriodicHeartbeat(t *testing.T) {
 	badSpacing[4].at = t0.Add(3 * time.Second)
 	badSpacing[5].at = t0.Add(3010 * time.Millisecond)
 	wantFail(t, check(t, c, badSpacing, facts), "spacing")
+
+	// A HEARTBEAT sent just before the window closes is answered after it.
+	// The answer counts up to one RTO past the window (RFC 9260 §8.3), and
+	// no later.
+	closing := map[string]string{}
+	for k, v := range facts {
+		closing[k] = v
+	}
+	closing["end_ns"] = ns(2405)
+	wantPass(t, check(t, c, good, closing))
+	tooLate := append([]frame(nil), good...)
+	tooLate[7].at = t0.Add(2700 * time.Millisecond)
+	wantFail(t, check(t, c, tooLate, closing), "no HEARTBEAT ACK")
 }
 
 // TestClaimsIgnoreAnEphemeralPortEqualToTheCasePort: a frame of another

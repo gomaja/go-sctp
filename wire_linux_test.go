@@ -1222,6 +1222,10 @@ func periodicHeartbeatClient(s *hostStep) {
 	s.fact("start_ns", time.Now().UnixNano())
 	time.Sleep(4500 * time.Millisecond)
 	s.fact("end_ns", time.Now().UnixNano())
+	// Stay idle one more RTO, the time RFC 9260 §8.3 gives a HEARTBEAT to
+	// be answered, so a probe sent as the window closed has its HEARTBEAT
+	// ACK in the capture before the association ends.
+	time.Sleep(rto.Max)
 	s.closeGracefully(c)
 }
 
