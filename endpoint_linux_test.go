@@ -2491,6 +2491,7 @@ func TestEndpointSendMsgZeroAllocs(t *testing.T) {
 	}
 	const (
 		runs          = 1000
+		noWaitRuns    = 50
 		mallocsMargin = 0.05
 		bytesMargin   = 4.0
 	)
@@ -2523,7 +2524,19 @@ func TestEndpointSendMsgZeroAllocs(t *testing.T) {
 					opts.More = !opts.More
 				}
 			}
-			allocs, mallocs, bytes := sendAllocs(runs, send)
+			n := runs
+			if opts.NoWait {
+				// A NoWait send that finds the send buffer full fails with
+				// EAGAIN instead of waiting, so how fast the peer drains
+				// must not matter: sendAllocs makes 2*n+1 sends, and each
+				// small message charges the buffer its skb and chunk
+				// (net/sctp/socket.c: sctp_set_owner_w), about 1 KiB here.
+				// 101 of them stay well inside the default send buffer
+				// (net.core.wmem_default, 208 KiB) even if the peer reads
+				// nothing.
+				n = noWaitRuns
+			}
+			allocs, mallocs, bytes := sendAllocs(n, send)
 			if failed != nil {
 				t.Fatal(failed)
 			}

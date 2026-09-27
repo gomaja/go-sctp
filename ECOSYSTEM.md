@@ -11,12 +11,49 @@ an engineering record, not a standards hierarchy: the standards baseline is
 [STANDARDS.md](STANDARDS.md), and no other implementation is taken as proof
 of conformance.
 
-It holds three surveys, newest first: the research behind the current API,
-a refresh of the direct comparators, and the original survey of every Go
-SCTP implementation. Each is a point-in-time record; the counts are those
-of the trackers when the survey was made.
+It holds four surveys, newest first: the 2026-09-27 refresh, the research
+behind the current API, a refresh of the direct comparators, and the original
+survey of every Go SCTP implementation. Each is a point-in-time record; the
+counts are those of the trackers when the survey was made.
 The research recorded counts per source, without per-repository snapshot
 revisions.
+
+## 2026-09-27 refresh
+
+This refresh inspected [lksctp-tools functional tests](https://github.com/sctp/lksctp-tools/tree/master/src/func_tests),
+its [issues](https://github.com/sctp/lksctp-tools/issues) and
+[pull requests](https://github.com/sctp/lksctp-tools/pulls), including
+[PR #66](https://github.com/sctp/lksctp-tools/pull/66)'s idle-association
+heartbeat case; [usrsctp](https://github.com/sctplab/usrsctp/tree/master/usrsctplib);
+[FreeBSD SCTP commits since 2024](https://github.com/freebsd/freebsd-src/commits/main/sys/netinet/);
+and maintained [Pion](https://github.com/pion/sctp),
+[free5gc](https://github.com/free5gc/sctp) and
+[georgeyanev](https://github.com/georgeyanev/go-sctp) bindings. The changes
+inspected showed no missing package facility or transferable fix. They did
+identify three test gaps: send-failure notifications for PR-SCTP messages
+abandoned on TTL expiry, captured I-DATA interleaving, and periodic heartbeats
+to every peer address on an idle association. The first is notification/API
+coverage; the other two require two-host wire captures.
+
+The [Linux SCTP UAPI header at v6.12](https://api.github.com/repos/torvalds/linux/contents/include/uapi/linux/sctp.h?ref=v6.12)
+and [at v7.3-rc4](https://api.github.com/repos/torvalds/linux/contents/include/uapi/linux/sctp.h?ref=v7.3-rc4)
+and [at master](https://api.github.com/repos/torvalds/linux/contents/include/uapi/linux/sctp.h?ref=master)
+had the same Git blob, `b7d91d4cf0db5a171dcc4a6abed48a21c04b1c66`, on
+2026-09-27. Through v7.3-rc4, no new socket facility has appeared for this
+package to expose. Four kernel fixes since 6.12 affect existing facilities:
+
+| Mainline fix and first release | Kernel effect | Package effect |
+|---|---|---|
+| [`0cf004ffb61c`](https://github.com/torvalds/linux/commit/0cf004ffb61cd32d140531c3a84afe975f9fc7ea), v7.1 | `net/sctp/socket.c: sctp_getsockopt_peer_auth_chunks` could copy a peer CHUNKS list past a short caller buffer. [`net/sctp/sm_make_chunk.c: sctp_verify_param`](https://github.com/torvalds/linux/blob/v6.12/net/sctp/sm_make_chunk.c) refuses a CHUNKS parameter longer than 260 bytes ([RFC 4895 §3.2](https://www.rfc-editor.org/rfc/rfc4895.html#section-3.2)) | [`Conn.PeerAuthChunks`](options_ext_linux.go) always offers the 8-byte header plus 256 bytes; no binding change is needed |
+| [`f14fe6395a8b`](https://github.com/torvalds/linux/commit/f14fe6395a8b3d961a61e138ad7b36ba3626dd4e), v7.1 | `net/sctp/socket.c: sctp_wait_for_connect` now notices when a concurrent peeloff moved the association during a send's implicit connect | [`Endpoint.Connect` and `Endpoint.SendMsg`](endpoint_linux.go) use an explicit association id; they do not take `net/sctp/socket.c: sctp_sendmsg_new_asoc`'s implicit-connect path. No binding change is needed |
+| [`a5f8a90ac9f7`](https://github.com/torvalds/linux/commit/a5f8a90ac9f77c678a9781c0a464b635e0d63e49), v7.1 | `net/sctp/stream.c: sctp_process_strreset_resp` now clears scheduler state after a denied outgoing-stream addition; the commit is marked for stable | [`Conn.AddStreams`](options_ext_linux.go) exposes the request, but rollback is kernel-owned. No binding change is needed |
+| [`2b9f5ef53418`](https://github.com/torvalds/linux/commit/2b9f5ef534184bd81b8a4772780626c40eed1fd5), v7.2 | `net/sctp/socket.c: sctp_setsockopt_reset_streams` raises the stream-id list bound after the earlier `5960cefab9df` ceiling. Before v7.2 the option rejects lists above 32771 ids with `EINVAL` | [`Conn.ResetStreams`](options_ext_linux.go) already encodes the full `uint16` list; its documentation records the older-kernel limit. No encoding or API change is needed |
+
+The first-mainline-release labels were checked by comparing each commit
+against [v7.0](https://github.com/torvalds/linux/tree/v7.0),
+[v7.1](https://github.com/torvalds/linux/tree/v7.1) and
+[v7.2](https://github.com/torvalds/linux/tree/v7.2). They do not assert
+whether an older stable branch received a backport.
 
 ## API redesign research
 

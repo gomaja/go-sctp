@@ -92,8 +92,10 @@ own assertions are the verdict.
   two seconds before stopping the capture, and fails if `dumpcap` reports a
   dropped packet on either interface.
 - **Kernel settings.** Both hosts run with `net.sctp.prsctp_enable=1`
-  (RFC 3758) and `net.sctp.intl_enable=0`, so messages travel in DATA
-  chunks rather than I-DATA chunks (RFC 8260).
+  (RFC 3758) and start with `net.sctp.intl_enable=0`, so the ordinary
+  cases use DATA chunks. The `message-interleaving` case enables
+  `intl_enable` on both hosts before opening its association and restores
+  the initial setting afterward (RFC 8260 §§2.1–2.2).
 - **No port can stand for two associations.** A case's packets are found by
   its server port, in both directions: frames the client sends to it and
   frames the server sends from it. The analyzer never matches a port alone,
@@ -133,6 +135,8 @@ Each is one case of `TestWire` (`wire_linux_test.go`) and one check in
 | `sack-immediately` | one message without and one with `SendSACKImmediately` | I bit clear, then set (RFC 9260 §§3.3.1, 11.1.5) |
 | `unordered` | `SendUnordered` per message; an explicit `SndInfo` without it; a send with only `PR` and a default `SndInfo` that sets it | U bit set, clear, set |
 | `request-heartbeat` | two-homed association, periodic heartbeats off: a quiet window, `RequestHeartbeat` for network B's address, then for the zero address | no HEARTBEAT, then exactly one to network B's address, then exactly one to each address (RFC 9260 §8.3) |
+| `periodic-heartbeat` | two-homed idle association with a one-second heartbeat interval and a bounded RTO | at least two HEARTBEATs to each peer address, each answered by a HEARTBEAT ACK, with spacing within the kernel timer's interval plus RTO/2 to interval plus 1.5 RTO (RFC 9260 §8.3; `net/sctp/transport.c: sctp_transport_timeout`, `sctp_transport_reset_hb_timer`) |
+| `message-interleaving` | both hosts negotiate I-DATA; two 32 KiB messages are queued concurrently on different streams while the server briefly drops incoming SCTP packets, then reads both | I-DATA fragments from both streams interleaved, no DATA on the association, and both messages delivered intact on their streams (RFC 8260 §§2.1–2.2) |
 | `nowait-refusal` | fill the send buffer, one more `NoWait` send refused with `EAGAIN` | no DATA with the refused message's PPID anywhere in the capture; every queued message, and the one sent after, on the wire |
 | `path` | two-homed association: messages with and without `SendOptions.Path` set to network B's address | every DATA chunk with `Path` to network B, every other one to the primary, network A |
 | `more` | `NoDelay` on: two small messages, then two more with `More` on the first | two packets of one DATA chunk, then one packet holding both |
@@ -153,6 +157,7 @@ halves pass.
 | `local-addrs-wildcard-sctp4`, `-sctp` | a wildcard-bound client dialing a private address: the endpoint's address set (`SCTP_GET_LOCAL_ADDRS` with id 0) holds 127.0.0.1, `LocalAddrs` and `LocalAddr` hold the association's set, which does not (RFC 6458 §9.5; the association's set is restricted to the peer's scope) |
 | `etimedout-dialed`, `-accepted`, `-peeled` | the peer drops everything, a message is outstanding, `AssocInfo.MaxRetrans` is 2 (RFC 9260 §8.1): a reader parked before the failure and every later read and send return `ETIMEDOUT`, with no further `sendmsg` |
 | `pr-default-ttl-config`, `-setters`, `-endpoint` | default `SndInfo` and a default `PrInfo` with a 1 ms `PRTTL`, set through `Config`, through the setters with the `SndInfo` last, or on an `Endpoint`; one message for each combination of `SendOptions.Info` and `PR` while the peer drops them: `PRAssocStatus(PRTTL)` counts exactly the messages that carry the default policy, and the peer receives exactly the others |
+| `pr-send-failed-ttl` | the server drops on INPUT while a fragmented PR-TTL message and two short ones expire; `EventSendFailed` reports each fragment with its payload, sent state and error, while `PRAssocStatus(PRTTL)` counts abandoned messages (RFC 3758 §4.1; RFC 6458 §6.1.11; `net/sctp/chunk.c: sctp_datamsg_destroy`, `net/sctp/outqueue.c: sctp_outq_flush_data`) |
 | `eshutdown-while-blocked` | the server calls `Shutdown`; the client drops the SHUTDOWN COMPLETE, so it stays in SHUTDOWN-ACK-SENT: every send fails with `ESHUTDOWN` for a second, and with `EPIPE` once the drop is lifted and the association ends, without `SIGPIPE` |
 
 ## Failure semantics

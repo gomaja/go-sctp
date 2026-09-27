@@ -6,8 +6,10 @@
 package sctp
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -35,6 +37,7 @@ var twoHostCases = []twoHostCase{
 	{name: "pr-default-ttl-setters", port: 41107, server: prDefaultTTLServer, client: prDefaultTTLClient("setters")},
 	{name: "pr-default-ttl-endpoint", port: 41108, server: prDefaultTTLServer, client: prDefaultTTLClient("endpoint")},
 	{name: "eshutdown-while-blocked", port: 41109, server: eshutdownServer, client: eshutdownClient},
+	{name: "pr-send-failed-ttl", port: 41110, server: prSendFailedTTLServer, client: prSendFailedTTLClient},
 }
 
 // --- LocalAddrs against a wildcard-bound client ----------------------------------------
@@ -438,6 +441,175 @@ func countTTL(s *hostStep, c *Conn, want int) {
 	s.send("counted")
 	s.expect("received")
 	s.closeGracefully(c)
+}
+
+// --- PR-SCTP: send failure when a lifetime expires ------------------------------------
+
+func prSendFailedTTLServer(s *hostStep) {
+	l := s.listen(nil, s.port, s.h.local[0])
+	s.send("ready")
+	c := s.accept(l)
+	s.expect("silence")
+	drop := s.dropInput("--dport", portArg(s.port))
+	s.send("silent")
+	s.expect("abandoned")
+	if n := drop.lift(); n == 0 {
+		s.t.Error("the INPUT drop matched no packet: the messages never came")
+	}
+	s.send("open")
+	b, _ := recvWithin(s.t, c, wireStepWait)
+	if string(b) != "after TTL" {
+		s.t.Errorf("first delivered message = %q, want the reliable message after the expired ones", b)
+	}
+	s.send("received")
+	if got := s.readUntilEOF(c); len(got) != 0 {
+		s.t.Errorf("%d expired messages arrived", len(got))
+	}
+}
+
+// prSendFailedTTLClient leaves a fragmented message and two small ones
+// outstanding while the peer drops on INPUT. Their 1 ms lifetime expires
+// before retransmission (RFC 3758 §4.1). Linux counts abandonment once
+// per message (net/sctp/chunk.c: sctp_chunk_abandoned), but reports one
+// SCTP_SEND_FAILED_EVENT per fragment (RFC 6458 §6.1.11;
+// net/sctp/chunk.c: sctp_datamsg_destroy). An unsent chunk is failed with
+// error 0 (net/sctp/outqueue.c: sctp_outq_flush_data, sctp_chunk_fail),
+// and the event marks each chunk sent only when it has a TSN
+// (net/sctp/chunk.c: sctp_datamsg_destroy).
+func prSendFailedTTLClient(s *hostStep) {
+	s.expect("ready")
+	c := s.dialA(&Config{
+		RTOInfo:       wireFastRTO,
+		WriteBuffer:   new(1 << 20),
+		NoDelay:       new(true),
+		Notifications: []EventType{EventSendFailed},
+	})
+	if ok, err := c.Subscribed(EventSendFailed); err != nil || !ok {
+		s.t.Fatalf("Subscribed(EventSendFailed) = %t, %v", ok, err)
+	}
+	if ok, err := c.PRSupported(); err != nil || !ok {
+		s.t.Fatalf("PRSupported = %t, %v", ok, err)
+	}
+	if err := c.SetMaxSeg(1024); err != nil {
+		s.t.Fatalf("SetMaxSeg: %v", err)
+	}
+	seg, err := c.MaxSeg()
+	if err != nil || seg <= 0 || seg > 1024 {
+		s.t.Fatalf("MaxSeg = %d, %v; want 1..1024", seg, err)
+	}
+	s.send("silence")
+	s.expect("silent")
+	msgs := [][]byte{
+		bytes.Repeat([]byte("fragmented TTL "), 2048),
+		[]byte("short TTL one"),
+		[]byte("short TTL two"),
+	}
+	for i, msg := range msgs {
+		if _, err := c.SendMsg(msg, SendOptions{
+			Info: &SndInfo{Stream: uint16(i + 1), PPID: 101, Context: uint32(i + 1)},
+			PR:   &PrInfo{Policy: PRTTL, TTL: time.Millisecond},
+		}); err != nil {
+			s.t.Fatalf("SendMsg(%d): %v", i, err)
+		}
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	var st *PRStatus
+	for {
+		st, err = c.PRAssocStatus(PRTTL)
+		if err != nil {
+			s.t.Fatalf("PRAssocStatus(PRTTL): %v", err)
+		}
+		if st.AbandonedSent+st.AbandonedUnsent >= uint64(len(msgs)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			s.t.Fatalf("PRAssocStatus(PRTTL) = %+v after 3 s, want %d abandoned messages", *st, len(msgs))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := st.AbandonedSent + st.AbandonedUnsent; got != uint64(len(msgs)) {
+		s.t.Errorf("PRAssocStatus(PRTTL) = %+v, want %d abandoned messages", *st, len(msgs))
+	}
+	if st.AbandonedSent != 1 || st.AbandonedUnsent != 2 {
+		s.t.Errorf("PRAssocStatus(PRTTL) = %+v, want one fragmented message abandoned after send and two short messages before send", *st)
+	}
+	s.send("abandoned")
+	s.expect("open")
+	if _, err := c.SendMsg([]byte("after TTL"), SendOptions{}); err != nil {
+		s.t.Fatalf("SendMsg reliable sentinel: %v", err)
+	}
+	// The peer receives the sentinel only after the expired TSNs have
+	// been advanced past, so the sent fragments can also be released.
+	s.expect("received")
+	want := (len(msgs[0])+seg-1)/seg + len(msgs) - 1
+	failed := make([][]*SendFailed, len(msgs))
+	setReadDeadline(s.t, c, 5*time.Second)
+	for got := 0; got < want; got++ {
+		buf := make([]byte, seg+sizeSendFailedEvent)
+		n, info, err := c.RecvMsg(buf)
+		if err != nil {
+			s.t.Fatalf("RecvMsg after %d/%d SendFailed events: %v", got, want, err)
+		}
+		if !info.Notification || !info.EOR {
+			s.t.Fatalf("RecvMsg after %d/%d events: Notification=%t EOR=%t", got, want, info.Notification, info.EOR)
+		}
+		note, err := ParseNotification(buf[:n])
+		if err != nil {
+			s.t.Fatalf("ParseNotification: %v", err)
+		}
+		sf, ok := note.(*SendFailed)
+		if !ok || sf.Context < 1 || int(sf.Context) > len(msgs) {
+			s.t.Fatalf("notification %d = %T, want SendFailed for one of %d messages", got, note, len(msgs))
+		}
+		failed[sf.Context-1] = append(failed[sf.Context-1], sf)
+	}
+	for i, fragments := range failed {
+		count := 1
+		if i == 0 {
+			count = (len(msgs[i]) + seg - 1) / seg
+		}
+		if len(fragments) != count {
+			s.t.Errorf("message %d: %d SendFailed events, want %d", i, len(fragments), count)
+		}
+		var payload []byte
+		sent, unsent := 0, 0
+		for j, sf := range fragments {
+			if sf.Error != CauseNone || sf.Stream != uint16(i+1) || sf.PPID != 101 || sf.AssocID != c.AssocID() {
+				s.t.Errorf("message %d fragment %d: SendFailed = %+v", i, j, sf)
+			}
+			if sf.FirstFragment != (j == 0) || sf.LastFragment != (j == len(fragments)-1) {
+				s.t.Errorf("message %d fragment %d: FirstFragment=%t LastFragment=%t", i, j, sf.FirstFragment, sf.LastFragment)
+			}
+			if sf.Sent {
+				sent++
+				if unsent != 0 || i != 0 {
+					s.t.Errorf("message %d fragment %d: Sent after an unsent fragment or in an unsent message", i, j)
+				}
+			} else {
+				unsent++
+			}
+			payload = append(payload, sf.Data...)
+		}
+		if i == 0 && (sent == 0 || unsent == 0) || i != 0 && sent != 0 {
+			s.t.Errorf("message %d: %d sent and %d unsent fragments, want a sent prefix and unsent suffix for the fragmented message, only unsent for the others", i, sent, unsent)
+		}
+		if !bytes.Equal(payload, msgs[i]) {
+			s.t.Errorf("message %d: %d event bytes do not match the %d sent bytes", i, len(payload), len(msgs[i]))
+		}
+	}
+	if st2, err := c.PRAssocStatus(PRTTL); err != nil || *st2 != *st {
+		s.t.Errorf("PRAssocStatus(PRTTL) after notifications = %+v, %v; want %+v", st2, err, st)
+	}
+	setReadDeadline(s.t, c, 500*time.Millisecond)
+	if n, info, err := c.RecvMsg(make([]byte, seg+sizeSendFailedEvent)); err == nil || !isTimeout(err) {
+		s.t.Errorf("RecvMsg after %d SendFailed events = %d, %+v, %v; want timeout without extra events", want, n, info, err)
+	}
+	s.closeGracefully(c)
+}
+
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // --- ESHUTDOWN while the SHUTDOWN handshake is blocked -------------------------------

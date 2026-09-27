@@ -24,6 +24,8 @@ var claims = []claim{
 	{"sack-immediately", 1, checkSACKImmediately},
 	{"unordered", 1, checkUnordered},
 	{"request-heartbeat", 1, checkRequestHeartbeat},
+	{"periodic-heartbeat", 1, checkPeriodicHeartbeat},
+	{"message-interleaving", 1, checkMessageInterleaving},
 	{"nowait-refusal", 1, checkNoWaitRefusal},
 	{"path", 1, checkPath},
 	{"more", 1, checkMore},
@@ -37,23 +39,24 @@ var claims = []claim{
 
 // The PPIDs wire_linux_test.go marks its messages with.
 const (
-	ppidPlain     = 0x57490001
-	ppidSACKNow   = 0x57490002
-	ppidUnordered = 0x57490003
-	ppidOrdered   = 0x57490004
-	ppidDefault   = 0x57490005
-	ppidFill      = 0x57490006
-	ppidRefused   = 0x57490007
-	ppidLast      = 0x57490008
-	ppidPrimary   = 0x57490009
-	ppidPath      = 0x5749000a
-	ppidAlone1    = 0x5749000b
-	ppidAlone2    = 0x5749000c
-	ppidMore1     = 0x5749000d
-	ppidMore2     = 0x5749000e
-	ppidBurst     = 0x5749000f
-	ppidAbandoned = 0x57490010
-	ppidAfter     = 0x57490011
+	ppidPlain      = 0x57490001
+	ppidSACKNow    = 0x57490002
+	ppidUnordered  = 0x57490003
+	ppidOrdered    = 0x57490004
+	ppidDefault    = 0x57490005
+	ppidFill       = 0x57490006
+	ppidRefused    = 0x57490007
+	ppidLast       = 0x57490008
+	ppidPrimary    = 0x57490009
+	ppidPath       = 0x5749000a
+	ppidAlone1     = 0x5749000b
+	ppidAlone2     = 0x5749000c
+	ppidMore1      = 0x5749000d
+	ppidMore2      = 0x5749000e
+	ppidBurst      = 0x5749000f
+	ppidAbandoned  = 0x57490010
+	ppidAfter      = 0x57490011
+	ppidInterleave = 0x57490013
 )
 
 // abortLimit is how soon after the Abort call its ABORT must be on the
@@ -292,6 +295,151 @@ func checkRequestHeartbeat(r *claimRun) {
 	if got := window("every"); len(got) != 2 || got[a] != 1 || got[b] != 1 {
 		r.failf("RequestHeartbeat(zero address) sent HEARTBEATs %v, want exactly one to %s and one to %s", got, a, b)
 	}
+}
+
+// checkPeriodicHeartbeat checks the idle path timers (RFC 9260 §8.3).
+// net/sctp/transport.c: sctp_transport_timeout and
+// sctp_transport_reset_hb_timer schedule each heartbeat at the interval
+// plus RTO/2 plus a random value below RTO.
+func checkPeriodicHeartbeat(r *claimRun) {
+	start, end := r.time("start_ns"), r.time("end_ns")
+	r.covered(end, "the idle heartbeat window ended")
+	interval, rtoMin, rtoMax := r.duration("interval_ns"), r.duration("rto_min_ns"), r.duration("rto_max_ns")
+	if interval <= 0 || rtoMin <= 0 || rtoMax < rtoMin {
+		r.failf("invalid heartbeat timer bounds: interval %v, RTO %v-%v", interval, rtoMin, rtoMax)
+	}
+	var beats, acks []frame
+	for _, f := range r.out(r.ports[0]) {
+		if f.has(chunkHEARTBEAT) && !f.at.Before(start) && !f.at.After(end) {
+			beats = append(beats, f)
+		}
+	}
+	for _, f := range r.in(r.ports[0]) {
+		if f.has(chunkHEARTBEATACK) && !f.at.Before(start) && !f.at.After(end) {
+			acks = append(acks, f)
+		}
+	}
+	if len(beats) == 0 {
+		r.failf("no HEARTBEAT in the idle window")
+	}
+	for _, key := range []string{"server_a", "server_b"} {
+		addr := r.setupAddr(key)
+		var path []frame
+		for _, f := range beats {
+			if f.dst == addr {
+				path = append(path, f)
+			}
+		}
+		if len(path) < 2 {
+			r.failf("%s has %d HEARTBEATs, fewer than two", r.env.names[addr], len(path))
+		}
+		for i, f := range path {
+			if f.count(chunkHEARTBEAT) != 1 {
+				r.failf("frame %d has %d HEARTBEAT chunks, want one", f.number, f.count(chunkHEARTBEAT))
+			}
+			var ack *frame
+			for j := range acks {
+				if acks[j].src == addr && acks[j].dst == f.src && acks[j].at.After(f.at) &&
+					(i+1 == len(path) || acks[j].at.Before(path[i+1].at)) {
+					ack = &acks[j]
+					break
+				}
+			}
+			if ack == nil {
+				r.failf("frame %d HEARTBEAT to %s has no HEARTBEAT ACK", f.number, r.env.names[addr])
+			}
+			r.note("frame %d HEARTBEAT to %s answered by frame %d", f.number, r.env.names[addr], ack.number)
+			if i == 0 {
+				continue
+			}
+			spacing := f.at.Sub(path[i-1].at)
+			low := interval + rtoMin/2 - tolerance
+			high := interval + 3*rtoMax/2 + tolerance
+			if spacing < low || spacing > high {
+				r.failf("%s HEARTBEAT spacing %v outside %v-%v (net/sctp/transport.c: sctp_transport_timeout, sctp_transport_reset_hb_timer)", r.env.names[addr], spacing, low, high)
+			}
+			r.note("%s HEARTBEAT spacing %v (timer range %v-%v)", r.env.names[addr], spacing, low, high)
+		}
+	}
+}
+
+// checkMessageInterleaving proves the two large messages used I-DATA, with
+// one stream's fragments separated by the other's (RFC 8260 §§2.1-2.2).
+func checkMessageInterleaving(r *claimRun) {
+	out := r.out(r.ports[0])
+	var fragments []dataChunk
+	var fragmentFrames []int
+	seenTSN := map[uint32]bool{}
+	for _, f := range out {
+		if f.has(chunkDATA) {
+			r.failf("frame %d has a DATA chunk on the I-DATA association", f.number)
+		}
+		for _, d := range f.data {
+			if d.kind != chunkIDATA {
+				continue
+			}
+			if !seenTSN[d.tsn] {
+				fragments = append(fragments, d)
+				fragmentFrames = append(fragmentFrames, f.number)
+				seenTSN[d.tsn] = true
+			}
+		}
+	}
+	if len(fragments) == 0 {
+		r.failf("no I-DATA on the association")
+	}
+	var counts, begins [2]int
+	for _, d := range fragments {
+		if d.sid > 1 {
+			r.failf("I-DATA on unexpected stream %d", d.sid)
+		}
+		counts[d.sid]++
+		if d.b {
+			begins[d.sid]++
+			if want := ppidInterleave + uint32(d.sid); d.ppid != want {
+				r.failf("stream %d I-DATA PPID %#x, want %#x", d.sid, d.ppid, want)
+			}
+		}
+	}
+	for sid := range counts {
+		if counts[sid] < 2 || begins[sid] != 1 {
+			r.failf("stream %d has %d I-DATA fragments and %d beginnings, want multiple fragments of one message", sid, counts[sid], begins[sid])
+		}
+	}
+	first, middle, last := -1, -1, -1
+	for i := 0; i < len(fragments); i++ {
+		for j := i + 1; j < len(fragments); j++ {
+			if fragments[j].sid == fragments[i].sid {
+				continue
+			}
+			for k := j + 1; k < len(fragments); k++ {
+				if fragments[k].sid == fragments[i].sid {
+					first, middle, last = i, j, k
+					break
+				}
+			}
+			if first >= 0 {
+				break
+			}
+		}
+		if first >= 0 {
+			break
+		}
+	}
+	if first < 0 {
+		r.failf("I-DATA fragments of the two streams were not interleaved")
+	}
+	if dropped := r.int("dropped"); dropped < 1 {
+		r.failf("the receiver's INPUT drop matched %d packets", dropped)
+	}
+	if received, eof := r.int("received"), r.int("eof"); received != 2 || eof != 1 {
+		r.failf("the server received %d complete messages, EOF %d; want two and EOF", received, eof)
+	}
+	r.note("frames %d, %d, %d: I-DATA streams %d, %d, %d interleaved",
+		fragmentFrames[first], fragmentFrames[middle], fragmentFrames[last],
+		fragments[first].sid, fragments[middle].sid, fragments[last].sid)
+	r.note("%d stream-0 and %d stream-1 I-DATA fragments, no DATA, %d receiver INPUT drops, both complete messages received",
+		counts[0], counts[1], r.int("dropped"))
 }
 
 // checkNoWaitRefusal: a NoWait send refused with EAGAIN puts no DATA on

@@ -45,7 +45,7 @@ import (
 	"time"
 )
 
-// Chunk types, RFC 9260 §3.2 and RFC 3758 §3.2.
+// Chunk types, RFC 9260 §3.2, RFC 3758 §3.2 and RFC 8260 §2.1.
 const (
 	chunkDATA             = 0
 	chunkINIT             = 1
@@ -60,6 +60,7 @@ const (
 	chunkCOOKIEECHO       = 10
 	chunkCOOKIEACK        = 11
 	chunkSHUTDOWNCOMPLETE = 14
+	chunkIDATA            = 64
 	chunkFORWARDTSN       = 192
 )
 
@@ -77,6 +78,7 @@ var chunkNames = map[int]string{
 	chunkCOOKIEECHO:       "COOKIE ECHO",
 	chunkCOOKIEACK:        "COOKIE ACK",
 	chunkSHUTDOWNCOMPLETE: "SHUTDOWN COMPLETE",
+	chunkIDATA:            "I-DATA",
 	chunkFORWARDTSN:       "FORWARD TSN",
 }
 
@@ -85,9 +87,10 @@ var chunkNames = map[int]string{
 const tolerance = time.Millisecond
 
 // fields are the tshark fields read for every SCTP frame, in column order.
-// The DATA fields have one occurrence per DATA chunk, the SACK and FORWARD
-// TSN fields one per chunk of their type, and every chunk has one
-// chunk_type occurrence, which is how they line up.
+// TSN, stream, flag and B-bit fields have one occurrence per DATA or
+// I-DATA chunk. PPID occurs for every DATA and the first I-DATA fragment
+// (RFC 8260 §2.1). SACK and FORWARD TSN fields occur once per chunk of
+// their type, and every chunk has one chunk_type occurrence.
 var fields = []string{
 	"frame.number",
 	"frame.time_epoch",
@@ -105,6 +108,7 @@ var fields = []string{
 	"sctp.sack_cumulative_tsn_ack_raw",
 	"sctp.forward_tsn_tsn",
 	"sctp.cause_code",
+	"sctp.data_b_bit",
 }
 
 type dataChunk struct {
@@ -112,6 +116,8 @@ type dataChunk struct {
 	sid  uint16
 	ppid uint32
 	u, i bool
+	kind int
+	b    bool
 }
 
 type frame struct {
@@ -347,15 +353,36 @@ func parseFrame(c []string) (frame, error) {
 	u, err4 := bools(c[11])
 	i, err5 := bools(c[12])
 	if err := errors.Join(err1, err2, err3, err4, err5); err != nil {
-		return f, fmt.Errorf("frame %d: DATA fields: %v", f.number, err)
+		return f, fmt.Errorf("frame %d: DATA/I-DATA fields: %v", f.number, err)
 	}
-	n := f.count(chunkDATA)
-	if len(tsn) != n || len(sid) != n || len(ppid) != n || len(u) != n || len(i) != n {
-		return f, fmt.Errorf("frame %d: %d DATA chunks but %d TSNs, %d stream ids, %d PPIDs, %d U bits, %d I bits",
-			f.number, n, len(tsn), len(sid), len(ppid), len(u), len(i))
+	n := f.count(chunkDATA) + f.count(chunkIDATA)
+	if len(tsn) != n || len(sid) != n || len(u) != n || len(i) != n {
+		return f, fmt.Errorf("frame %d: %d DATA/I-DATA chunks but %d TSNs, %d stream ids, %d U bits, %d I bits",
+			f.number, n, len(tsn), len(sid), len(u), len(i))
 	}
-	for k := range n {
-		f.data = append(f.data, dataChunk{tsn: uint32(tsn[k]), sid: uint16(sid[k]), ppid: uint32(ppid[k]), u: u[k], i: i[k]})
+	begin, err := bools(c[16])
+	if err != nil || len(begin) != n {
+		return f, fmt.Errorf("frame %d: %d DATA/I-DATA chunks but B bits %q", f.number, n, c[16])
+	}
+	for _, kind := range f.chunks {
+		if kind != chunkDATA && kind != chunkIDATA {
+			continue
+		}
+		k := len(f.data)
+		d := dataChunk{tsn: uint32(tsn[k]), sid: uint16(sid[k]), u: u[k], i: i[k], kind: kind}
+		if kind == chunkIDATA {
+			d.b = begin[k]
+		}
+		if kind == chunkDATA || d.b {
+			if len(ppid) == 0 {
+				return f, fmt.Errorf("frame %d: DATA/I-DATA beginning has no PPID", f.number)
+			}
+			d.ppid, ppid = uint32(ppid[0]), ppid[1:]
+		}
+		f.data = append(f.data, d)
+	}
+	if len(ppid) != 0 {
+		return f, fmt.Errorf("frame %d: %d extra DATA/I-DATA PPIDs", f.number, len(ppid))
 	}
 	sack, err := uints(c[13], 32)
 	if err != nil || len(sack) != f.count(chunkSACK) {
