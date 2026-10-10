@@ -936,19 +936,16 @@ func fdZeroChild(mode string) error {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	laddr := l.Addr().(*Addr)
-	accepted := make(chan *Conn, 1)
-	go func() {
-		c, err := l.AcceptSCTP()
-		if err == nil {
-			accepted <- c
-		}
-	}()
-	if err := syscall.Close(0); err != nil {
-		return fmt.Errorf("SKIP cannot close stdin: %w", err)
+	defer func() { _ = l.Close() }()
+	if err := l.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return fmt.Errorf("accept deadline: %w", err)
 	}
+	laddr := l.Addr().(*Addr)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if err := syscall.Close(0); err != nil {
+		return fmt.Errorf("cannot close stdin: %w", err)
+	}
 	c, err := Dial(ctx, "sctp4", nil, laddr)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
@@ -958,21 +955,26 @@ func fdZeroChild(mode string) error {
 	if err != nil {
 		return err
 	}
-	_ = rc.Control(func(f uintptr) { fd = int(f) })
+	if err := rc.Control(func(f uintptr) { fd = int(f) }); err != nil {
+		return err
+	}
 	if fd != 0 {
-		return fmt.Errorf("SKIP the association landed on descriptor %d, not 0", fd)
+		return fmt.Errorf("the association landed on descriptor %d, not 0", fd)
 	}
 	port, err := localPortOf(0)
 	if err != nil {
-		return fmt.Errorf("SKIP cannot read the local port of descriptor 0: %w", err)
+		return fmt.Errorf("cannot read the local port of descriptor 0: %w", err)
 	}
-	// Let the accept finish first, so that its descriptor is allocated
-	// before descriptor 0 is released and cannot take 0 back.
-	select {
-	case <-accepted:
-	case <-time.After(10 * time.Second):
-		return fmt.Errorf("the association was never accepted")
+	// accept4 reserves a descriptor before checking its queue
+	// (net/socket.c: __sys_accept4_file). Starting it before Dial races
+	// for 0, even when the first accept returns EAGAIN.
+	// The handshake needs only the listening socket, so accept after Dial
+	// owns 0 and before Close or Abort releases it.
+	server, err := l.AcceptSCTP()
+	if err != nil {
+		return fmt.Errorf("accept: %w", err)
 	}
+	defer func() { _ = server.Abort() }()
 	if mode == "close" {
 		err = c.Close()
 	} else {
@@ -1010,10 +1012,6 @@ func localPortOf(fd int) (int, error) {
 func runFdZero(t *testing.T, test, mode string) {
 	if os.Getenv("SCTP_FD_ZERO_CHILD") == mode {
 		if err := fdZeroChild(mode); err != nil {
-			if strings.HasPrefix(err.Error(), "SKIP") {
-				fmt.Println(err)
-				return
-			}
 			t.Fatal(err)
 		}
 		fmt.Println("descriptor 0 released")
@@ -1022,9 +1020,6 @@ func runFdZero(t *testing.T, test, mode string) {
 	out, err := runChild(t, test, "SCTP_FD_ZERO_CHILD="+mode)
 	if err != nil {
 		t.Fatalf("child: %v\n%s", err, out)
-	}
-	if strings.Contains(out, "SKIP") {
-		t.Skipf("child could not set up the case:\n%s", out)
 	}
 	if !strings.Contains(out, "descriptor 0 released") {
 		t.Fatalf("child did not confirm the release:\n%s", out)
