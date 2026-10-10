@@ -224,7 +224,7 @@ What continuous integration runs on each target:
 |---|---|
 | `linux/amd64` | The whole suite against the runner's SCTP stack, with Go 1.26 and the latest Go, in both sysctl states (below); again under `-race`, and under `-gcflags=all=-d=checkptr` |
 | `linux/386` | The whole suite, natively on the x86_64 runner, so the `socketcall` path and the 32-bit layouts run against a real kernel; and the raw system-call tests again with the goroutine stack moved at every function call |
-| `linux/s390x` | The tests that need no socket, under qemu: byte order, structure layouts, control messages and addresses on a big-endian machine. qemu's user-mode emulation cannot pass SCTP socket options through, so the socket tests cannot run there |
+| `linux/s390x` | The Linux suite against a pinned Debian big-endian kernel under qemu-system, in both sysctl states; `TestCrossCompileSmoke` and architecture-independent `TestExportedAPI` are covered separately. The portable tests and fuzz seeds also run under the faster qemu-user job, which cannot exercise SCTP socket options |
 | `linux/arm`, `linux/mips`, `linux/386`, `linux/s390x` | `go vet` |
 | 13 targets across Linux, Android, macOS, Windows, FreeBSD and AIX | A build of each (`TestCrossCompileSmoke`) |
 | `darwin`, `windows` | The tests, with `-short` |
@@ -254,6 +254,18 @@ together), since some tests need each; a test that needs the other state
 skips and says so. [testdata/docker/README.md](testdata/docker/README.md)
 explains each step. CI builds the same environment with the same script,
 `testdata/docker/setup-env.sh`.
+
+The same socket suite runs against a big-endian s390x guest kernel:
+
+```
+testdata/bigendian/run.sh
+```
+
+It needs Docker and Go, boots with full-system emulation, checks
+the guest's architecture, byte order, SCTP stack, kernel and source
+revision, and runs both sysctl states. This qualifies one s390x kernel;
+other big-endian architectures and two-host wire claims need their own
+runtime evidence. See [testdata/bigendian/README.md](testdata/bigendian/README.md).
 
 Some claims can only be proven between two hosts, from the packets
 themselves: that an `Abort` puts an ABORT chunk on the wire at once, that

@@ -238,8 +238,8 @@ jobs:
         # This runs the socketcall path in syscall_linux_386.go against a
         # real SCTP stack, with the same network and sysctl environment
         # every other Linux job gets, rather than only compiling it. It is
-        # the one architecture besides the host's own that can run the
-        # socket-backed suite in public CI. Root, for the same reason as
+        # a second architecture running the socket-backed suite without
+        # full-system emulation. Root, for the same reason as
         # test-linux's go test step: TestSctp6CarriesIPv4WhateverBindv6only
         # needs to write /proc/sys/net/ipv6/bindv6only. -E and PATH, for
         # the same reason as test-linux's go test step too: this binary
@@ -305,6 +305,40 @@ jobs:
             sed -E 's/^func ([A-Za-z0-9_]+).*/\1/' | sort -u | paste -sd '|' -)"
           echo "running: ^($names)\$"
           ./sctp-s390x.test -test.run "^($names)\$" -test.v -test.count=1 -test.timeout=900s
+
+  big-endian-kernel:
+    name: portability / kernel s390x (qemu-system)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+          cache: true
+      - name: Cache the pinned emulator environment
+        # snapshot.debian.org is slow and rate-limited. Persist only the
+        # compressed distribution image, keyed on the same architecture
+        # and construction inputs as run.sh; it still rebuilds the tests
+        # and checks a restored image's native architecture before use.
+        uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-sctp-bigendian-cache/*.image.tar.gz
+          key: sctp-bigendian-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('testdata/bigendian/Dockerfile', 'testdata/bigendian/boot.sh') }}
+      - name: Run the socket suite against a big-endian kernel
+        # qemu-user above remains useful for portable tests and fuzz seeds
+        # in seconds, but cannot pass SOL_SCTP options to a native kernel.
+        # This boots a pinned Debian s390x kernel with qemu-system's TCG,
+        # runs setup-env.sh unchanged as guest root, and runs both sysctl
+        # states. The harness checks the guest's architecture, byte order,
+        # SCTP availability, kernel, binary and source revision, and fails
+        # on boot/run timeout, panic/oops, zero tests or missing status.
+        # It vets and tests its Go supervisor before booting any guest.
+        # Docker runs the emulator natively; no privileged host setup or
+        # qemu-user registration is involved in this test path.
+        env:
+          SCTP_BIGENDIAN_CACHE: ${{ runner.temp }}/go-sctp-bigendian-cache
+        run: testdata/bigendian/run.sh
 
   wire:
     name: wire harness (two hosts, tshark)
