@@ -180,7 +180,16 @@ jobs:
           cache: true
       - uses: dominikh/staticcheck-action@v1.4.1
         with:
-          version: v0.8.0-rc.1
+          # Go 1.27.2 writes export data version 5. Staticcheck 2026.2.1
+          # (v0.8.1) and every earlier release read at most version 4, so
+          # under the stable toolchain they stop before analysing a single
+          # package (#23). The fix, go-tools f1838cc ("Update dependency on
+          # golang.org/x/tools to v0.51.0",
+          # https://github.com/dominikh/go-tools/issues/1832), is not in a
+          # release yet; this is the master commit after it whose own CI
+          # passes on Go 1.27. Replace it with the first release that
+          # contains f1838cc.
+          version: v0.7.0-0.dev.0.20261009230814-452d5bb86b45
           install-go: false
       - uses: golangci/golangci-lint-action@v9.3.0
         with:
