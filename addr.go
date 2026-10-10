@@ -116,9 +116,9 @@ func canonicalNetwork(network string, ips []netip.Addr) (family int, err error) 
 
 // ResolveAddr parses "host1/host2/...:port" for network "sctp", "sctp4" or
 // "sctp6", resolving host names through net.DefaultResolver. It never opens
-// a socket, so it works on every platform. The port is required and must be
-// numeric — a service name such as "http" is refused with an error matching
-// syscall.EINVAL, as is a port outside 0-65535.
+// an SCTP socket, so it works on every platform. The port is required and
+// must be numeric — a service name such as "http" is refused with an error
+// matching syscall.EINVAL, as is a port outside 0-65535.
 //
 // A bare ":port", with no host at all, is the wildcard address: it resolves
 // to &Addr{Port: port}, an empty IPs list, matching every local address. Any
@@ -213,6 +213,12 @@ func unbracketHost(host string) string {
 	return host
 }
 
+// lookupNetIP calls the current default resolver; tests may replace it to
+// observe and control individual lookups.
+var lookupNetIP = func(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	return net.DefaultResolver.LookupNetIP(ctx, network, host)
+}
+
 // resolveHost resolves one address-list element to a single address. A
 // literal — numeric, optionally zoned — is parsed directly, without
 // touching the resolver. Anything else goes to
@@ -236,7 +242,7 @@ func resolveHost(ctx context.Context, network, host string) (netip.Addr, error) 
 	}
 	switch network {
 	case "sctp4":
-		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
+		ips, err := lookupNetIP(ctx, "ip4", host)
 		if err != nil {
 			return netip.Addr{}, err
 		}
@@ -245,7 +251,7 @@ func resolveHost(ctx context.Context, network, host string) (netip.Addr, error) 
 		}
 		return normalizeResolvedAddr(ips[0])
 	case "sctp6":
-		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip6", host)
+		ips, err := lookupNetIP(ctx, "ip6", host)
 		if err != nil {
 			return netip.Addr{}, err
 		}
@@ -254,7 +260,7 @@ func resolveHost(ctx context.Context, network, host string) (netip.Addr, error) 
 		}
 		return normalizeResolvedAddr(ips[0])
 	default:
-		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		ips, err := lookupNetIP(ctx, "ip", host)
 		if err != nil {
 			return netip.Addr{}, err
 		}

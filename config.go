@@ -90,9 +90,11 @@ type Config struct {
 	// applied. As for net.Dialer and net.ListenConfig, network is the
 	// network the call names ("sctp" for an empty one), and address is the
 	// remote address for Dial and the local one for Listen, ListenEndpoint
-	// and OpenEndpoint, "" when there is none. c supports Control only: its Read and Write return
-	// syscall.EINVAL, since nothing can be sent or received yet. An error
-	// Control returns ends the constructor, which closes the socket.
+	// and OpenEndpoint, "" when there is none. c supports Control only: its
+	// Read and Write return syscall.EINVAL, since nothing can be sent or
+	// received yet. An error Control returns ends the constructor, which
+	// closes the socket. Control runs synchronously inside the constructor,
+	// and Dial's context does not interrupt it.
 	Control func(network, address string, c syscall.RawConn) error
 
 	// NotificationHandler, when set, receives every notification before a read

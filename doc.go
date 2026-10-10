@@ -64,9 +64,10 @@
 // the socket's family.
 //
 // [ResolveAddrContext] bounds name resolution with a context. Pass that
-// same context to [Dial] or [Config.Dial] to bound the whole setup. The
-// socket constructors, including [Listen], [Config.Listen] and the endpoint
-// constructors, take already-resolved addresses and never resolve names.
+// same context to [Dial] or [Config.Dial] to bound association setup too.
+// The socket constructors, including [Listen], [Config.Listen] and the
+// endpoint constructors, take already-resolved addresses and never resolve
+// names.
 //
 // # Reading
 //
@@ -148,8 +149,13 @@
 //   - An argument the package refuses, a Config field, a SendOptions field
 //     or a method argument, matches syscall.EINVAL, and the message names
 //     it. Nothing reaches the kernel then.
-//   - A passed deadline matches os.ErrDeadlineExceeded, and a closed socket
+//   - A passed I/O deadline set with SetDeadline, SetReadDeadline or
+//     SetWriteDeadline matches os.ErrDeadlineExceeded, and a closed socket
 //     net.ErrClosed.
+//   - A call to [Dial], [Config.Dial] or [ResolveAddrContext] that its
+//     context interrupts returns an error matching ctx.Err(), so test it
+//     with context.Canceled or context.DeadlineExceeded, not with
+//     os.ErrDeadlineExceeded.
 //   - An option call wraps an *os.SyscallError that names getsockopt or
 //     setsockopt and holds the kernel's errno, so that
 //     errors.Is(err, syscall.ENOPROTOOPT) detects an option the running
@@ -163,7 +169,7 @@
 // The Timeout method of net.Error reports true for a passed deadline, and
 // also for syscall.EAGAIN and syscall.ETIMEDOUT, as syscall.Errno's own
 // Timeout does: a NoWait refusal, and an association whose retransmissions
-// ran out, look like timeouts to it. Test for a deadline with
+// ran out, look like timeouts to it. Test for an I/O deadline with
 // errors.Is(err, os.ErrDeadlineExceeded) instead.
 //
 // # The end of an association
