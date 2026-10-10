@@ -300,6 +300,7 @@ ResetDirection.String
 ResetIncoming
 ResetOutgoing
 ResolveAddr
+ResolveAddrContext
 SchedFC
 SchedFCFS
 SchedPrio

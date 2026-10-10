@@ -120,6 +120,14 @@ func main() {
 [`example/`](example) is a complete echo server and client, with
 multi-homing, streams, buffer sizes and notifications.
 
+For a hostname, use `ResolveAddrContext(ctx, "sctp", "peer.example:3868")`
+and pass the resulting `*Addr` and the same context to `Dial` or
+`Config.Dial`. That bounds both name resolution and association setup.
+`ResolveAddr` uses a background context. Both forms resolve every hostname
+in a multi-homed address; literals and the wildcard need no lookup and
+still parse when the context is cancelled. Socket constructors take
+already-resolved addresses and never resolve hostnames themselves.
+
 ## Overview
 
 - **One-to-one sockets.** `Dial` sets up an association and returns a
@@ -197,9 +205,9 @@ kernel's 64-bit layout for the options whose layout depends on the word
 size.
 
 On the other platforms, the BSDs, macOS, Windows, Solaris, illumos and AIX
-among them, the package compiles, `ResolveAddr` and `ParseNotification` work,
-and the constructors return a `*net.OpError` that wraps `sctp.ErrUnsupported`,
-which wraps `errors.ErrUnsupported`:
+among them, the package compiles, `ResolveAddr`, `ResolveAddrContext` and
+`ParseNotification` work, and the constructors return a `*net.OpError` that
+wraps `sctp.ErrUnsupported`, which wraps `errors.ErrUnsupported`:
 
 ```go
 if errors.Is(err, errors.ErrUnsupported) {
