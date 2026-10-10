@@ -140,7 +140,23 @@ func canonicalNetwork(network string, ips []netip.Addr) (family int, err error) 
 // accepted under "sctp6" — reported back in plain form, the way every
 // address this package produces is (Addr's own doc comment) — since it is
 // the caller naming that address directly, not the resolver choosing it.
+//
+// ResolveAddr uses context.Background. To bound or cancel name resolution,
+// use [ResolveAddrContext].
 func ResolveAddr(network, address string) (*Addr, error) {
+	return ResolveAddrContext(context.Background(), network, address)
+}
+
+// ResolveAddrContext is [ResolveAddr] with a context for every host name
+// lookup, including each host in a multi-homed address. Cancellation or a
+// deadline interrupts resolution with an error matching ctx.Err() through
+// errors.Is. An already-cancelled context starts no host name lookup.
+//
+// Literal IP addresses and the wildcard need no lookup and are parsed even
+// if ctx is done; the usual address and network validation still applies.
+// ctx must not be nil. To bound resolution and association setup together,
+// pass the same ctx to ResolveAddrContext and [Dial] or [Config.Dial].
+func ResolveAddrContext(ctx context.Context, network, address string) (*Addr, error) {
 	if _, err := canonicalNetwork(network, nil); err != nil {
 		return nil, err
 	}
@@ -173,7 +189,7 @@ func ResolveAddr(network, address string) (*Addr, error) {
 		if host == "" {
 			return nil, invalidArg("address %q names no host", address)
 		}
-		ip, err := resolveHost(network, host)
+		ip, err := resolveHost(ctx, network, host)
 		if err != nil {
 			return nil, err
 		}
@@ -210,12 +226,14 @@ func unbracketHost(host string) string {
 // represents that way — and normalizeResolvedAddr unmaps it, so every
 // address ResolveAddr returns is in the plain form Addr's doc comment
 // promises.
-func resolveHost(network, host string) (netip.Addr, error) {
+func resolveHost(ctx context.Context, network, host string) (netip.Addr, error) {
 	if ip, err := netip.ParseAddr(host); err == nil {
 		return normalizeResolvedAddr(ip)
 	}
 
-	ctx := context.Background()
+	if err := ctx.Err(); err != nil {
+		return netip.Addr{}, err
+	}
 	switch network {
 	case "sctp4":
 		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)

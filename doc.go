@@ -63,6 +63,11 @@
 // addresses are always reported in plain form, never IPv4-mapped, whatever
 // the socket's family.
 //
+// [ResolveAddrContext] bounds name resolution with a context. Pass that
+// same context to [Dial] or [Config.Dial] to bound the whole setup. The
+// socket constructors, including [Listen], [Config.Listen] and the endpoint
+// constructors, take already-resolved addresses and never resolve names.
+//
 // # Reading
 //
 // [Conn.RecvMsg] reads through recvmsg(2); with a handler it may consume
@@ -133,8 +138,8 @@
 // methods of the value SyscallConn returns. On platforms without SCTP
 // every constructor fails, so no Conn, Listener or Endpoint can be
 // obtained there; the method stubs return ErrUnsupported unwrapped.
-// ResolveAddr, ParseNotification, InstallAuthKey and ActivateAuthKey return
-// their causes as they are. Test a cause with errors.Is:
+// ResolveAddr, ResolveAddrContext, ParseNotification, InstallAuthKey and
+// ActivateAuthKey return their causes as they are. Test a cause with errors.Is:
 //
 //   - io.EOF is returned unwrapped, so that err == io.EOF works: the
 //     association ended gracefully, and every message visible to the
@@ -219,9 +224,9 @@
 // the kernel's own error. The package's README.md lists the release for
 // every facility.
 //
-// On every other platform but plan9 the package compiles, ResolveAddr and
-// ParseNotification work, and the constructors return a *net.OpError that
-// wraps ErrUnsupported.
+// On every other platform but plan9 the package compiles, ResolveAddr,
+// ResolveAddrContext and ParseNotification work, and the constructors
+// return a *net.OpError that wraps ErrUnsupported.
 //
 // # Standards
 //
