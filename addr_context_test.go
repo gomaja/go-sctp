@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -115,6 +116,42 @@ func requireResolutionError(t *testing.T, result <-chan error, want error) {
 	}
 }
 
+// controlledDeadlineContext expires when the test closes done. Its fixed
+// deadline is in the past; Go's resolver strips the caller's deadline from
+// the shared lookup, so it still reaches Dial before the test expires it.
+type controlledDeadlineContext struct {
+	context.Context
+	done     chan struct{}
+	deadline time.Time
+}
+
+func (c *controlledDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
+func (c *controlledDeadlineContext) Done() <-chan struct{}       { return c.done }
+func (c *controlledDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func newControlledDeadlineContext() (*controlledDeadlineContext, func()) {
+	ctx := &controlledDeadlineContext{
+		Context:  context.Background(),
+		done:     make(chan struct{}),
+		deadline: time.Now().Add(-time.Second),
+	}
+	return ctx, sync.OnceFunc(func() { close(ctx.done) })
+}
+
+func installLookupNetIP(t *testing.T, lookup func(context.Context, string, string) ([]netip.Addr, error)) {
+	t.Helper()
+	previous := lookupNetIP
+	lookupNetIP = lookup
+	t.Cleanup(func() { lookupNetIP = previous })
+}
+
 func TestResolveAddrContextCancellation(t *testing.T) {
 	for _, network := range []string{"", "sctp", "sctp4", "sctp6"} {
 		t.Run(network, func(t *testing.T) {
@@ -149,22 +186,32 @@ func TestResolveAddrContextCancellation(t *testing.T) {
 }
 
 func TestResolveAddrContextAlreadyCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	testResolveAddrContextAlreadyDone(t, ctx)
+}
+
+func TestResolveAddrContextAlreadyExpired(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	testResolveAddrContextAlreadyDone(t, ctx)
+}
+
+func testResolveAddrContextAlreadyDone(t *testing.T, ctx context.Context) {
+	t.Helper()
 	for _, network := range []string{"", "sctp", "sctp4", "sctp6"} {
 		t.Run(network, func(t *testing.T) {
-			r := installBlockedResolver(t)
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			result := startBlockedResolution(t, r, ctx, network, "127.0.0.1/cancel-test.invalid:3868")
-			requireResolutionError(t, result, ctx.Err())
-			// LookupNetIP can return before its DNS goroutine starts. Give an
-			// incorrectly started lookup time to reach Dial before checking.
-			select {
-			case <-r.entered:
-				t.Fatal("already-cancelled context started resolver Dial")
-			case <-time.After(20 * time.Millisecond):
+			calls := 0
+			installLookupNetIP(t, func(context.Context, string, string) ([]netip.Addr, error) {
+				calls++
+				return nil, ctx.Err()
+			})
+			addr, err := ResolveAddrContext(ctx, network, "127.0.0.1/cancel-test.invalid:3868")
+			if addr != nil || !errors.Is(err, ctx.Err()) {
+				t.Fatalf("resolution = %v, %v, want nil, %v", addr, err, ctx.Err())
 			}
-			if calls := r.calls.Load(); calls != 0 {
-				t.Fatalf("already-cancelled context made %d resolver Dial calls, want 0", calls)
+			if calls != 0 {
+				t.Fatalf("already-done context made %d lookups, want 0", calls)
 			}
 		})
 	}
@@ -174,9 +221,15 @@ func TestResolveAddrContextDeadline(t *testing.T) {
 	for _, network := range []string{"", "sctp", "sctp4", "sctp6"} {
 		t.Run(network, func(t *testing.T) {
 			r := installBlockedResolver(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			defer cancel()
+			ctx, expire := newControlledDeadlineContext()
+			defer expire()
 			result := startBlockedResolution(t, r, ctx, network, "deadline-test.invalid:3868")
+			select {
+			case <-r.entered:
+			case <-time.After(time.Second):
+				t.Fatal("resolution did not enter resolver Dial")
+			}
+			expire()
 			requireResolutionError(t, result, context.DeadlineExceeded)
 			if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				t.Fatalf("context error = %v, want DeadlineExceeded", ctx.Err())
@@ -188,6 +241,92 @@ func TestResolveAddrContextDeadline(t *testing.T) {
 			}
 			r.wait(t)
 		})
+	}
+}
+
+func TestResolveAddrContextMultipleNames(t *testing.T) {
+	for _, network := range []string{"", "sctp", "sctp4", "sctp6"} {
+		for _, ending := range []string{"cancel", "deadline"} {
+			t.Run(network+"/"+ending, func(t *testing.T) {
+				var ctx context.Context
+				var end func()
+				want := context.Canceled
+				if ending == "cancel" {
+					ctx, end = context.WithCancel(context.Background())
+				} else {
+					ctx, end = newControlledDeadlineContext()
+					want = context.DeadlineExceeded
+				}
+				defer end()
+				entered := make(chan struct{})
+				release := make(chan struct{})
+				var hosts []string
+				var contexts []context.Context
+				installLookupNetIP(t, func(lookupCtx context.Context, family, host string) ([]netip.Addr, error) {
+					hosts = append(hosts, host)
+					contexts = append(contexts, lookupCtx)
+					wantFamily := "ip"
+					switch network {
+					case "sctp4":
+						wantFamily = "ip4"
+					case "sctp6":
+						wantFamily = "ip6"
+					}
+					if family != wantFamily {
+						t.Errorf("lookup network = %q, want %q", family, wantFamily)
+					}
+					switch host {
+					case "first-test.invalid":
+						ip := netip.MustParseAddr("127.0.0.1")
+						if family == "ip6" {
+							ip = netip.MustParseAddr("::1")
+						}
+						return []netip.Addr{ip}, nil
+					case "second-test.invalid":
+						close(entered)
+						select {
+						case <-lookupCtx.Done():
+							return nil, lookupCtx.Err()
+						case <-release:
+							return nil, errors.New("test lookup released")
+						}
+					default:
+						t.Errorf("unexpected lookup host %q", host)
+						return nil, errors.New("unexpected lookup host")
+					}
+				})
+				result := make(chan error, 1)
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					addr, err := ResolveAddrContext(ctx, network, "first-test.invalid/second-test.invalid:3868")
+					if addr != nil {
+						t.Errorf("cancelled resolution returned address %v", addr)
+					}
+					result <- err
+				}()
+				t.Cleanup(func() {
+					close(release)
+					end()
+					<-done
+				})
+				select {
+				case <-entered:
+				case <-time.After(time.Second):
+					t.Fatal("resolution did not enter second lookup")
+				}
+				if len(hosts) != 2 || hosts[0] != "first-test.invalid" || hosts[1] != "second-test.invalid" {
+					t.Fatalf("lookup hosts = %v, want first-test.invalid, second-test.invalid", hosts)
+				}
+				for i, lookupCtx := range contexts {
+					if lookupCtx != ctx {
+						t.Errorf("lookup %d did not receive caller's context", i)
+					}
+				}
+				end()
+				requireResolutionError(t, result, want)
+			})
+		}
 	}
 }
 

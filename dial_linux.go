@@ -46,7 +46,8 @@ func Dial(ctx context.Context, network string, laddr, raddr *Addr) (*Conn, error
 // for the setup (sctp_connectx, RFC 6458 §9.9), and several in laddr make
 // a multi-homed local endpoint.
 //
-// The setup can be abandoned with ctx at any point, and then ends at once:
+// ctx interrupts the wait for association setup; it does not interrupt
+// Config.Control, which runs synchronously. When ctx interrupts the wait,
 // Dial releases the attempt the way c.AbandonPolicy says (AbandonAbort by
 // default, which sends an ABORT, RFC 9260 §9.1) and returns ctx's error.
 // A context that is already done opens no socket at all. Against a peer
