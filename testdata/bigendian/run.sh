@@ -35,7 +35,7 @@ supervisor_pid=""
 finish() {
 	status=$?
 	if [ "$status" -eq 0 ]; then
-		rm -f "$work/sctp.test" "$work/source.tar.gz" "$work/supervise"
+		rm -f "$work/sctp.test" "$work/example.test" "$work/source.tar.gz" "$work/supervise"
 		echo "evidence kept in $work; successful run's binaries and source archive removed"
 	else
 		echo "run failed; all inputs and evidence kept in $work" >&2
@@ -70,11 +70,15 @@ if [ -n "$(git status --porcelain --untracked-files=all)" ]; then dirty=yes; fi
 # cannot be described as qualification of the clean revision alone.
 git diff --binary HEAD > "$work/source.diff"
 CGO_ENABLED=0 GOOS=linux GOARCH=s390x "$go" test -c -o "$work/sctp.test" .
+CGO_ENABLED=0 GOOS=linux GOARCH=s390x "$go" test -c -o "$work/example.test" ./example
 {
 	echo "REVISION=$revision"
 	echo "DIRTY=$dirty"
 	echo "source.tar.gz SHA256=$("$work/supervise" hash "$work/source.tar.gz")"
+	echo "sctp.test SHA256=$("$work/supervise" hash "$work/sctp.test")"
 	"$go" version -m "$work/sctp.test"
+	echo "example.test SHA256=$("$work/supervise" hash "$work/example.test")"
+	"$go" version -m "$work/example.test"
 } | tee "$work/metadata"
 key="$("$work/supervise" hash testdata/bigendian/Dockerfile testdata/bigendian/boot.sh | cut -c1-24)"
 arch="$(docker version --format '{{.Server.Arch}}')"

@@ -41,7 +41,9 @@ func supervisorFixture(t *testing.T, log, mode string) (supervisor, *bytes.Buffe
 	t.Helper()
 	t.Chdir("../../..")
 	work := t.TempDir()
-	files := map[string]string{"nonce": "abc\n", "states": "1 0\n", "metadata": proofMetadata, "sctp.test": "", "kernel-release": "6.12.test\n", "fixture": strings.ReplaceAll(log, "BINARY=def", "BINARY=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")}
+	log = strings.ReplaceAll(log, "BINARY=def", "BINARY=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+	log = strings.ReplaceAll(log, "EXAMPLE-BINARY=ghi", "EXAMPLE-BINARY=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+	files := map[string]string{"nonce": "abc\n", "states": "1 0\n", "metadata": proofMetadata, "sctp.test": "", "example.test": "abc", "kernel-release": "6.12.test\n", "fixture": log}
 	for name, data := range files {
 		if err := os.WriteFile(filepath.Join(work, name), []byte(data), 0600); err != nil {
 			t.Fatal(err)
@@ -79,18 +81,67 @@ func TestSupervisorBothStateSummaries(t *testing.T) {
 	}
 	assertRemoved(t, cfg)
 	for _, state := range []string{"1", "0"} {
-		for _, ext := range []string{"log", "json"} {
-			data, err := os.ReadFile(filepath.Join(cfg.work, "tests-"+state+"."+ext))
-			if err != nil || len(data) == 0 {
-				t.Fatalf("state %s %s: data=%q err=%v", state, ext, data, err)
+		for _, pkg := range []struct{ name, path string }{{"tests", "github.com/gomaja/go-sctp"}, {"example", "github.com/gomaja/go-sctp/example"}} {
+			for _, ext := range []string{"log", "json"} {
+				data, err := os.ReadFile(filepath.Join(cfg.work, pkg.name+"-"+state+"."+ext))
+				if err != nil || len(data) == 0 {
+					t.Fatalf("%s state %s %s: data=%q err=%v", pkg.name, state, ext, data, err)
+				}
+				if ext == "json" && !strings.Contains(string(data), `"Package":"`+pkg.path+`"`) {
+					t.Fatalf("wrong package in events: %s", data)
+				}
 			}
 		}
 	}
-	if strings.Count(out.String(), "SUMMARY: PASS=1 FAIL=0 SKIP=0") != 2 {
+	if strings.Count(out.String(), "SUMMARY: PASS=1 FAIL=0 SKIP=0") != 4 {
 		t.Fatalf("missing summaries: %s", out)
 	}
 	if !strings.Contains(out.String(), "big-endian kernel suite: PASS;") {
 		t.Fatalf("missing success: %s", out)
+	}
+}
+
+func TestSupervisorRejectsExampleSuite(t *testing.T) {
+	for _, tc := range []struct{ name, old, replacement string }{
+		{"missing", exampleFixture("0"), ""},
+		{"failed", "--- PASS: TestExampleSocket (0.01s)", "--- FAIL: TestExampleSocket (0.01s)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := strings.Replace(consoleFixture("1", "0"), tc.old, tc.replacement, 1)
+			cfg, out := supervisorFixture(t, log, "exit 0")
+			if err := cfg.run(); err == nil {
+				t.Fatal("accepted missing or failed example suite")
+			}
+			assertRemoved(t, cfg)
+			if !strings.Contains(out.String(), "SUMMARY: PASS=1 FAIL=0 SKIP=0") {
+				t.Fatalf("root summary not printed: %s", out)
+			}
+			if tc.name == "failed" && !strings.Contains(out.String(), "SUMMARY: PASS=0 FAIL=1 SKIP=0") {
+				t.Fatalf("failed example summary not printed: %s", out)
+			}
+		})
+	}
+}
+
+func TestSupervisorRejectsExampleBinary(t *testing.T) {
+	for _, mode := range []string{"missing", "incorrect"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg, _ := supervisorFixture(t, consoleFixture("1", "0"), "exit 0")
+			path := filepath.Join(cfg.work, "example.test")
+			var err error
+			if mode == "missing" {
+				err = os.Remove(path)
+			} else {
+				err = os.WriteFile(path, []byte("wrong binary"), 0600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cfg.run(); err == nil {
+				t.Fatal("accepted missing or incorrect example binary")
+			}
+			assertRemoved(t, cfg)
+		})
 	}
 }
 
@@ -182,7 +233,7 @@ func TestSupervisorContainerExit(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "exit status 7") {
 		t.Fatalf("container exit = %v", err)
 	}
-	if strings.Count(out.String(), "SUMMARY: PASS=1 FAIL=0 SKIP=0") != 2 {
+	if strings.Count(out.String(), "SUMMARY: PASS=1 FAIL=0 SKIP=0") != 4 {
 		t.Fatalf("missing failure summaries: %s", out)
 	}
 	assertRemoved(t, cfg)

@@ -10,9 +10,10 @@ one is unavailable, and printing whichever image it used), with the
 network and sysctl setup the suite requires.
 
 For a big-endian kernel, the [big-endian harness](../bigendian/README.md)
-boots a full-system s390x guest and runs the same suite with the same
-`setup-env.sh`, in both sysctl states. A native little-endian Docker run
-cannot expose a socket field incorrectly encoded as little-endian.
+boots a full-system s390x guest and runs the root and `example` package
+suites with the same `setup-env.sh`, in both sysctl states. A native
+little-endian Docker run cannot expose a socket field incorrectly encoded
+as little-endian.
 
 ## Usage
 

@@ -5,6 +5,7 @@
 # Runs natively in Docker; only qemu-system-s390x executes guest programs.
 set -euo pipefail
 cp /work/sctp.test /guest/sctp.test
+cp /work/example.test /guest/example.test
 cp /work/metadata /guest/metadata
 cp /work/nonce /guest/nonce
 cp /work/states /guest/states

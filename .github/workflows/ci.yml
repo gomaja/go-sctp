@@ -329,10 +329,11 @@ jobs:
         # qemu-user above remains useful for portable tests and fuzz seeds
         # in seconds, but cannot pass SOL_SCTP options to a native kernel.
         # This boots a pinned Debian s390x kernel with qemu-system's TCG,
-        # runs setup-env.sh unchanged as guest root, and runs both sysctl
-        # states. The harness checks the guest's architecture, byte order,
-        # SCTP availability, kernel, binary and source revision, and fails
-        # on boot/run timeout, panic/oops, zero tests or missing status.
+        # runs setup-env.sh unchanged as guest root, and runs the root and
+        # example packages in both sysctl states. The harness checks the
+        # guest's architecture, byte order, SCTP availability, kernel, both
+        # binary hashes and source revision. It fails on boot/run timeout,
+        # panic/oops, zero tests or missing status.
         # It vets and tests its Go supervisor before booting any guest.
         # Docker runs the emulator natively; no privileged host setup or
         # qemu-user registration is involved in this test path.

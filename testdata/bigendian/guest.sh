@@ -29,6 +29,7 @@ echo "SCTP-GUEST-$nonce ORDER=$order"
 echo "SCTP-GUEST-$nonce KERNEL=$(uname -r)"
 echo "SCTP-GUEST-$nonce UID=$(id -u)"
 echo "SCTP-GUEST-$nonce BINARY=$(sha256sum /sctp.test | cut -d ' ' -f1)"
+echo "SCTP-GUEST-$nonce EXAMPLE-BINARY=$(sha256sum /example.test | cut -d ' ' -f1)"
 echo "SCTP-GUEST-$nonce METADATA-BEGIN"
 cat /metadata
 echo "SCTP-GUEST-$nonce METADATA-END"
@@ -57,6 +58,15 @@ for state in "${states[@]}"; do
 	status=$?
 	set -e
 	echo "SCTP-GUEST-$nonce TEST-END=$state STATUS=$status"
+	if [ "$status" -ne 0 ]; then result="$status"; fi
+	echo "SCTP-GUEST-$nonce EXAMPLE-BEGIN=$state"
+	# Use the package directory and an absolute binary path so its subprocess
+	# tests re-execute the same binary through os.Args[0].
+	set +e
+	(cd /src/example && /example.test -test.v=test2json -test.count=1 -test.timeout=1200s)
+	status=$?
+	set -e
+	echo "SCTP-GUEST-$nonce EXAMPLE-END=$state STATUS=$status"
 	if [ "$status" -ne 0 ]; then result="$status"; fi
 done
 exit "$result"

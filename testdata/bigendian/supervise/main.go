@@ -206,8 +206,8 @@ wait:
 	deadline := started.Add(s.runTimeout)
 	if problem != nil {
 		cleanup()
-		// Every state shares one short post-failure budget; diagnostics must not
-		// keep a canceled guest alive or renew the normal run deadline.
+		// All packages and states share one short post-failure budget;
+		// diagnostics must not keep a canceled guest alive or renew the deadline.
 		budget := s.summaryTimeout
 		if budget <= 0 {
 			budget = 15 * time.Second
@@ -224,37 +224,39 @@ wait:
 	}
 	// Summarize complete and failed suites alike before returning an error.
 	for _, state := range states {
-		begin := prefix + "TEST-BEGIN=" + state + "\n"
-		_, suite, ok := strings.Cut(text, begin)
-		if !ok {
-			continue
-		}
-		suite, _, _ = strings.Cut(suite, prefix+"TEST-END="+state)
-		if err := os.WriteFile(filepath.Join(s.work, "tests-"+state+".log"), []byte(suite), 0600); err != nil {
-			return err
-		}
-		if _, err := fmt.Fprintf(s.out, "== sysctl %s %s ==\n", state, state); err != nil {
-			return err
-		}
-		events, err := s.execute(deadline, suite, "tool", "test2json", "-p", "github.com/gomaja/go-sctp")
-		if err != nil {
-			if problem != nil {
-				return problem
+		for _, pkg := range guestPackages {
+			begin := prefix + pkg.marker + "-BEGIN=" + state + "\n"
+			_, suite, ok := strings.Cut(text, begin)
+			if !ok {
+				continue
 			}
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(s.work, "tests-"+state+".json"), events, 0600); err != nil {
-			return err
-		}
-		summary, err := s.execute(deadline, string(events), "run", "testdata/docker/summarize.go")
-		if _, writeErr := s.out.Write(summary); writeErr != nil {
-			return writeErr
-		}
-		if err != nil {
-			if problem != nil {
-				return problem
+			suite, _, _ = strings.Cut(suite, prefix)
+			if err := os.WriteFile(filepath.Join(s.work, pkg.logName+"-"+state+".log"), []byte(suite), 0600); err != nil {
+				return err
 			}
-			return err
+			if _, err := fmt.Fprintf(s.out, "== %s; sysctl %s %s ==\n", pkg.path, state, state); err != nil {
+				return err
+			}
+			events, err := s.execute(deadline, suite, "tool", "test2json", "-p", pkg.path)
+			if err != nil {
+				if problem != nil {
+					return problem
+				}
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(s.work, pkg.logName+"-"+state+".json"), events, 0600); err != nil {
+				return err
+			}
+			summary, err := s.execute(deadline, string(events), "run", "testdata/docker/summarize.go")
+			if _, writeErr := s.out.Write(summary); writeErr != nil {
+				return writeErr
+			}
+			if err != nil {
+				if problem != nil {
+					return problem
+				}
+				return err
+			}
 		}
 	}
 	if problem != nil {
@@ -275,11 +277,15 @@ func (s supervisor) check(text, nonce string, states []string) error {
 	if err != nil {
 		return err
 	}
+	exampleHash, err := hashFiles([]string{filepath.Join(s.work, "example.test")})
+	if err != nil {
+		return err
+	}
 	kernel, err := os.ReadFile(filepath.Join(s.work, "kernel-release"))
 	if err != nil {
 		return err
 	}
-	_, err = validate(text, nonce, states, string(metadata), binaryHash, strings.TrimSpace(string(kernel)))
+	_, err = validate(text, nonce, states, string(metadata), binaryHash, exampleHash, strings.TrimSpace(string(kernel)))
 	return err
 }
 
