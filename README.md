@@ -26,24 +26,25 @@ go get github.com/gomaja/go-sctp@main
 
 The package needs Go 1.26 or later, and uses the standard library only.
 
-There are no releases: the module is followed on its `main` branch, and Go
-records each commit you get as a pseudo-version. The API documented here
-replaced v1 (v1.0.0 to v1.0.6) under the same module path, with no
-compatibility layer; [MIGRATION.md](MIGRATION.md) maps every v1 identifier
-to its successor. Because both APIs share one module path, and a build uses
-one version of a module, every module in a build must move to the current
-API together.
+There are no releases and no tags: the module is followed on its `main`
+branch, and Go records each commit you get as a `v0.0.0-…` pseudo-version.
+The API documented here replaced v1 (v1.0.0 to v1.0.6) under the same module
+path, with no compatibility layer; [MIGRATION.md](MIGRATION.md) maps every
+v1 identifier to its successor. Because both APIs share one module path, and
+a build uses one version of a module, every module in a build must move to
+the current API together.
 
-Use `@main`, not `@latest`, to get the package and to update it. One tag
-above v1.0.6, made on the commit where the current API reached `main`, holds
-the retraction of v1.0.0 to v1.0.6 in its `go.mod` (Go reads retractions
-only from the newest version) and keeps `main`'s pseudo-versions sorting
-above every v1 version; no other tag follows it. Once that tag exists,
-`@latest`, and any tool that follows releases, resolves to it, the commit
-where the current API landed, and v1.0.0 to v1.0.6 show as retracted;
-before it exists, `@latest` resolves to v1.0.6, the old API. Later commits
-are reached only with `@main` or a commit hash, and `go get -u` does not
-move a module from one `main` commit to a newer one.
+Every version published so far, v1.0.0 to v1.1.1, is retracted; v1.1.1 was
+published only to carry the retraction in its `go.mod`, because Go reads
+retractions from the newest version. With no version left to choose, `go get
+github.com/gomaja/go-sctp`, `@latest` and `go get -u` resolve to the newest
+commit on `main`, as `@main` does. A module that still requires a retracted
+version, or a pseudo-version recorded for a `main` commit before the
+retraction (`v1.1.1-0.…`), gets a retraction warning from `go get` and
+`go list -m -u`. Those versions sort above every `v0.0.0-…` pseudo-version,
+so `go get -u` leaves such a module where it is; `go get
+github.com/gomaja/go-sctp@main` moves it to `main`, and every other module
+in the build that requires an old version has to move with it.
 
 ## Quick start
 
