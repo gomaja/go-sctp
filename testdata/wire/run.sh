@@ -57,7 +57,7 @@ esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GO_IMAGE="${WIRE_GO_IMAGE:-golang:1.26.5-bookworm}"
-RUN_ID="sctpwire-$$-$RANDOM"
+RUN_ID="${HARNESS_RUN_ID:-sctpwire-$$-$RANDOM}"
 IMAGE="go-sctp-wire:$RUN_ID"
 NET_A="$RUN_ID-a"
 NET_B="$RUN_ID-b"
@@ -91,7 +91,7 @@ cleanup() {
 	if [ "$IMAGE_BUILT" -eq 1 ]; then
 		# On a native Linux host the files the containers wrote belong to
 		# root; hand the artifact directory back to the caller.
-		docker run --rm -v "$OUT:/out" "$IMAGE" chown -R "$(id -u):$(id -g)" /out >/dev/null 2>&1
+		docker run --rm --label "harness=$RUN_ID" -v "$OUT:/out" "$IMAGE" chown -R "$(id -u):$(id -g)" /out >/dev/null 2>&1
 		docker image rm "$IMAGE" >/dev/null 2>&1
 	fi
 }
@@ -111,10 +111,10 @@ echo "wire artifacts: $OUT"
 # capture, iptables for the INPUT drops, iproute2 and ethtool for the
 # interfaces. The tag is removed on exit; the build cache keeps the next
 # build fast.
-docker build -q -t "$IMAGE" --build-arg GO_IMAGE="$GO_IMAGE" - >/dev/null <<'EOF' || die "could not build the harness image from $GO_IMAGE"
+docker build -q --label "harness=$RUN_ID" -t "$IMAGE" --build-arg GO_IMAGE="$GO_IMAGE" - >/dev/null <<'EOF' || die "could not build the harness image from $GO_IMAGE"
 ARG GO_IMAGE
 FROM ${GO_IMAGE}
-RUN apt-get update -qq \
+RUN if command -v tshark && command -v dumpcap && command -v iptables && command -v ip && command -v ethtool; then exit 0; fi; apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
       tshark iptables iproute2 ethtool >/dev/null \
  && rm -rf /var/lib/apt/lists/*
@@ -125,7 +125,7 @@ IMAGE_BUILT=1
 # mounted read-only into both containers. The analyzer lives under
 # testdata/, which "go vet ./..." skips, so it is vetted and tested here.
 echo "building the test binary and the analyzer..."
-docker run --rm -e GOFLAGS=-buildvcs=false -v "$ROOT:/src:ro" -v "$BUILD:/build" -w /src "$IMAGE" sh -c '
+docker run --rm --label "harness=$RUN_ID" -e GOFLAGS=-buildvcs=false -v "$ROOT:/src:ro" -v "$BUILD:/build" -w /src "$IMAGE" sh -c '
 	set -e
 	go vet ./testdata/wire/analyze
 	if ! go test -count=1 ./testdata/wire/analyze >/tmp/analyze-test.log 2>&1; then
@@ -137,10 +137,10 @@ docker run --rm -e GOFLAGS=-buildvcs=false -v "$ROOT:/src:ro" -v "$BUILD:/build"
 	go test -c $1 -o /build/sctp.test .
 ' _ "$RACE" || die "build failed"
 
-docker network create "$NET_A" >/dev/null
-docker network create "$NET_B" >/dev/null
+docker network create --label "harness=$RUN_ID" "$NET_A" >/dev/null
+docker network create --label "harness=$RUN_ID" "$NET_B" >/dev/null
 for c in "$SERVER" "$CLIENT"; do
-	docker run -d --name "$c" --privileged --network "$NET_A" \
+	docker run -d --label "harness=$RUN_ID" --name "$c" --privileged --network "$NET_A" \
 		-v "$BUILD:/wire:ro" -v "$OUT:/out" "$IMAGE" sleep infinity >/dev/null
 	docker network connect "$NET_B" "$c"
 done

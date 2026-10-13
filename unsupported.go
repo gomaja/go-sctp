@@ -233,6 +233,11 @@ func (c *Conn) Abort() error { return ErrUnsupported }
 // SendMsg reports ErrUnsupported: SCTP sockets exist only on Linux.
 func (c *Conn) SendMsg([]byte, SendOptions) (int, error) { return 0, ErrUnsupported }
 
+// SendMsgContext reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SendMsgContext(context.Context, []byte, SendOptions) (int, error) {
+	return 0, ErrUnsupported
+}
+
 // Write reports ErrUnsupported: SCTP sockets exist only on Linux.
 func (c *Conn) Write([]byte) (int, error) { return 0, ErrUnsupported }
 
@@ -484,6 +489,11 @@ func (e *Endpoint) Connect(*Addr) (AssocID, error) { return 0, ErrUnsupported }
 
 // SendMsg reports ErrUnsupported: SCTP sockets exist only on Linux.
 func (e *Endpoint) SendMsg(AssocID, []byte, SendOptions) (int, error) { return 0, ErrUnsupported }
+
+// SendMsgContext reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (e *Endpoint) SendMsgContext(context.Context, AssocID, []byte, SendOptions) (int, error) {
+	return 0, ErrUnsupported
+}
 
 // RecvMsg reports ErrUnsupported: SCTP sockets exist only on Linux.
 func (e *Endpoint) RecvMsg([]byte) (int, MsgInfo, error) { return 0, MsgInfo{}, ErrUnsupported }

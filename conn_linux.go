@@ -370,26 +370,29 @@ func removesEveryAddress(bound, remove []netip.Addr) bool {
 // call waiting when the deadline passes returns an error wrapping
 // os.ErrDeadlineExceeded, and a zero t means no deadline.
 func (c *Conn) SetDeadline(t time.Time) error {
-	return c.setDeadline(t, (*os.File).SetDeadline)
+	return c.setDeadline(t, 'b')
 }
 
 // SetReadDeadline sets the deadline for reads, as net.Conn documents.
 func (c *Conn) SetReadDeadline(t time.Time) error {
-	return c.setDeadline(t, (*os.File).SetReadDeadline)
+	return c.setDeadline(t, 'r')
 }
 
 // SetWriteDeadline sets the deadline for sends, as net.Conn documents.
 func (c *Conn) SetWriteDeadline(t time.Time) error {
-	return c.setDeadline(t, (*os.File).SetWriteDeadline)
+	return c.setDeadline(t, 'w')
 }
 
 // setDeadline hands t to the runtime poller through the descriptor's
 // *os.File, which is what every wait in the package goes through.
-func (c *Conn) setDeadline(t time.Time, set func(*os.File, time.Time) error) error {
+func (c *Conn) setDeadline(t time.Time, mode byte) error {
 	if c == nil || c.sock.file == nil {
 		return opError("set", c.network(), nil, nil, net.ErrClosed)
 	}
-	if err := set(c.sock.file, t); err != nil {
+	if !c.opened() {
+		return opError("set", c.network(), nil, c.LocalAddr(), net.ErrClosed)
+	}
+	if err := c.send.setDeadline(c.sock.file, t, mode); err != nil {
 		return opError("set", c.network(), nil, c.LocalAddr(), err)
 	}
 	return nil
@@ -402,6 +405,9 @@ func (c *Conn) setDeadline(t time.Time, set func(*os.File, time.Time) error) err
 // the middle of one of the package's reads, such as a ReadMsg between two
 // pieces of a message. Once the descriptor has been released, every call
 // returns an error matching net.ErrClosed without running the callback.
+// Write also takes the send lock, so it cannot observe a SendMsgContext
+// interruption's temporary deadline. A SendMsgContext waiting behind a
+// raw Write can cancel its lock wait.
 //
 // What a Read callback consumes, the package never sees. A notification
 // record it reads is not delivered, and if that record is the AssocChange
@@ -441,6 +447,8 @@ func (r *connRawConn) Read(f func(fd uintptr) bool) error {
 }
 
 func (r *connRawConn) Write(f func(fd uintptr) bool) error {
+	r.c.send.mu.Lock()
+	defer r.c.send.mu.Unlock()
 	if err := r.c.sock.raw.Write(f); err != nil {
 		return opError("raw-write", r.c.network(), r.c.LocalAddr(), r.c.RemoteAddr(), err)
 	}

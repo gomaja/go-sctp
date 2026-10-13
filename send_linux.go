@@ -32,8 +32,11 @@
 package sctp
 
 import (
+	"context"
 	"encoding/binary"
+	"errors"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -58,6 +61,36 @@ const sendFlags = syscall.MSG_DONTWAIT | syscall.MSG_NOSIGNAL
 // by the send path, to count, inspect or script its system calls.
 var testHookSendmsg func(fd int, msg *syscall.Msghdr, flags int) (int, error)
 
+// testHookSendInterrupt pauses an interrupt after it moved the deadline.
+var testHookSendInterrupt func()
+
+// testHookSendWriteReturn runs after raw.Write returns, before stopping
+// the context callback.
+var testHookSendWriteReturn func()
+
+// sendLock serializes sends and raw writes. Its channel is made at bind
+// time; the lock itself makes no per-call allocation.
+type sendLock struct{ ch chan struct{} }
+
+func (m *sendLock) Lock()   { m.ch <- struct{}{} }
+func (m *sendLock) Unlock() { <-m.ch }
+
+func (m *sendLock) acquire(ctx context.Context) error {
+	// context/context.go: cancelCtx.Done creates its channel lazily. An
+	// uncontended send must not allocate that channel just to take a lock.
+	select {
+	case m.ch <- struct{}{}:
+		return nil
+	default:
+	}
+	select {
+	case m.ch <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // sendState is a Conn's or an Endpoint's send storage, reused by every
 // send under mu, the connection's send lock. It guards the storage from
 // the start of encoding the control message until the raw write returns,
@@ -65,7 +98,7 @@ var testHookSendmsg func(fd int, msg *syscall.Msghdr, flags int) (int, error)
 // descriptor's write lock (internal/poll: FD.writeLock) is taken inside
 // it, by raw.Write.
 type sendState struct {
-	mu     sync.Mutex
+	mu     sendLock
 	defSnd SndInfo // the socket's default SndInfo, as last read or set
 	defPR  PrInfo  // the socket's default PrInfo, as last read or set
 
@@ -91,6 +124,22 @@ type sendState struct {
 	// explicit is set for an Endpoint, whose sends always carry SNDINFO,
 	// since that is where the association id travels (RFC 6458 §5.3.4).
 	explicit bool
+
+	// deadlineMu serializes caller deadline changes with interrupt and
+	// restore. It is a leaf, taken inside mu, never in the opposite order.
+	// interrupted keeps the past deadline in force until raw.Write ends:
+	// runtime/netpoll.go: poll_runtime_pollWait retries a wake whose
+	// deadline was reset before it could observe it.
+	deadlineMu     sync.Mutex
+	callerDeadline time.Time
+	callerCrossed  bool // a caller write deadline passed during this send
+	callerFirst    bool // a caller deadline crossed before interrupt, under deadlineMu
+	interrupted    bool
+	writeDeadline  func(time.Time) error // os.File.SetWriteDeadline, bound once
+	interruptFn    func()                // interrupt, bound once
+	interruptDone  chan struct{}         // one completion per started interrupt
+	ctx            context.Context       // this send only, under mu
+	stop           func() bool           // nil until the first EAGAIN
 }
 
 // init prepares s for c's sends; newConn calls it for every connection,
@@ -110,6 +159,7 @@ type sendState struct {
 // defaults.
 func (s *sendState) init(c *Conn) {
 	s.bind(&c.term)
+	s.writeDeadline = c.sock.file.SetWriteDeadline
 	s.readDefaults(&c.sock)
 }
 
@@ -136,6 +186,9 @@ func (s *sendState) readDefaults(sock *socket) {
 // bind points s at the connection's latch, nil for an Endpoint, and binds
 // the attempt callback: the part of init that needs no socket.
 func (s *sendState) bind(term *termState) {
+	s.mu.ch = make(chan struct{}, 1)
+	s.interruptDone = make(chan struct{}, 1)
+	s.interruptFn = s.interrupt
 	s.term = term
 	s.fn = s.attempt
 	s.msg.Iov = &s.iov
@@ -174,7 +227,44 @@ func (s *sendState) bind(term *termState) {
 // shutdown has started, sends fail with an error matching
 // syscall.ESHUTDOWN, and once a gracefully ended association is gone, with
 // syscall.EPIPE, never with a signal.
+//
+// [Conn.SendMsgContext] is SendMsg with a context, which can end its wait
+// for the send lock and for buffer space.
 func (c *Conn) SendMsg(b []byte, opts SendOptions) (int, error) {
+	return c.SendMsgContext(context.Background(), b, opts)
+}
+
+// SendMsgContext is SendMsg with a context that can end its wait for the
+// send lock and, unless opts.NoWait is set, for send-buffer space; the
+// write deadline and Close also end the buffer wait. A nil ctx is refused
+// with an error matching syscall.EINVAL. A ctx done on entry means
+// nothing is validated or sent; ctx is checked again after taking the
+// lock. Success is (len(b), nil), and any error means nothing of the
+// message was queued: RFC 6458 §3.1.4 makes sendmsg atomic unless explicit
+// EOR is enabled, and Linux has no explicit EOR (see SndInfo). No attempt
+// outlives the call, and known kernel acceptance wins over cancellation.
+// Cancellation preserves the caller's latest write deadline, including
+// one set during the call, and never touches the read deadline. Errors
+// are *net.OpError with Op "write"; a context interruption matches
+// ctx.Err(), context.Canceled or context.DeadlineExceeded, and never
+// os.ErrDeadlineExceeded. A wait the write deadline ended matches the
+// latter and not a context error, even if ctx is done by the time the call
+// returns; when both end the wait, the error names the one that came first.
+// The context's interrupt can run shortly after ctx is done; a write
+// deadline crossed in that gap comes first.
+//
+// SendMsgContext allocates nothing SendMsg would not, except that waiting
+// for buffer space with a context that can be done registers a
+// context.AfterFunc, which allocates, and waiting for the lock calls
+// ctx.Done, which allocates a context.WithCancel context's channel on its
+// first call (context/context.go: cancelCtx.Done).
+func (c *Conn) SendMsgContext(ctx context.Context, b []byte, opts SendOptions) (int, error) {
+	if ctx == nil {
+		return 0, c.writeError(invalidArg("SendMsgContext needs a non-nil context"))
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, c.writeError(err)
+	}
 	if !c.opened() {
 		return 0, c.writeError(net.ErrClosed)
 	}
@@ -186,7 +276,7 @@ func (c *Conn) SendMsg(b []byte, opts SendOptions) (int, error) {
 	if err := c.term.latched(); err != nil {
 		return 0, c.writeError(err)
 	}
-	n, err := c.send.send(&c.sock, b, &opts, name[:namelen], 0)
+	n, err := c.send.send(ctx, &c.sock, b, &opts, name[:namelen], 0)
 	if err != nil {
 		return 0, c.writeError(err)
 	}
@@ -249,8 +339,18 @@ func (c *Conn) checkSend(b []byte, opts *SendOptions, name *[sizeSockaddrIn6]byt
 // records, naming association assoc on an Endpoint, and the destination,
 // makes the attempt through raw.Write, and clears every reference to the
 // caller's memory before it releases the lock.
-func (s *sendState) send(sock *socket, b []byte, opts *SendOptions, name []byte, assoc AssocID) (int, error) {
-	s.mu.Lock()
+func (s *sendState) send(ctx context.Context, sock *socket, b []byte, opts *SendOptions, name []byte, assoc AssocID) (int, error) {
+	if err := s.mu.acquire(ctx); err != nil {
+		return 0, err
+	}
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		return 0, err
+	}
+	s.deadlineMu.Lock()
+	s.callerCrossed = false
+	s.deadlineMu.Unlock()
+	s.ctx = ctx
 	s.b = b
 	s.iov.Base = &b[0]
 	s.iov.SetLen(len(b))
@@ -279,7 +379,30 @@ func (s *sendState) send(sock *socket, b []byte, opts *SendOptions, name []byte,
 	s.wait = !opts.NoWait
 
 	err := sock.raw.Write(s.fn)
+	if hook := testHookSendWriteReturn; hook != nil {
+		hook()
+	}
+	if s.stop != nil {
+		if !s.stop() {
+			<-s.interruptDone
+		}
+		s.deadlineMu.Lock()
+		if s.interrupted {
+			// internal/poll/fd_unix.go: FD.RawWrite checks prepareWrite
+			// before the first attempt and never calls it again after a
+			// failed waitWrite. A deadline error therefore queued nothing.
+			// callerFirst includes passed deadlines replaced before
+			// interrupt ran, even if raw.Write had already returned.
+			if errors.Is(err, os.ErrDeadlineExceeded) && !s.callerFirst {
+				err = ctx.Err()
+			}
+			_ = s.writeDeadline(s.callerDeadline)
+			s.interrupted = false
+		}
+		s.deadlineMu.Unlock()
+	}
 	n, serr := s.n, s.err
+	s.ctx, s.stop = nil, nil
 	s.b, s.iov.Base = nil, nil
 	s.n, s.err = 0, nil
 	s.mu.Unlock()
@@ -336,11 +459,60 @@ func (s *sendState) attempt(fd uintptr) bool {
 		case err == syscall.EINTR:
 			continue
 		case err == syscall.EAGAIN && s.wait:
+			if s.stop == nil && s.ctx.Done() != nil {
+				s.stop = context.AfterFunc(s.ctx, s.interruptFn)
+			}
 			return false
 		}
 		s.n, s.err = n, err
 		return true
 	}
+}
+
+// interrupt leaves the write deadline in the past until raw.Write has
+// returned and the send has joined this callback. Close errors are ignored,
+// as in dial_linux.go: awaitEstablished; the descriptor may already be gone.
+func (s *sendState) interrupt() {
+	s.deadlineMu.Lock()
+	// Replacements record crossed caller deadlines. For the value still
+	// in force, its set time is at or before this check, so value <= now
+	// is the exact crossing test; the set time is never needed. The same
+	// rule applies at replacement in setDeadline. context/context.go:
+	// AfterFunc runs interrupt shortly after ctx is done, so a caller
+	// deadline crossed in that gap counts as first.
+	s.callerFirst = s.callerCrossed || (!s.callerDeadline.IsZero() && !s.callerDeadline.After(time.Now()))
+	s.interrupted = true
+	_ = s.writeDeadline(aLongTimeAgo)
+	s.deadlineMu.Unlock()
+	if hook := testHookSendInterrupt; hook != nil {
+		hook()
+	}
+	s.interruptDone <- struct{}{}
+}
+
+// setDeadline tracks the caller's write value while an interrupt owns the
+// descriptor's deadline. The read part of SetDeadline always applies at
+// once. Nothing here takes mu or the descriptor's write lock.
+func (s *sendState) setDeadline(file *os.File, t time.Time, mode byte) error {
+	s.deadlineMu.Lock()
+	defer s.deadlineMu.Unlock()
+	if mode == 'r' {
+		return file.SetReadDeadline(t)
+	}
+	if !s.callerDeadline.IsZero() && !s.callerDeadline.After(time.Now()) {
+		s.callerCrossed = true
+	}
+	s.callerDeadline = t
+	if s.interrupted {
+		if mode == 'b' {
+			return file.SetReadDeadline(t)
+		}
+		return nil
+	}
+	if mode == 'b' {
+		return file.SetDeadline(t)
+	}
+	return s.writeDeadline(t)
 }
 
 // sendOnce makes one sendmsg, while the latch mutex is held, so that an

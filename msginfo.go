@@ -110,7 +110,8 @@ type SendOptions struct {
 	// takes the connection's send lock. A send that is waiting for space
 	// holds that lock, so a NoWait send issued meanwhile waits until that send
 	// completes, reaches its deadline, or the socket is closed. With no write
-	// deadline set, nothing bounds that wait. If the deadline is what ends it,
+	// deadline set, nothing bounds SendMsg's wait. SendMsgContext's context
+	// bounds the lock wait too. If the deadline is what ends it,
 	// the NoWait send then fails with the same deadline error.
 	//
 	// "Nothing queued" is about this message only. When this message does not

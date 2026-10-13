@@ -102,6 +102,20 @@ func claimNamed(t *testing.T, name string) claim {
 	return claim{}
 }
 
+func TestSendContextCancellationClaim(t *testing.T) {
+	c := claimNamed(t, "send-context-cancellation")
+	facts := map[string]string{"port": "41026", "queued": "2", "received_fill": "2", "canceled_ns": ns(10)}
+	good := []frame{
+		withData(c2s(1, 0, 41026), dataChunk{tsn: 1, ppid: ppidFill}),
+		withData(c2s(2, 1, 41026), dataChunk{tsn: 2, ppid: ppidFill}),
+		withData(c2s(3, 20, 41026), dataChunk{tsn: 3, ppid: ppidLast}),
+	}
+	wantPass(t, check(t, c, good, facts))
+	wantFail(t, check(t, c, append(append([]frame(nil), good...), withData(c2s(4, 21, 41026), dataChunk{tsn: 4, ppid: ppidCanceled})), facts), "canceled message")
+	wantFail(t, check(t, c, good[:2], facts), "after cancellation")
+	wantFail(t, check(t, c, good[1:], facts), "distinct queued messages")
+}
+
 // --- parsing -------------------------------------------------------------------
 
 func line(cols ...string) string { return strings.Join(cols, "\t") }

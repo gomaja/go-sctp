@@ -56,7 +56,7 @@ esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-PREFERRED_IMAGE="golang:1.26.5-bookworm"
+PREFERRED_IMAGE="${LINUX_SUITE_IMAGE:-golang:1.26.5-bookworm}"
 
 # resolve_image prints the image tag to run: the preferred one if it exists
 # (checked locally first, then pulled), otherwise the newest
@@ -171,6 +171,7 @@ exit "$status"
 EOF
 
 docker run --rm --privileged \
+	--label "harness=${HARNESS_RUN_ID:-sctpsuite-$$}" \
 	-v "$REPO_ROOT":/src \
 	-w /src \
 	"$IMAGE" \
