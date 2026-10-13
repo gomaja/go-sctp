@@ -620,7 +620,7 @@ func (e *Endpoint) bindx(opt int, name string, ips []netip.Addr) error {
 // [Endpoint.SendMsgContext] is SendMsg with a context, which can end its
 // wait for the send lock and for buffer space.
 func (e *Endpoint) SendMsg(id AssocID, b []byte, opts SendOptions) (int, error) {
-	return e.SendMsgContext(context.Background(), id, b, opts)
+	return e.sendMsg(noContext, id, b, &opts)
 }
 
 // SendMsgContext is SendMsg with a context that can end its wait for the
@@ -654,13 +654,19 @@ func (e *Endpoint) SendMsgContext(ctx context.Context, id AssocID, b []byte, opt
 	if err := ctx.Err(); err != nil {
 		return 0, e.ioError("write", err)
 	}
+	return e.sendMsg(ctx, id, b, &opts)
+}
+
+// sendMsg is SendMsg and SendMsgContext past the context checks; ctx is
+// noContext for SendMsg.
+func (e *Endpoint) sendMsg(ctx context.Context, id AssocID, b []byte, opts *SendOptions) (int, error) {
 	if !e.opened() {
 		return 0, e.ioError("write", net.ErrClosed)
 	}
-	if err := checkEndpointSend(id, b, &opts); err != nil {
+	if err := checkEndpointSend(id, b, opts); err != nil {
 		return 0, e.ioError("write", err)
 	}
-	n, err := e.send.send(ctx, &e.sock, b, &opts, nil, id)
+	n, err := e.send.send(ctx, &e.sock, b, opts, nil, id)
 	if err != nil {
 		return 0, e.ioError("write", err)
 	}

@@ -37,8 +37,10 @@ import (
 	"errors"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -68,26 +70,193 @@ var testHookSendInterrupt func()
 // the context callback.
 var testHookSendWriteReturn func()
 
-// sendLock serializes sends and raw writes. Its channel is made at bind
-// time; the lock itself makes no per-call allocation.
-type sendLock struct{ ch chan struct{} }
+// noContext is the context of an ordinary send, SendMsg's, Write's and
+// Endpoint.SendMsg's: none. Such a send checks no context, waits for the
+// send lock until it gets it, and skips the deadline bookkeeping that only
+// a context's interrupt reads (sendState.send).
+var noContext context.Context
 
-func (m *sendLock) Lock()   { m.ch <- struct{}{} }
-func (m *sendLock) Unlock() { <-m.ch }
+const (
+	lockHeld = 1 << iota
+	lockWoken
+	lockStarving
+	lockWaiterShift = iota
+)
 
-func (m *sendLock) acquire(ctx context.Context) error {
-	// context/context.go: cancelCtx.Done creates its channel lazily. An
-	// uncontended send must not allocate that channel just to take a lock.
-	select {
-	case m.ch <- struct{}{}:
-		return nil
-	default:
+// lockStarvation is internal/sync/mutex.go: starvationThresholdNs; a var
+// so tests can force the handoff path without depending on elapsed time.
+var lockStarvation = time.Millisecond
+
+// sendLock serializes sends and raw writes, adapting Go 1.26's normal and
+// starvation modes (internal/sync/mutex.go: Mutex.lockSlow, Mutex.unlockSlow).
+// Normal mode lets a running locker barge ahead of a woken waiter: always
+// handing off leaves the lock idle while the parked goroutine wakes. After
+// waiting lockStarvation, a waiter that loses switches to starvation mode,
+// which prevents barging and hands ownership to a waiter; the releaser then
+// yields so that waiter can run at once. There is no spin.
+//
+// bind makes two 1-buffered channels once: wake means compete again; hand
+// carries ownership. A receiver removes its own counted registration. If
+// cancellation wins the select, its registration stays counted and adds an
+// abandoned credit, settled by Unlock. runtime/chan.go: waitq.dequeue commits
+// a select using selectDone; runtime/select.go: selectgo removes its other
+// waits. Thus a cancelled registration cannot also receive either token.
+// A hand with no receiver stays buffered, protected by lockStarving until a
+// later locker takes it. Only a release that itself observed starvation may
+// hand off; an older normal release must not join a later holder's handoff.
+//
+// Lock and Unlock each use one atomic operation uncontended, touch neither
+// channel and allocate nothing. Both acquisition paths publish guarded state:
+// atomics are sequentially consistent and an atomic observing another is
+// synchronized after it; a channel send is synchronized before its receive
+// completes (go.dev/ref/mem: Atomic Values and Channel communication).
+type sendLock struct {
+	state     atomic.Int32
+	abandoned atomic.Int32
+	wake      chan struct{}
+	hand      chan struct{}
+}
+
+func (m *sendLock) Lock() {
+	if m.state.CompareAndSwap(0, lockHeld) {
+		return
 	}
-	select {
-	case m.ch <- struct{}{}:
+	_ = m.lockSlow(noContext, nil)
+}
+
+// acquire is Lock ended by ctx.
+func (m *sendLock) acquire(ctx context.Context) error {
+	// context/context.go: cancelCtx.Done creates its channel lazily; the
+	// uncontended path never calls it.
+	if m.state.CompareAndSwap(0, lockHeld) {
 		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	}
+	return m.lockSlow(ctx, ctx.Done())
+}
+
+func (m *sendLock) lockSlow(ctx context.Context, done <-chan struct{}) error {
+	var start time.Time
+	starving := false
+	old := m.state.Load()
+	for {
+		if old&(lockHeld|lockStarving) == 0 {
+			if m.state.CompareAndSwap(old, old|lockHeld) {
+				return nil
+			}
+			old = m.state.Load()
+			continue
+		}
+		new := old + 1<<lockWaiterShift
+		if starving && old&lockHeld != 0 {
+			new |= lockStarving
+		}
+		if !m.state.CompareAndSwap(old, new) {
+			old = m.state.Load()
+			continue
+		}
+		if start.IsZero() {
+			start = time.Now()
+		}
+		select {
+		case <-m.hand:
+			starving = starving || time.Since(start) > lockStarvation
+			old = m.state.Load()
+			delta := int32(lockHeld - 1<<lockWaiterShift)
+			if old&lockStarving != 0 && (!starving || old>>lockWaiterShift == 1) {
+				delta -= lockStarving
+			}
+			m.state.Add(delta)
+			return nil
+		case <-m.wake:
+			starving = starving || time.Since(start) > lockStarvation
+			for {
+				old = m.state.Load()
+				new = (old - 1<<lockWaiterShift) &^ lockWoken
+				if m.state.CompareAndSwap(old, new) {
+					old = new
+					break
+				}
+			}
+		case <-done:
+			m.abandoned.Add(1)
+			return ctx.Err()
+		}
+	}
+}
+
+func (m *sendLock) Unlock() {
+	if new := m.state.Add(-lockHeld); new != 0 {
+		m.unlockSlow(new)
+	}
+}
+
+func (m *sendLock) unlockSlow(new int32) {
+	if new&lockStarving != 0 {
+		old := new
+		for {
+			if old>>lockWaiterShift != 0 && m.settle() {
+				old = m.state.Add(-1 << lockWaiterShift)
+				continue
+			}
+			if old>>lockWaiterShift != 0 {
+				m.hand <- struct{}{}
+				// The send only readies the receiver (runtime/chan.go: send),
+				// and nobody else may take the lock until it runs. sync.Mutex
+				// yields here too (runtime/sema.go: semrelease1 calls goyield
+				// after a handoff).
+				runtime.Gosched()
+				return
+			}
+			// A woken waiter removes its count and lockWoken in one CAS.
+			// With zero counted waiters, lockWoken can only name a wake
+			// nobody took, in either mode; its token stays harmless in wake.
+			if m.state.CompareAndSwap(old, old&^(lockStarving|lockWoken)) {
+				return
+			}
+			old = m.state.Load()
+		}
+	}
+	old := new
+	for {
+		if old>>lockWaiterShift != 0 && m.settle() {
+			old = m.state.Add(-1 << lockWaiterShift)
+			continue
+		}
+		if old&(lockHeld|lockStarving) != 0 {
+			return // a later holder's release owns any starvation handoff
+		}
+		if old>>lockWaiterShift == 0 {
+			if old&lockWoken == 0 || m.state.CompareAndSwap(old, old&^lockWoken) {
+				return
+			}
+			old = m.state.Load()
+			continue
+		}
+		if old&lockWoken != 0 {
+			return
+		}
+		if m.state.CompareAndSwap(old, old|lockWoken) {
+			select {
+			case m.wake <- struct{}{}:
+			default:
+			}
+			return
+		}
+		old = m.state.Load()
+	}
+}
+
+// settle takes one given-up registration off abandoned; the successful
+// caller removes its count in state next, before deciding whom to wake.
+func (m *sendLock) settle() bool {
+	for {
+		a := m.abandoned.Load()
+		if a == 0 {
+			return false
+		}
+		if m.abandoned.CompareAndSwap(a, a-1) {
+			return true
+		}
 	}
 }
 
@@ -186,7 +355,8 @@ func (s *sendState) readDefaults(sock *socket) {
 // bind points s at the connection's latch, nil for an Endpoint, and binds
 // the attempt callback: the part of init that needs no socket.
 func (s *sendState) bind(term *termState) {
-	s.mu.ch = make(chan struct{}, 1)
+	s.mu.wake = make(chan struct{}, 1)
+	s.mu.hand = make(chan struct{}, 1)
 	s.interruptDone = make(chan struct{}, 1)
 	s.interruptFn = s.interrupt
 	s.term = term
@@ -231,7 +401,7 @@ func (s *sendState) bind(term *termState) {
 // [Conn.SendMsgContext] is SendMsg with a context, which can end its wait
 // for the send lock and for buffer space.
 func (c *Conn) SendMsg(b []byte, opts SendOptions) (int, error) {
-	return c.SendMsgContext(context.Background(), b, opts)
+	return c.sendMsg(noContext, b, &opts)
 }
 
 // SendMsgContext is SendMsg with a context that can end its wait for the
@@ -265,18 +435,24 @@ func (c *Conn) SendMsgContext(ctx context.Context, b []byte, opts SendOptions) (
 	if err := ctx.Err(); err != nil {
 		return 0, c.writeError(err)
 	}
+	return c.sendMsg(ctx, b, &opts)
+}
+
+// sendMsg is SendMsg and SendMsgContext past the context checks; ctx is
+// noContext for SendMsg and Write.
+func (c *Conn) sendMsg(ctx context.Context, b []byte, opts *SendOptions) (int, error) {
 	if !c.opened() {
 		return 0, c.writeError(net.ErrClosed)
 	}
 	var name [sizeSockaddrIn6]byte
-	namelen, err := c.checkSend(b, &opts, &name)
+	namelen, err := c.checkSend(b, opts, &name)
 	if err != nil {
 		return 0, c.writeError(err)
 	}
 	if err := c.term.latched(); err != nil {
 		return 0, c.writeError(err)
 	}
-	n, err := c.send.send(ctx, &c.sock, b, &opts, name[:namelen], 0)
+	n, err := c.send.send(ctx, &c.sock, b, opts, name[:namelen], 0)
 	if err != nil {
 		return 0, c.writeError(err)
 	}
@@ -338,19 +514,28 @@ func (c *Conn) checkSend(b []byte, opts *SendOptions, name *[sizeSockaddrIn6]byt
 // send is one send under the send lock: it points msg at b, the control
 // records, naming association assoc on an Endpoint, and the destination,
 // makes the attempt through raw.Write, and clears every reference to the
-// caller's memory before it releases the lock.
+// caller's memory before it releases the lock. ctx is nil (noContext) for
+// an ordinary send.
 func (s *sendState) send(ctx context.Context, sock *socket, b []byte, opts *SendOptions, name []byte, assoc AssocID) (int, error) {
-	if err := s.mu.acquire(ctx); err != nil {
-		return 0, err
+	if ctx == nil {
+		s.mu.Lock()
+	} else {
+		if err := s.mu.acquire(ctx); err != nil {
+			return 0, err
+		}
+		if err := ctx.Err(); err != nil {
+			s.mu.Unlock()
+			return 0, err
+		}
+		// Only context sends consult callerCrossed/callerFirst: interrupt
+		// reads callerCrossed and sets callerFirst, which restore reads.
+		// Each such send resets callerCrossed here and joins its interrupt
+		// before releasing mu; ordinary sends need no deadline bookkeeping.
+		s.deadlineMu.Lock()
+		s.callerCrossed = false
+		s.deadlineMu.Unlock()
+		s.ctx = ctx
 	}
-	if err := ctx.Err(); err != nil {
-		s.mu.Unlock()
-		return 0, err
-	}
-	s.deadlineMu.Lock()
-	s.callerCrossed = false
-	s.deadlineMu.Unlock()
-	s.ctx = ctx
 	s.b = b
 	s.iov.Base = &b[0]
 	s.iov.SetLen(len(b))
@@ -459,7 +644,7 @@ func (s *sendState) attempt(fd uintptr) bool {
 		case err == syscall.EINTR:
 			continue
 		case err == syscall.EAGAIN && s.wait:
-			if s.stop == nil && s.ctx.Done() != nil {
+			if s.stop == nil && s.ctx != nil && s.ctx.Done() != nil {
 				s.stop = context.AfterFunc(s.ctx, s.interruptFn)
 			}
 			return false
@@ -494,11 +679,13 @@ func (s *sendState) interrupt() {
 // descriptor's deadline. The read part of SetDeadline always applies at
 // once. Nothing here takes mu or the descriptor's write lock.
 func (s *sendState) setDeadline(file *os.File, t time.Time, mode byte) error {
-	s.deadlineMu.Lock()
-	defer s.deadlineMu.Unlock()
+	// interrupt only moves the write deadline, so a read-only change
+	// needs no coordination with it (sendState.interrupt).
 	if mode == 'r' {
 		return file.SetReadDeadline(t)
 	}
+	s.deadlineMu.Lock()
+	defer s.deadlineMu.Unlock()
 	if !s.callerDeadline.IsZero() && !s.callerDeadline.After(time.Now()) {
 		s.callerCrossed = true
 	}

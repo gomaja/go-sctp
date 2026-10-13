@@ -1966,6 +1966,36 @@ func BenchmarkSendMsg(b *testing.B) {
 	})
 }
 
+// BenchmarkSendMsgParallel shares one Conn between running senders. The
+// helper-process peer drains the association, so allocs/op counts only the
+// sender, as in BenchmarkSendMsg; buffer pressure costs time, not errors.
+func BenchmarkSendMsgParallel(b *testing.B) {
+	for _, parallelism := range []int{1, 4} {
+		b.Run(fmt.Sprintf("P%d", parallelism), func(b *testing.B) {
+			peer := startHelperPeer(b, "sctp4", "127.0.0.1:0", false)
+			cfg := &Config{NoDelay: new(true)}
+			c, err := cfg.Dial(testContext(b, 10*time.Second), "sctp4", nil, peer)
+			if err != nil {
+				b.Fatalf("Dial: %v", err)
+			}
+			defer func() { _ = c.Close() }()
+			payload := make([]byte, 512)
+			info := &SndInfo{Stream: 1, PPID: 0x1234}
+			b.SetParallelism(parallelism)
+			b.ReportAllocs()
+			b.SetBytes(int64(len(payload)))
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					if _, err := c.SendMsg(payload, SendOptions{Info: info}); err != nil {
+						b.Error(err)
+					}
+				}
+			})
+		})
+	}
+}
+
 // BenchmarkSendMsgInfoPR adds a PR-SCTP policy, two control records.
 func BenchmarkSendMsgInfoPR(b *testing.B) {
 	info := &SndInfo{Stream: 1, PPID: 0x1234}
@@ -2183,6 +2213,70 @@ func BenchmarkConcurrentEcho(b *testing.B) {
 			}
 			wg.Wait()
 			b.StopTimer()
+		})
+	}
+}
+
+// BenchmarkSendPath measures encoding and admission over fakeRawConn,
+// without a socket: the socket-backed benchmarks above put the system
+// call's cost ahead of differences of a few nanoseconds in the send path.
+// Every case accepts the whole 512-byte message; Contended shares one Conn.
+func BenchmarkSendPath(b *testing.B) {
+	for _, tc := range []struct {
+		name        string
+		parallelism int
+	}{
+		{"SendMsg", 0}, {"Write", 0}, {"Background", 0}, {"WithCancel", 0},
+		{"SetReadDeadline", 0}, {"Contended/P1", 1}, {"Contended/P4", 4},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			c := fakeConn(&fakeRawConn{}, nil)
+			if tc.name == "SetReadDeadline" {
+				r, w, err := os.Pipe()
+				if err != nil {
+					b.Fatal(err)
+				}
+				defer func() { _ = r.Close(); _ = w.Close() }()
+				c.sock.file = r
+			}
+			hookSendmsg(b, func(_ int, msg *syscall.Msghdr, _ int) (int, error) { return int(msg.Iov.Len), nil })
+			payload := make([]byte, 512)
+			info := &SndInfo{Stream: 1, PPID: 3}
+			ctx := context.Background()
+			if tc.name == "WithCancel" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				defer cancel()
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			if tc.parallelism != 0 {
+				b.SetParallelism(tc.parallelism)
+				b.RunParallel(func(pb *testing.PB) {
+					for pb.Next() {
+						if _, err := c.SendMsg(payload, SendOptions{Info: info}); err != nil {
+							b.Error(err)
+						}
+					}
+				})
+				return
+			}
+			for range b.N {
+				var err error
+				switch tc.name {
+				case "SendMsg":
+					_, err = c.SendMsg(payload, SendOptions{Info: info})
+				case "Write":
+					_, err = c.Write(payload)
+				case "SetReadDeadline":
+					err = c.SetReadDeadline(time.Time{})
+				default:
+					_, err = c.SendMsgContext(ctx, payload, SendOptions{Info: info})
+				}
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
 		})
 	}
 }
