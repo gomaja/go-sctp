@@ -20,6 +20,10 @@ testdata/wire/run.sh [-race] [-run REGEX] [-only wire|twohost]
   `WIRE_GO_IMAGE` the Go image the harness image is built from (default
   `golang:1.26.5-bookworm`).
 
+`HARNESS_RUN_ID` supplies the resource names and their `harness` labels.
+A prepared `WIRE_GO_IMAGE` containing every capture tool avoids package
+downloads during the image build.
+
 It needs only Docker, with privileged containers allowed, on Linux or Docker
 Desktop, runs unattended, and its exit status is the verdict: 0 only when
 every test on both hosts passed, none skipped, and every claim held. It
@@ -138,6 +142,7 @@ Each is one case of `TestWire` (`wire_linux_test.go`) and one check in
 | `periodic-heartbeat` | two-homed idle association with a one-second heartbeat interval and a bounded RTO | at least two HEARTBEATs to each peer address, each answered by a HEARTBEAT ACK, with spacing within the kernel timer's interval plus RTO/2 to interval plus 1.5 RTO (RFC 9260 §8.3; `net/sctp/transport.c: sctp_transport_timeout`, `sctp_transport_reset_hb_timer`) |
 | `message-interleaving` | both hosts negotiate I-DATA; two 32 KiB messages are queued concurrently on different streams while the server briefly drops incoming SCTP packets, then reads both | I-DATA fragments from both streams interleaved, no DATA on the association, and both messages delivered intact on their streams (RFC 8260 §§2.1–2.2) |
 | `nowait-refusal` | fill the send buffer, one more `NoWait` send refused with `EAGAIN` | no DATA with the refused message's PPID anywhere in the capture; every queued message, and the one sent after, on the wire |
+| `send-context-cancellation` | fill the send buffer, time out a `SendMsgContext` waiting for space, then drain | no DATA with the canceled message's PPID anywhere in the capture; every queued message and a later marker on the wire |
 | `path` | two-homed association: messages with and without `SendOptions.Path` set to network B's address | every DATA chunk with `Path` to network B, every other one to the primary, network A |
 | `more` | `NoDelay` on: two small messages, then two more with `More` on the first | two packets of one DATA chunk, then one packet holding both |
 | `ppid-byte-order` | PPIDs `0x01020304`, `0x11223344`, `0x89abcdef`, `0xfedcba98` through an explicit `SndInfo`, `Write` with a `Config` default, and a PR-only send with a default set by `SetDefaultSndInfo` | each DATA chunk's PPID field equals the value given (network byte order, RFC 9260 §3.3.1), the server's `RcvInfo.PPID` equals it too, and no DATA chunk carries a byte-swapped one |
@@ -191,12 +196,14 @@ The artifact directory holds the capture (`sender.pcapng`), `dumpcap`'s log,
 each host's test2json stream and readable log with its summary, the facts,
 `wire-report.txt`, and `environment.txt`.
 
-`expected/` holds the text evidence of the run that qualified the current
-code, never a capture: `wire-summary.txt`, the analyzer's report, claim by
+`expected/` holds text evidence from an earlier qualification run, never
+a capture: `wire-summary.txt`, the analyzer's report, claim by
 claim with the frames and fields that prove it; `twohost-summary.txt`, each
 host's case results and recorded facts; and `environment.txt`, the versions
 and settings of that run. Addresses
 appear as `client-a`, `server-b` and so on, and nothing in them names the
-machine. To refresh them, run `run.sh` and copy the `expected/` directory of
+machine. Claims added since that run appear in the new run's artifact
+directory; these samples are not evidence for those claims. To refresh
+them, run `run.sh` and copy the `expected/` directory of
 its artifacts over this one; frame numbers, TSNs and times change from run
 to run.

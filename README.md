@@ -143,9 +143,12 @@ already-resolved addresses and never resolve hostnames themselves.
   constructors. Optional settings are pointers: `NoDelay: new(true)`.
 - **Messages.** `SendMsg` takes a `SendOptions`: stream, PPID and flags,
   a PR-SCTP policy, an AUTH key, the peer address to send to, and a
-  single-attempt mode (`NoWait`). `RecvMsg` reports each read's metadata,
-  and `ReadMsg` reassembles whole messages. A successful `SendMsg` with no
-  `Path` zone or a numeric zone, and a `RecvMsg` or `Read` of data, make no
+  single-attempt mode (`NoWait`). `SendMsgContext` is `SendMsg` with a
+  context that can end its waits; a successful send queues the whole
+  message, a failed one none of it.
+  `RecvMsg` reports each read's metadata and `ReadMsg` reassembles whole
+  messages. A successful `SendMsg` with no `Path` zone or a numeric zone,
+  and a `RecvMsg` or `Read` of data, make no
   allocation. A zone given by interface name allocates only when the
   package reads the host's interface table again (at most once a minute,
   or for a name it has not seen).

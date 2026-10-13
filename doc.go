@@ -105,11 +105,14 @@
 // sends it. [Conn.Write] is SendMsg with no options.
 //
 // A send waits for send-buffer space in the runtime poller, until the write
-// deadline passes or the socket is closed. With NoWait it makes one attempt
-// instead, and a refusal queues nothing of the message. More tells the
+// deadline passes or the socket is closed; [Conn.SendMsgContext] and
+// [Endpoint.SendMsgContext] let a context end the lock and buffer waits too.
+// A successful send queues the whole message, a failed one none of it.
+// With NoWait a send makes one attempt instead. More tells the
 // kernel that more messages follow at once, so that it may bundle them
-// (MSG_MORE). A successful SendMsg with no Path zone or a numeric zone
-// makes no allocation; a zone given by interface name allocates only when
+// (MSG_MORE). Successful sends with no Path zone or a numeric zone make
+// no allocation, except for SendMsgContext's cancellation state while
+// waiting; a zone given by interface name allocates only when
 // the package reads the host's interface table again (at most once a
 // minute, or for a name it has not seen). SendMsg keeps nothing of its
 // arguments.
@@ -123,7 +126,9 @@
 // released before a NotificationHandler runs, so that a handler may call
 // back into the connection; ReadMsg holds it from the first piece of a
 // message to the last. A deadline, Close and Abort release the calls
-// waiting on the socket. Readiness and deadlines on an Endpoint are the
+// waiting on the socket. SendMsgContext's context releases its send-lock
+// and buffer waits, including the lock wait with NoWait.
+// Readiness and deadlines on an Endpoint are the
 // endpoint's, whichever association a call is for.
 //
 // # Errors
@@ -152,7 +157,8 @@
 //   - A passed I/O deadline set with SetDeadline, SetReadDeadline or
 //     SetWriteDeadline matches os.ErrDeadlineExceeded, and a closed socket
 //     net.ErrClosed.
-//   - A call to [Dial], [Config.Dial] or [ResolveAddrContext] that its
+//   - A call to [Dial], [Config.Dial], [ResolveAddrContext],
+//     [Conn.SendMsgContext] or [Endpoint.SendMsgContext] that its
 //     context interrupts returns an error matching ctx.Err(), so test it
 //     with context.Canceled or context.DeadlineExceeded, not with
 //     os.ErrDeadlineExceeded.

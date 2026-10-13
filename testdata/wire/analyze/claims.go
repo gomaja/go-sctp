@@ -27,6 +27,7 @@ var claims = []claim{
 	{"periodic-heartbeat", 1, checkPeriodicHeartbeat},
 	{"message-interleaving", 1, checkMessageInterleaving},
 	{"nowait-refusal", 1, checkNoWaitRefusal},
+	{"send-context-cancellation", 1, checkSendContextCancellation},
 	{"path", 1, checkPath},
 	{"more", 1, checkMore},
 	{"ppid-byte-order", 1, checkPPIDByteOrder},
@@ -57,6 +58,7 @@ const (
 	ppidAbandoned  = 0x57490010
 	ppidAfter      = 0x57490011
 	ppidInterleave = 0x57490013
+	ppidCanceled   = 0x57490015
 )
 
 // abortLimit is how soon after the Abort call its ABORT must be on the
@@ -481,6 +483,33 @@ func checkNoWaitRefusal(r *claimRun) {
 	r.note("%d queued messages on the wire; the refused NoWait send put no DATA with PPID %#x in any of the capture's %d frames",
 		queued, ppidRefused, len(r.env.frames))
 	r.note("%s carries the message sent after the refusal", r.describe(last[0].f, refusedAt, "refusal"))
+}
+
+// checkSendContextCancellation: a context interruption while waiting for
+// space leaves no DATA anywhere in the capture. Every accepted message
+// and a later marker must be present, so an empty capture cannot pass.
+func checkSendContextCancellation(r *claimRun) {
+	if canceled := dataWith(r.env.frames, ppidCanceled); len(canceled) != 0 {
+		r.failf("the canceled message is on the wire: frame %d, TSN %d", canceled[0].f.number, canceled[0].d.tsn)
+	}
+	out := r.out(r.ports[0])
+	queued := r.int("queued")
+	if queued <= 0 {
+		r.failf("no accepted messages were recorded")
+	}
+	if n := int64(len(distinctTSNs(dataWith(out, ppidFill)))); n != queued {
+		r.failf("%d distinct queued messages on the wire, want %d", n, queued)
+	}
+	last := dataWith(out, ppidLast)
+	if len(last) == 0 {
+		r.failf("the message sent after cancellation is not on the wire")
+	}
+	if got := r.int("received_fill"); got != queued {
+		r.failf("the server received %d of the %d queued messages", got, queued)
+	}
+	r.covered(last[0].f.at, "the last message went out")
+	r.note("%d queued messages on the wire; the canceled SendMsgContext put no DATA with PPID %#x in any of the capture's %d frames", queued, ppidCanceled, len(r.env.frames))
+	r.note("%s carries the message sent after cancellation", r.describe(last[0].f, r.time("canceled_ns"), "cancellation"))
 }
 
 // checkPath: on a two-homed association every DATA chunk sent with

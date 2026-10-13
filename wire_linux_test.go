@@ -700,6 +700,7 @@ const (
 	wirePPIDAfter      uint32 = 0x57490011
 	wirePPIDGraceful   uint32 = 0x57490012
 	wirePPIDInterleave uint32 = 0x57490013
+	wirePPIDCanceled   uint32 = 0x57490015
 )
 
 // The PPIDs of the byte-order case: each has four different bytes, so any
@@ -729,6 +730,7 @@ var wireCases = []twoHostCase{
 	{name: "periodic-heartbeat", port: 41024, server: twoHomedServer, client: periodicHeartbeatClient},
 	{name: "message-interleaving", port: 41025, server: interleavingServer, client: interleavingClient},
 	{name: "nowait-refusal", port: 41015, server: noWaitServer, client: noWaitClient},
+	{name: "send-context-cancellation", port: 41026, server: noWaitServer, client: sendContextClient},
 	{name: "path", port: 41016, server: twoHomedServer, client: pathClient},
 	{name: "more", port: 41017, server: moreServer, client: moreClient},
 	{name: "ppid-byte-order", port: 41018, server: ppidServer, client: ppidClient},
@@ -1381,6 +1383,64 @@ func noWaitClient(s *hostStep) {
 	wantWriteError(s.t, err, syscall.EAGAIN)
 	s.send("refused", n)
 	// The last message waits for the room the server's reading makes.
+	s.mustSend(c, []byte("last"), SendOptions{Info: &SndInfo{PPID: wirePPIDLast}})
+	s.expect("drained")
+	s.closeGracefully(c)
+}
+
+// sendContextClient cancels a send waiting for space, then drains the
+// accepted messages and sends a final marker. The capture must contain no
+// DATA with the canceled message's PPID, even after the buffer reopens.
+func sendContextClient(s *hostStep) {
+	s.expect("ready")
+	c := s.dialA(&Config{WriteBuffer: new(16384)})
+	n := 0
+	fill := func() {
+		for {
+			_, err := c.SendMsg(wireMessage(n, 1000), SendOptions{Info: &SndInfo{PPID: wirePPIDFill}, NoWait: true})
+			if errors.Is(err, syscall.EAGAIN) {
+				return
+			}
+			if err != nil {
+				s.t.Fatal(err)
+			}
+			n++
+			if n > 1<<16 {
+				s.t.Fatal("send buffer never filled")
+			}
+		}
+	}
+	end := time.Now().Add(5 * time.Second)
+	for {
+		fill()
+		info, err := c.AssocInfo()
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		if info.PeerRwnd == 0 {
+			break
+		}
+		if time.Now().After(end) {
+			s.t.Fatal("peer window did not close")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The SACK announcing zero may have freed some send-buffer space.
+	fill()
+	s.fact("queued", n)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := c.SendMsgContext(ctx, wireMessage(1<<20, 1000), SendOptions{Info: &SndInfo{PPID: wirePPIDCanceled}})
+	wantWriteError(s.t, err, context.DeadlineExceeded)
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		s.t.Errorf("context interruption also matches write deadline: %v", err)
+	}
+	if d := time.Since(start); d < 75*time.Millisecond || d > time.Second {
+		s.t.Errorf("send returned after %v, want 75ms..1s", d)
+	}
+	s.fact("canceled_ns", time.Now().UnixNano())
+	s.send("refused", n)
 	s.mustSend(c, []byte("last"), SendOptions{Info: &SndInfo{PPID: wirePPIDLast}})
 	s.expect("drained")
 	s.closeGracefully(c)

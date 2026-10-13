@@ -128,6 +128,7 @@ Conn.RequestPeerPrimary
 Conn.ResetAssoc
 Conn.ResetStreams
 Conn.SendMsg
+Conn.SendMsgContext
 Conn.SetActiveAuthKey
 Conn.SetAssocInfo
 Conn.SetAuthKey
@@ -192,6 +193,7 @@ Endpoint.PeelOff
 Endpoint.PeerAddrs
 Endpoint.RecvMsg
 Endpoint.SendMsg
+Endpoint.SendMsgContext
 Endpoint.SetAutoClose
 Endpoint.SetDeadline
 Endpoint.SetReadDeadline

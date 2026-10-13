@@ -28,6 +28,7 @@
 package sctp
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -183,6 +184,7 @@ func newEndpoint(s socket, p *prepared, own eventSet) *Endpoint {
 	e.life.init()
 	e.recv.bind(nil, &e.subs)
 	e.send.bind(nil)
+	e.send.writeDeadline = e.sock.file.SetWriteDeadline
 	e.send.explicit = true
 	e.send.readDefaults(&e.sock)
 	e.refreshAddr()
@@ -614,14 +616,51 @@ func (e *Endpoint) bindx(opt int, name string, ips []netip.Addr) error {
 // instead of by id, and flags SendFlags does not name, SCTP_EOF and
 // SCTP_ABORT among them, are refused too: CloseAssoc and AbortAssoc do
 // what those flags do. Every error is a *net.OpError with Op "write".
+//
+// [Endpoint.SendMsgContext] is SendMsg with a context, which can end its
+// wait for the send lock and for buffer space.
 func (e *Endpoint) SendMsg(id AssocID, b []byte, opts SendOptions) (int, error) {
+	return e.SendMsgContext(context.Background(), id, b, opts)
+}
+
+// SendMsgContext is SendMsg with a context that can end its wait for the
+// send lock and, unless opts.NoWait is set, for endpoint-wide buffer
+// space; the write deadline and Close also end the buffer wait. A nil ctx is
+// refused with an error matching syscall.EINVAL. A ctx done on entry
+// means nothing is validated or sent; ctx is checked again after taking
+// the lock. Success is (len(b), nil), and any error means nothing of the
+// message was queued: RFC 6458 §3.1.4 makes sendmsg atomic unless explicit
+// EOR is enabled, and Linux has no explicit EOR (see SndInfo). No attempt
+// outlives the call, and known kernel acceptance wins over cancellation.
+// Cancellation preserves the caller's latest write deadline, including
+// one set during the call, and never touches the read deadline. Errors
+// are *net.OpError with Op "write"; a context interruption matches
+// ctx.Err(), context.Canceled or context.DeadlineExceeded, and never
+// os.ErrDeadlineExceeded. A wait the write deadline ended matches the
+// latter and not a context error, even if ctx is done by the time the call
+// returns; when both end the wait, the error names the one that came first.
+// The context's interrupt can run shortly after ctx is done; a write
+// deadline crossed in that gap comes first.
+//
+// SendMsgContext allocates nothing SendMsg would not, except that waiting
+// for buffer space with a context that can be done registers a
+// context.AfterFunc, which allocates, and waiting for the lock calls
+// ctx.Done, which allocates a context.WithCancel context's channel on its
+// first call (context/context.go: cancelCtx.Done).
+func (e *Endpoint) SendMsgContext(ctx context.Context, id AssocID, b []byte, opts SendOptions) (int, error) {
+	if ctx == nil {
+		return 0, e.ioError("write", invalidArg("SendMsgContext needs a non-nil context"))
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, e.ioError("write", err)
+	}
 	if !e.opened() {
 		return 0, e.ioError("write", net.ErrClosed)
 	}
 	if err := checkEndpointSend(id, b, &opts); err != nil {
 		return 0, e.ioError("write", err)
 	}
-	n, err := e.send.send(&e.sock, b, &opts, nil, id)
+	n, err := e.send.send(ctx, &e.sock, b, &opts, nil, id)
 	if err != nil {
 		return 0, e.ioError("write", err)
 	}
@@ -898,24 +937,27 @@ func peelOff(fd int, id AssocID) (int, error) {
 // os.ErrDeadlineExceeded, and a zero t means no deadline. They are the
 // endpoint's, whatever association a call is for (RFC 6458 §3.2).
 func (e *Endpoint) SetDeadline(t time.Time) error {
-	return e.setDeadline(t, (*os.File).SetDeadline)
+	return e.setDeadline(t, 'b')
 }
 
 // SetReadDeadline sets the deadline for RecvMsg.
 func (e *Endpoint) SetReadDeadline(t time.Time) error {
-	return e.setDeadline(t, (*os.File).SetReadDeadline)
+	return e.setDeadline(t, 'r')
 }
 
 // SetWriteDeadline sets the deadline for SendMsg.
 func (e *Endpoint) SetWriteDeadline(t time.Time) error {
-	return e.setDeadline(t, (*os.File).SetWriteDeadline)
+	return e.setDeadline(t, 'w')
 }
 
-func (e *Endpoint) setDeadline(t time.Time, set func(*os.File, time.Time) error) error {
+func (e *Endpoint) setDeadline(t time.Time, mode byte) error {
 	if e == nil || e.sock.file == nil {
 		return opError("set", e.network(), nil, nil, net.ErrClosed)
 	}
-	if err := set(e.sock.file, t); err != nil {
+	if !e.opened() {
+		return opError("set", e.network(), nil, e.Addr(), net.ErrClosed)
+	}
+	if err := e.send.setDeadline(e.sock.file, t, mode); err != nil {
 		return opError("set", e.network(), nil, e.Addr(), err)
 	}
 	return nil
@@ -928,6 +970,9 @@ func (e *Endpoint) setDeadline(t time.Time, set func(*os.File, time.Time) error)
 // that it never runs in the middle of one of the package's reads. Once
 // the descriptor has been released, every call returns an error matching
 // net.ErrClosed without running the callback.
+// Write also takes the send lock, so it cannot observe a SendMsgContext
+// interruption's temporary deadline. A SendMsgContext waiting behind a
+// raw Write can cancel its lock wait.
 func (e *Endpoint) SyscallConn() (syscall.RawConn, error) {
 	if !e.opened() {
 		return nil, opError("syscallconn", e.network(), nil, e.Addr(), net.ErrClosed)
@@ -957,6 +1002,8 @@ func (r *endpointRawConn) Read(f func(fd uintptr) bool) error {
 }
 
 func (r *endpointRawConn) Write(f func(fd uintptr) bool) error {
+	r.e.send.mu.Lock()
+	defer r.e.send.mu.Unlock()
 	if err := r.e.sock.raw.Write(f); err != nil {
 		return opError("raw-write", r.e.network(), r.e.Addr(), nil, err)
 	}

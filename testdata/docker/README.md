@@ -27,6 +27,11 @@ testdata/docker/linux-suite.sh [-race] [-sysctl on|off] [-run REGEX]
 - `-run REGEX` is passed straight through to `go test -run`. Defaults to
   `.*` (everything).
 
+`HARNESS_RUN_ID` supplies the container's `harness` label. `LINUX_SUITE_IMAGE`
+selects a prepared Go image, for a run whose network policy prevents the
+setup script from installing `iproute2`; the script prints the image and
+Go version actually used.
+
 Any Linux-only test added to the suite should be run through this script in
 both sysctl states, and with `-race`, before it is committed.
 
