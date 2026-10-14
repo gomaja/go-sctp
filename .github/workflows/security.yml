@@ -103,17 +103,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set +e
+          set -euo pipefail
+          # A failed or malformed query must fail this step, not read as zero
+          # alerts: zero would skip both the report and the failure below.
           count="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/code-scanning/alerts" \
             -f state=open \
             -f tool_name=CodeQL \
             -f ref=refs/heads/main \
             -F per_page=100 \
-            --jq 'length' 2>/dev/null)"
-          status=$?
-          if [ "$status" -ne 0 ] || [ -z "$count" ]; then
-            count=0
-          fi
+            --jq 'length')"
+          case "$count" in
+            '' | *[!0-9]*)
+              echo "::error::CodeQL alert query returned '${count}', not a count"
+              exit 1
+              ;;
+          esac
           echo "count=$count" >> "$GITHUB_OUTPUT"
       - name: Report scheduled SAST findings
         if: github.event_name == 'schedule' && steps.codeql_alerts.outputs.count != '0'
