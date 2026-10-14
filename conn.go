@@ -51,13 +51,13 @@ type Conn struct {
 	// SCTP_DEFAULT_SNDINFO and then the default PR-SCTP policy that write
 	// clears, with DefaultSndInfo and DefaultPrInfo reading under it. It
 	// is a leaf: nothing else is locked while it is held, and the one lock
-	// ever held when it is taken is send.mu, the cancellable send lock,
-	// by SetDefaultSndInfo and
-	// SetDefaultPrInfo, which update the send path's cached defaults.
+	// ever held when it is taken is send.mu, the shared ctxsync.Mutex,
+	// by SetDefaultSndInfo and SetDefaultPrInfo, which update the send
+	// path's cached defaults.
 	optMu sync.Mutex
 	// send's deadline mutex is also a leaf. Send and raw Write take the
-	// send lock before the descriptor's write lock; deadline setters and
-	// the context interrupt take neither of those locks.
+	// same ctxsync.Mutex before the descriptor's write lock; deadline
+	// setters and the context interrupt take neither of those locks.
 
 	handler   NotificationHandler
 	closeWait time.Duration // Config.CloseTimeout, resolved: the grace period of Close

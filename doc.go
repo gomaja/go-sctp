@@ -107,22 +107,28 @@
 // A send waits for send-buffer space in the runtime poller, until the write
 // deadline passes or the socket is closed; [Conn.SendMsgContext] and
 // [Endpoint.SendMsgContext] let a context end the lock and buffer waits too.
-// A successful send queues the whole message, a failed one none of it.
+// A successful send queues the whole message, a failed one none of it
+// (RFC 6458 §3.1.4; Linux does not implement explicit EOR).
 // With NoWait a send makes one attempt instead. More tells the
 // kernel that more messages follow at once, so that it may bundle them
-// (MSG_MORE). Successful sends with no Path zone or a numeric zone make
-// no allocation, except for SendMsgContext's cancellation state while
-// waiting; a zone given by interface name allocates only when
-// the package reads the host's interface table again (at most once a
-// minute, or for a name it has not seen). SendMsg keeps nothing of its
-// arguments.
+// (MSG_MORE). Successful uncontended sends with no Path zone or a numeric
+// zone make no allocation. Waiting can allocate the send lock's lazy queue
+// or pooled waiters on first use, higher peak contention or pool refill,
+// and SendMsgContext's cancellation state while waiting. A zone given by
+// interface name allocates only when the package reads the host's interface
+// table again (at most once a minute, or for a name it has not seen).
+// SendMsg keeps nothing of its arguments.
 //
 // # Concurrency
 //
 // Every method may be called from several goroutines at once, as net.Conn
-// requires. The sends on one socket are serialized by a send lock, which a
-// send waiting for buffer space holds, so a NoWait send issued meanwhile
-// waits behind it. The reads are serialized by a receive lock, which is
+// requires. The sends on one socket, including raw writes through
+// SyscallConn, share a ctxsync.Mutex. A woken waiter that loses to a new
+// caller retains queue priority; starvation mode hands ownership to the
+// longest-waiting queued sender. This is a queue policy, not a bound on
+// acquisition latency. A send waiting for buffer space holds the send lock,
+// so a NoWait send issued meanwhile waits behind it. The reads are
+// serialized by a receive lock, which is
 // released before a NotificationHandler runs, so that a handler may call
 // back into the connection; ReadMsg holds it from the first piece of a
 // message to the last. A deadline, Close and Abort release the calls
