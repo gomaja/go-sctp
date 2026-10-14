@@ -611,6 +611,7 @@ func newAwaitSocket(t testing.TB) socket {
 // Bind the client before choosing the dead port, so it cannot connect to
 // itself. poll(2)'s POLLERR, through ppoll for architectures without a poll
 // syscall, proves that the peer has answered; Control pins the descriptor.
+// No POLLERR within five seconds is explained as explainDeadPortDial does.
 func refusedAwaitSocket(t testing.TB) socket {
 	t.Helper()
 	s := newAwaitSocket(t)
@@ -637,7 +638,7 @@ func refusedAwaitSocket(t testing.TB) socket {
 		for {
 			left := time.Until(deadline)
 			if left <= 0 {
-				return os.ErrDeadlineExceeded
+				return errNoRefusal
 			}
 			ts := syscall.NsecToTimespec(int64(left))
 			_, _, errno := syscall.Syscall6(syscall.SYS_PPOLL, uintptr(unsafe.Pointer(&pfd)), 1, uintptr(unsafe.Pointer(&ts)), 0, 0, 0)
@@ -648,14 +649,35 @@ func refusedAwaitSocket(t testing.TB) socket {
 				return errno
 			}
 			if pfd.revents&0x8 == 0 { // POLLERR, include/uapi/asm-generic/poll.h
-				return errors.New("refused setup did not report POLLERR")
+				return errNoRefusal
 			}
 			return nil
 		}
 	}); err != nil {
+		if errors.Is(err, errNoRefusal) {
+			explainNoRefusal(t, dead)
+		}
 		t.Fatalf("poll for refusal: %v", err)
 	}
 	return s
+}
+
+var errNoRefusal = errors.New("refused setup did not report POLLERR")
+
+// explainNoRefusal is explainDeadPortDial for refusedAwaitSocket, which has
+// no Conn: a setup to dead that was not refused found the port taken since,
+// and the test is skipped, or it is a failure.
+func explainNoRefusal(t testing.TB, dead *Addr) {
+	t.Helper()
+	l, err := Listen("sctp4", dead)
+	if err == nil {
+		_ = l.Close()
+		t.Fatalf("a setup to %v, whose listener was closed, was not refused, and the port is not bound by anyone else", dead)
+	}
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("a setup to %v was not refused; checking whether the port was taken since gave %v, not EADDRINUSE", dead, err)
+	}
+	t.Skip("the port was taken by another socket before the dial")
 }
 
 // explainDeadPortDial is called when a dial to dead, a port whose listener
