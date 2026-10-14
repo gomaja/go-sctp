@@ -35,6 +35,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // wantDialError asserts that err is a *net.OpError with Op "dial" matching
@@ -476,6 +477,185 @@ func TestDialContextRefusedPeerReportsTheError(t *testing.T) {
 	if elapsed > budget/2 {
 		t.Errorf("took %v to report a refusal", elapsed)
 	}
+}
+
+// dialReadWaitError skips Read's callback as FD.RawRead does when
+// prepareRead or waitRead returns an error (internal/poll/fd_unix.go).
+// Control still reaches the real socket, without the read-poller check.
+type dialReadWaitError struct {
+	syscall.RawConn
+	err error
+}
+
+func (r dialReadWaitError) Read(func(uintptr) bool) error { return r.err }
+
+// TestAwaitEstablishedRecoversRefusalAfterWaitError: a poller error must
+// not hide the pending socket error, even when the context has ended.
+func TestAwaitEstablishedRecoversRefusalAfterWaitError(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		wait   error
+		cancel bool
+	}{
+		{"poll error", errors.New("read poll error"), false},
+		{"deadline at cancellation", os.ErrDeadlineExceeded, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := refusedAwaitSocket(t)
+			ctx := context.Background()
+			if tc.cancel {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			s.raw = dialReadWaitError{RawConn: s.raw, err: tc.wait}
+			if err := awaitEstablished(ctx, &s); !errors.Is(err, syscall.ECONNREFUSED) {
+				t.Fatalf("awaitEstablished = %v, want ECONNREFUSED", err)
+			}
+		})
+	}
+}
+
+// TestAwaitEstablishedWaitErrorWithoutVerdict: no socket verdict keeps
+// the original wait error, except a context-ended deadline keeps ctx.Err.
+func TestAwaitEstablishedWaitErrorWithoutVerdict(t *testing.T) {
+	waitErr := errors.New("read poll error")
+	for _, tc := range []struct {
+		name   string
+		wait   error
+		cancel bool
+		want   error
+	}{
+		{"poll error", waitErr, false, waitErr},
+		{"poll error after cancellation", waitErr, true, waitErr},
+		{"deadline with live context", os.ErrDeadlineExceeded, false, os.ErrDeadlineExceeded},
+		{"deadline after cancellation", os.ErrDeadlineExceeded, true, context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newAwaitSocket(t)
+			ctx := context.Background()
+			if tc.cancel {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			s.raw = dialReadWaitError{RawConn: s.raw, err: tc.wait}
+			if err := awaitEstablished(ctx, &s); err != tc.want {
+				t.Fatalf("awaitEstablished = %v, want the original %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestAwaitEstablishedWaitErrorWithClosedControl: an unsuccessful final
+// check must not replace the error that ended the read wait.
+func TestAwaitEstablishedWaitErrorWithClosedControl(t *testing.T) {
+	s := newAwaitSocket(t)
+	if err := s.file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	waitErr := errors.New("read poll error")
+	s.raw = dialReadWaitError{RawConn: s.raw, err: waitErr}
+	if err := awaitEstablished(context.Background(), &s); err != waitErr {
+		t.Fatalf("awaitEstablished = %v, want the original %v", err, waitErr)
+	}
+}
+
+// TestAwaitEstablishedRecoversSuccessAfterWaitError: setup that completed
+// before a wait error is kept, including at cancellation, with no expired
+// read deadline left for the connection's first read.
+func TestAwaitEstablishedRecoversSuccessAfterWaitError(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		wait   error
+		cancel bool
+	}{
+		{"poll error", errors.New("read poll error"), false},
+		{"deadline at cancellation", os.ErrDeadlineExceeded, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, _ := connPair(t, nil, nil)
+			s := client.sock
+			ctx := context.Background()
+			if tc.cancel {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			if err := s.file.SetReadDeadline(aLongTimeAgo); err != nil {
+				t.Fatalf("SetReadDeadline: %v", err)
+			}
+			raw := s.raw
+			s.raw = dialReadWaitError{RawConn: raw, err: tc.wait}
+			if err := awaitEstablished(ctx, &s); err != nil {
+				t.Fatalf("awaitEstablished = %v, want established", err)
+			}
+			if err := raw.Read(func(uintptr) bool { return true }); err != nil {
+				t.Fatalf("first read after establishment = %v, want a cleared deadline", err)
+			}
+		})
+	}
+}
+
+func newAwaitSocket(t testing.TB) socket {
+	t.Helper()
+	s, err := newSocket(afInet, "sctp4")
+	if err != nil {
+		t.Fatalf("newSocket: %v", err)
+	}
+	t.Cleanup(func() { _ = s.file.Close() })
+	return s
+}
+
+// refusedAwaitSocket leaves ECONNREFUSED pending, without reading SO_ERROR.
+// Bind the client before choosing the dead port, so it cannot connect to
+// itself. poll(2)'s POLLERR, through ppoll for architectures without a poll
+// syscall, proves that the peer has answered; Control pins the descriptor.
+func refusedAwaitSocket(t testing.TB) socket {
+	t.Helper()
+	s := newAwaitSocket(t)
+	if err := s.control(func(fd int) error {
+		return syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}})
+	}); err != nil {
+		t.Fatalf("bind client: %v", err)
+	}
+	dead := deadPort(t)
+	peer, err := encodeAddrs(afInet, dead.IPs, dead.Port)
+	if err != nil {
+		t.Fatalf("encodeAddrs: %v", err)
+	}
+	if err := s.connectx(peer); err != nil && err != syscall.EINPROGRESS {
+		t.Fatalf("connectx: %v", err)
+	}
+	if err := s.control(func(fd int) error {
+		pfd := struct {
+			fd      int32
+			events  int16
+			revents int16
+		}{fd: int32(fd)}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			left := time.Until(deadline)
+			if left <= 0 {
+				return os.ErrDeadlineExceeded
+			}
+			ts := syscall.NsecToTimespec(int64(left))
+			_, _, errno := syscall.Syscall6(syscall.SYS_PPOLL, uintptr(unsafe.Pointer(&pfd)), 1, uintptr(unsafe.Pointer(&ts)), 0, 0, 0)
+			if errno == syscall.EINTR {
+				continue
+			}
+			if errno != 0 {
+				return errno
+			}
+			if pfd.revents&0x8 == 0 { // POLLERR, include/uapi/asm-generic/poll.h
+				return errors.New("refused setup did not report POLLERR")
+			}
+			return nil
+		}
+	}); err != nil {
+		t.Fatalf("poll for refusal: %v", err)
+	}
+	return s
 }
 
 // explainDeadPortDial is called when a dial to dead, a port whose listener

@@ -368,6 +368,13 @@ var aLongTimeAgo = time.Unix(1, 0)
 // connect does when the peer's FIN arrives first, and the connection's
 // reads then report the end.
 //
+// A read-wait error also checks the socket once, through Control: a
+// refused setup can report EPOLLERR alone (net/sctp/socket.c: sctp_poll),
+// which the runtime treats as not pollable before Read's callback runs
+// (runtime/netpoll_epoll.go: netpoll; runtime/netpoll.go: netpollcheckerr;
+// internal/poll/fd_unix.go: FD.RawRead). A socket verdict takes precedence
+// over the wait error.
+//
 // ctx ends the wait through the read deadline, which a context.AfterFunc
 // moves into the past. The deadline is cleared before a successful return.
 // A setup found complete at the moment ctx ended counts as established.
@@ -420,18 +427,20 @@ func awaitEstablished(ctx context.Context, s *socket) error {
 		<-interrupted
 	}
 
-	if err != nil && errors.Is(err, os.ErrDeadlineExceeded) && ctx.Err() != nil && failed == nil {
-		// The poller stopped waiting because ctx ended. The setup may have
-		// completed at the same moment; a completed one is kept.
+	if err != nil {
+		// The read poller can fail before check runs. Control pins the
+		// descriptor without a read wait (internal/poll/fd_posix.go:
+		// FD.RawControl), so its socket verdict is still usable.
 		_ = s.control(func(fd int) error {
 			check(fd)
 			return nil
 		})
 		if !established && failed == nil {
-			return ctx.Err()
+			if errors.Is(err, os.ErrDeadlineExceeded) && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
 		}
-	} else if err != nil {
-		return err
 	}
 	if failed != nil {
 		return failed
