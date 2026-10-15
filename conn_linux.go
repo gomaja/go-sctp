@@ -427,7 +427,8 @@ func (c *Conn) SyscallConn() (syscall.RawConn, error) {
 // own, with errors wrapped the way net's raw connections wrap them
 // (net/rawconn.go), so that a released descriptor reports net.ErrClosed.
 // The addresses an error carries are copied only when there is an error:
-// a call that succeeds allocates nothing.
+// an uncontended call that succeeds allocates nothing. Raw Write shares
+// SendMsg's send lock and its contention allocation policy.
 type connRawConn struct{ c *Conn }
 
 func (r *connRawConn) Control(f func(fd uintptr)) error {
@@ -447,6 +448,7 @@ func (r *connRawConn) Read(f func(fd uintptr) bool) error {
 }
 
 func (r *connRawConn) Write(f func(fd uintptr) bool) error {
+	// Raw writers join plain and context sends in the same ctxsync.Mutex.
 	r.c.send.mu.Lock()
 	defer r.c.send.mu.Unlock()
 	if err := r.c.sock.raw.Write(f); err != nil {

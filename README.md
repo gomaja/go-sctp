@@ -24,7 +24,9 @@ The package documentation is the reference for every call:
 go get github.com/gomaja/go-sctp@main
 ```
 
-The package needs Go 1.26 or later, and uses the standard library only.
+The package needs Go 1.26 or later. Its send lock uses
+[go-ctxsync](https://github.com/gomaja/go-ctxsync); all other dependencies are
+from the standard library.
 
 There are no releases and no tags: the module is followed on its `main`
 branch, and Go records each commit you get as a `v0.0.0-…` pseudo-version.
@@ -147,9 +149,11 @@ already-resolved addresses and never resolve hostnames themselves.
   context that can end its waits; a successful send queues the whole
   message, a failed one none of it.
   `RecvMsg` reports each read's metadata and `ReadMsg` reassembles whole
-  messages. A successful `SendMsg` with no `Path` zone or a numeric zone,
-  and a `RecvMsg` or `Read` of data, make no
-  allocation. A zone given by interface name allocates only when the
+  messages. An uncontended successful `SendMsg` with no `Path` zone or a
+  numeric zone, and a `RecvMsg` or `Read` of data, make no allocation.
+  Send-lock contention can allocate its lazy queue or pooled waiters on
+  first use, higher peak contention or pool refill.
+  A zone given by interface name allocates only when the
   package reads the host's interface table again (at most once a minute,
   or for a name it has not seen).
 - **Notifications.** Subscribe with `Config.Notifications` or

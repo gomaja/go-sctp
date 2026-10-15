@@ -195,6 +195,12 @@ func TestSendMsgContextDoneAtEntry(t *testing.T) {
 			done := make(chan error, 1)
 			go func() { _, err := c.send(ctx, []byte{1}, SendOptions{}); done <- err }()
 			contextResult(t, done, context.DeadlineExceeded)
+			// Entry cancellation also wins over argument validation.
+			n, err := c.send(ctx, nil, SendOptions{})
+			wantOp(t, "done context and empty payload", "write", err, context.DeadlineExceeded)
+			if n != 0 {
+				t.Errorf("done context returned %d bytes", n)
+			}
 		})
 	}
 }

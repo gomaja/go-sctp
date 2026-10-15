@@ -598,8 +598,10 @@ func (e *Endpoint) bindx(opt int, name string, ips []netip.Addr) error {
 // closed; the buffer is the endpoint's, so another association's progress
 // can release the wait (RFC 6458 §3.2). With NoWait, a send that finds no
 // space fails at once with an error matching syscall.EAGAIN, and nothing
-// of the message is queued. A successful SendMsg makes no allocation, and
-// SendMsg keeps nothing of b or opts after it returns.
+// of the message is queued. An uncontended successful SendMsg makes no
+// allocation. On contention, the shared send lock lazily creates its queue
+// and uses pooled waiters; first use, higher peak contention or a pool refill
+// can allocate. SendMsg keeps nothing of b or opts after it returns.
 //
 // Every send carries SCTP_SNDINFO, since that is where the association id
 // travels (RFC 6458 §5.3.4). A nil opts.Info or opts.PR means the
@@ -1008,6 +1010,7 @@ func (r *endpointRawConn) Read(f func(fd uintptr) bool) error {
 }
 
 func (r *endpointRawConn) Write(f func(fd uintptr) bool) error {
+	// Raw writers join plain and context sends in the same ctxsync.Mutex.
 	r.e.send.mu.Lock()
 	defer r.e.send.mu.Unlock()
 	if err := r.e.sock.raw.Write(f); err != nil {
