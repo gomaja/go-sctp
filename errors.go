@@ -95,12 +95,12 @@ func invalidArg(format string, args ...any) error {
 // Read, Write) returns once the os.File it came from has been closed
 // elsewhere, bypassing the os.File's own "already closed" check (which
 // gives os.ErrClosed instead — see isFileClosingErr). internal/poll is
-// unexported, so its error cannot be imported or type-asserted; capturing
-// the actual value, via capturePipeClosingErr below, is the only way to
-// compare against it. It is a plain, comparable *errors.errorString — the
-// same package-level value every closed file's RawConn returns, confirmed
-// empirically on both darwin and linux — so errors.Is finds it through any
-// wrapping.
+// internal to the standard library, so its error cannot be imported or
+// type-asserted; capturing the actual value, via capturePipeClosingErr
+// below, is the only way to compare against it. It is a plain, comparable
+// *errors.errorString — the same package-level value every closed file's
+// RawConn returns, confirmed empirically on both darwin and linux — so
+// errors.Is finds it through any wrapping.
 //
 // It matches neither net.ErrClosed (poll.errNetClosing{}, a value, not a
 // pointer — "use of closed network connection", what a closed *net.TCPConn
@@ -114,6 +114,20 @@ func invalidArg(format string, args ...any) error {
 // and this package's sockets — wrapped in an *os.File like any plain file,
 // not through the net package — can hit any of the three; opError and
 // optError collapse all three to one net.ErrClosed wrap.
+//
+// The sentinel reaches this package because two groups of *os.File methods
+// return it unconverted, where Read, Write and Close report os.ErrClosed:
+// the RawConn methods, and SetDeadline, SetReadDeadline and
+// SetWriteDeadline. https://github.com/golang/go/issues/82229 tracks both.
+// Once go.mod's go directive requires a Go release in which all of them
+// report os.ErrClosed, the os.ErrClosed check next to each isFileClosingErr
+// call covers this case, and fileClosingErrOnce, capturePipeClosingErr and
+// isFileClosingErr can be removed. capturePipeClosingErr takes the sentinel
+// from RawConn.Control, so a release that converted only the RawConn
+// methods would leave the deadline setters' sentinel unmatched, and a
+// Listener's SetDeadline after Close would stop reporting net.ErrClosed.
+// closedPipeRawConnError fails on any toolchain whose RawConn methods
+// report os.ErrClosed, which flags that change.
 //
 // The capture is lazy — sync.OnceValue runs capturePipeClosingErr on the
 // first call to isFileClosingErr, not at package init — so importing this
