@@ -54,7 +54,8 @@ SCTP-related congestion-control draft is recorded below after the
 The [IANA SCTP Parameters registry](https://www.iana.org/assignments/sctp-parameters/sctp-parameters.xml)
 was read the same day. The DTLS chunk draft and the registry entries that
 cite it are recorded below after a 2026-10-15 refresh, which followed the
-draft's revision -05.
+draft's revision -05. RFC 6458 was checked again on 2026-10-16, for its
+notification header (below).
 
 ## Conformance boundary
 
@@ -124,6 +125,27 @@ the maintainer before any action; there is none in the baseline.
 - **Rejected 7988, 8387, 8774**: not followed.
 
 ### RFC 6458
+
+The notification framing baseline was rechecked on **2026-10-16** against
+the RFC Editor record and errata list, the Datatracker document and incoming
+relationships, and TSVWG's active documents, using the endpoints above.
+Both authorities still report Informational with no obsoleting or updating
+document; the six Verified, four Held and four Rejected errata are unchanged.
+None amends §6.1's common header. The active SCTP socket multipath and
+send-queue information proposals,
+`draft-dreibholz-tsvwg-sctpsocket-multipath-33` and
+`draft-dreibholz-tsvwg-sctpsocket-sqinfo-33`, are individual drafts that cite
+RFC 6458 normatively: extensions, not a replacement for that header.
+
+The common notification header (§6.1) is checked for every record, including
+one the reader consumes without delivering it: the record must include all
+eight header bytes and its total size must equal `sn_length`, and the
+package refuses one longer than `NotificationReassemblyLimit`. A framing
+error fails the read that reaches `MSG_EOR`, whether or not the record was
+retained, and leaves the following message queued. This is defensive
+validation of kernel output; a conforming kernel does not emit malformed
+notification framing. The receive tests exercise both delivery policies
+and split records through the same accumulator.
 
 - **Verified 6111** (technical, §§5.3.2, 5.3.4, 8.1.13, 8.1.31): adds
   `SCTP_EOR` for explicit end-of-record marking. Linux defines neither

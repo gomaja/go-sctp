@@ -3692,3 +3692,315 @@ func TestSuccessPathsAllocateNothing(t *testing.T) {
 		})
 	}
 }
+
+// notificationVerdictCase describes record framing, independently of the
+// reader's delivery policy. RFC 6458 §6.1 makes sn_length cover the entire
+// notification, including its eight-byte header; the receive accumulator
+// applies that framing even when no notification will be delivered.
+type notificationVerdictCase struct {
+	name    string
+	data    []byte
+	want    error
+	untyped bool
+}
+
+func notificationVerdictCases() []notificationVerdictCase {
+	var cases []notificationVerdictCase
+	for size := range notificationHeaderSize {
+		cases = append(cases, notificationVerdictCase{
+			name: fmt.Sprintf("header-%d", size), data: notif(EventAssocChange, size),
+			want: ErrShortNotification, untyped: true,
+		})
+	}
+	for _, declared := range []int{0, 4, 7, 100} {
+		cases = append(cases, notificationVerdictCase{
+			name: fmt.Sprintf("declared-%d", declared),
+			data: notifSized(EventAssocChange, declared, 16, 0), want: ErrShortNotification,
+		})
+	}
+	cases = append(cases,
+		notificationVerdictCase{"ended-short", notifSized(EventAssocChange, sizeAssocChange+1, sizeAssocChange, 0), ErrShortNotification, false},
+		notificationVerdictCase{"ended-long", notifSized(EventAssocChange, sizeAssocChange-1, sizeAssocChange, 0), ErrShortNotification, false},
+		notificationVerdictCase{"declared-over-limit", notifSized(EventAssocChange, NotificationReassemblyLimit+1, sizeAssocChange, 0), ErrNotificationTooLong, false},
+		notificationVerdictCase{"total-over-limit", notifSized(EventAssocChange, NotificationReassemblyLimit, NotificationReassemblyLimit+1, 0), ErrNotificationTooLong, false},
+	)
+	return cases
+}
+
+// notificationVerdictSteps preserves every chosen piece boundary while
+// letting recvScript impose smaller receive buffers too. Even a record
+// whose header has already failed must be consumed through its own EOR.
+func notificationVerdictSteps(data []byte, split string) []recvStep {
+	var cuts []int
+	switch split {
+	case "header-split":
+		for _, cut := range []int{1, 3, 7} {
+			if cut < len(data) {
+				cuts = append(cuts, cut)
+			}
+		}
+	case "body-split":
+		for _, cut := range []int{notificationHeaderSize, notificationHeaderSize + 3} {
+			if cut < len(data) {
+				cuts = append(cuts, cut)
+			}
+		}
+	}
+	var steps []recvStep
+	start := 0
+	for _, end := range cuts {
+		steps = append(steps, recvStep{data: data[start:end], flags: msgNotification})
+		start = end
+	}
+	return append(steps, recvStep{data: data[start:], flags: msgNotification | msgEOR})
+}
+
+// notificationVerdictReader adapts the public receive entry points to the
+// same assertions. Read and ReadMsg return no MsgInfo; the latter's RcvInfo
+// is carried in Rcv so that a failing read must still prove it is zero.
+func notificationVerdictReader(t testing.TB, reader string, handler NotificationHandler, subscribed bool) (func([]byte) (int, MsgInfo, error), *recvState) {
+	t.Helper()
+	if reader == "Endpoint.RecvMsg" {
+		e := scriptEndpoint(t, handler)
+		return e.RecvMsg, &e.recv
+	}
+	var subs []EventType
+	if subscribed {
+		subs = []EventType{EventAssocChange}
+	}
+	c := scriptConn(t, handler, subs...)
+	switch reader {
+	case "Conn.RecvMsg":
+		return c.RecvMsg, &c.recv
+	case "Conn.Read":
+		return func(b []byte) (int, MsgInfo, error) {
+			n, err := c.Read(b)
+			return n, MsgInfo{}, err
+		}, &c.recv
+	case "Conn.ReadMsg":
+		return func(b []byte) (int, MsgInfo, error) {
+			data, info, err := c.ReadMsg(len(b))
+			return copy(b, data), MsgInfo{Rcv: info}, err
+		}, &c.recv
+	default:
+		t.Fatalf("unknown reader %q", reader)
+		return nil, nil
+	}
+}
+
+func checkNotificationVerdictReset(t testing.TB, state *recvState) {
+	t.Helper()
+	a := &state.notes
+	if a.err != nil || a.total != 0 || a.prefixBytes != 0 || a.haveDeclared || a.retain {
+		t.Fatalf("completed malformed record still retained: error %v, total %d, prefix %d, declared %t, retain %t", a.err, a.total, a.prefixBytes, a.haveDeclared, a.retain)
+	}
+}
+
+func runNotificationVerdictMatrix(t *testing.T, reader string) {
+	t.Helper()
+	for _, withHandler := range []bool{false, true} {
+		for _, reason := range []string{"never-typed", "no-notes", "unsubscribed", "kept"} {
+			if reader == "Endpoint.RecvMsg" && reason != "never-typed" && reason != "kept" {
+				continue // Endpoint keeps typed records and its association subscription.
+			}
+			if reason == "no-notes" && (withHandler || reader == "Conn.RecvMsg" || reader == "Endpoint.RecvMsg") {
+				continue
+			}
+			if reason == "kept" && !withHandler && (reader == "Conn.Read" || reader == "Conn.ReadMsg") {
+				continue
+			}
+			for _, shape := range notificationVerdictCases() {
+				if (reason == "never-typed") != shape.untyped {
+					continue
+				}
+				for _, split := range []string{"whole", "header-split", "body-split"} {
+					sizes := []int{1, 20, 64}
+					if reader == "Conn.ReadMsg" {
+						sizes = []int{64}
+					}
+					for _, size := range sizes {
+						t.Run(fmt.Sprintf("handler=%t/%s/%s/%s/buffer=%d", withHandler, reason, shape.name, split, size), func(t *testing.T) {
+							calls := 0
+							var handler NotificationHandler
+							if withHandler {
+								handler = func(Notification) error { calls++; return nil }
+							}
+							read, state := notificationVerdictReader(t, reader, handler, reason != "unsubscribed")
+							data := shape.data
+							if reason == "no-notes" {
+								// A non-association event exercises the same policy as
+								// the malformed PEER_ADDR_CHANGE from issue #41.
+								data = bytes.Clone(data)
+								binary.NativeEndian.PutUint16(data, uint16(EventPeerAddrChange))
+							}
+							steps := notificationVerdictSteps(data, split)
+							recordSteps := len(steps)
+							following := RcvInfo{Stream: 3, SSN: 9, PPID: 0x12345678, Context: 11, AssocID: 7}
+							steps = append(steps, recvStep{data: []byte("following-data"), rcv: &following, flags: msgEOR})
+							script := &recvScript{steps: steps}
+							hookRecvmsg(t, script.recvmsg)
+							n, info, err := read(make([]byte, size))
+							wantReadError(t, err, shape.want)
+							other := ErrNotificationTooLong
+							if shape.want == ErrNotificationTooLong {
+								other = ErrShortNotification
+							}
+							if errors.Is(err, other) {
+								t.Fatalf("err = %v, want only the framing sentinel %v", err, shape.want)
+							}
+							if n != 0 || info != (MsgInfo{}) || calls != 0 {
+								t.Fatalf("malformed record = %d, %+v; handler calls %d; want all zero", n, info, calls)
+							}
+							if script.step != recordSteps || script.off != 0 {
+								t.Fatalf("consumed step %d offset %d, want record end at %d before following DATA", script.step, script.off, recordSteps)
+							}
+							checkNotificationVerdictReset(t, state)
+							buf := make([]byte, 64)
+							n, info, err = read(buf)
+							if err != nil || string(buf[:n]) != "following-data" || calls != 0 {
+								t.Fatalf("following read = %q, %+v, %v; handler calls %d", buf[:n], info, err, calls)
+							}
+							if reader != "Conn.Read" && info.Rcv != following {
+								t.Fatalf("following RcvInfo = %+v, want %+v", info.Rcv, following)
+							}
+							if (reader == "Conn.RecvMsg" || reader == "Endpoint.RecvMsg") && (!info.EOR || info.Notification) {
+								t.Fatalf("following MsgInfo = %+v, want DATA with EOR", info)
+							}
+							if script.step != len(steps) || script.off != 0 {
+								t.Fatalf("following DATA not consumed whole: step %d offset %d", script.step, script.off)
+							}
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestConnNotificationFramingVerdict: delivery policy cannot hide malformed
+// framing. Each failed read ends at the notification's own EOR, clears the
+// accumulator, and leaves the following DATA and its metadata untouched.
+func TestConnNotificationFramingVerdict(t *testing.T) {
+	for _, reader := range []string{"Conn.RecvMsg", "Conn.Read", "Conn.ReadMsg"} {
+		t.Run(reader, func(t *testing.T) { runNotificationVerdictMatrix(t, reader) })
+	}
+}
+
+// TestNotificationFramingVerdictParity compares a retained raw record and
+// one discarded by Read, rather than deriving either verdict from the
+// accumulator being tested. Their sentinels must agree for every shape.
+func TestNotificationFramingVerdictParity(t *testing.T) {
+	for _, shape := range notificationVerdictCases() {
+		t.Run(shape.name, func(t *testing.T) {
+			for _, reader := range []string{"Conn.Read", "Conn.RecvMsg"} {
+				t.Run(reader, func(t *testing.T) {
+					read, _ := notificationVerdictReader(t, reader, nil, true)
+					steps := notificationVerdictSteps(shape.data, "header-split")
+					end := len(steps)
+					steps = append(steps, recvStep{data: []byte("following-data"), flags: msgEOR})
+					script := &recvScript{steps: steps}
+					hookRecvmsg(t, script.recvmsg)
+					n, info, err := read(make([]byte, 64))
+					wantReadError(t, err, shape.want)
+					other := ErrNotificationTooLong
+					if shape.want == ErrNotificationTooLong {
+						other = ErrShortNotification
+					}
+					if n != 0 || info != (MsgInfo{}) || errors.Is(err, other) || script.step != end {
+						t.Fatalf("read = %d, %+v, %v; step %d, want only %v at step %d", n, info, err, script.step, shape.want, end)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestWellFormedNotificationDeliveryPolicy: framing validation preserves
+// existing delivery. Unsubscribed association records and records Read or
+// ReadMsg discard are consumed silently; a subscriber gets the same record
+// through its handler or raw RecvMsg before the following DATA.
+func TestWellFormedNotificationDeliveryPolicy(t *testing.T) {
+	for _, reader := range []string{"Conn.RecvMsg", "Conn.Read", "Conn.ReadMsg", "Endpoint.RecvMsg"} {
+		for _, withHandler := range []bool{false, true} {
+			for _, subscribed := range []bool{false, true} {
+				if reader == "Endpoint.RecvMsg" && !subscribed {
+					continue
+				}
+				for _, split := range []string{"whole", "header-split", "body-split"} {
+					t.Run(fmt.Sprintf("%s/handler=%t/subscribed=%t/%s", reader, withHandler, subscribed, split), func(t *testing.T) {
+						var handled []Notification
+						var handler NotificationHandler
+						if withHandler {
+							handler = func(n Notification) error { handled = append(handled, n); return nil }
+						}
+						read, _ := notificationVerdictReader(t, reader, handler, subscribed)
+						record := assocChangeRecord(AssocCommUp, 7, []byte{0xaa, 0xbb})
+						steps := notificationVerdictSteps(record, split)
+						steps = append(steps, recvStep{data: []byte("following-data"), rcv: &RcvInfo{AssocID: 7}, flags: msgEOR})
+						script := &recvScript{steps: steps}
+						hookRecvmsg(t, script.recvmsg)
+						buf := make([]byte, 64)
+						n, info, err := read(buf)
+						keptRaw := subscribed && !withHandler && (reader == "Conn.RecvMsg" || reader == "Endpoint.RecvMsg")
+						if keptRaw {
+							if err != nil || !bytes.Equal(buf[:n], record) || !info.Notification || !info.EOR || script.step != len(steps)-1 {
+								t.Fatalf("raw notification = %x, %+v, %v; step %d", buf[:n], info, err, script.step)
+							}
+							n, info, err = read(buf)
+						}
+						if err != nil || string(buf[:n]) != "following-data" || script.step != len(steps) {
+							t.Fatalf("following read = %q, %+v, %v; step %d", buf[:n], info, err, script.step)
+						}
+						wantCalls := 0
+						if subscribed && withHandler {
+							wantCalls = 1
+						}
+						if len(handled) != wantCalls {
+							t.Fatalf("handler got %d records, want %d", len(handled), wantCalls)
+						}
+						if wantCalls == 1 {
+							note, ok := handled[0].(*AssocChange)
+							if !ok || note.State != AssocCommUp || note.AssocID != 7 || !bytes.Equal(note.Info, []byte{0xaa, 0xbb}) {
+								t.Fatalf("handler record = %#v, want the complete COMM_UP", handled[0])
+							}
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+// TestDropNotificationRecordZeroAllocs: deciding the framing verdict and
+// discarding an unretained record needs only the accumulator's fixed
+// prefix, for valid records and for every malformed framing shape. Reset
+// must leave none of that verdict or framing state for the next record.
+func TestDropNotificationRecordZeroAllocs(t *testing.T) {
+	cases := notificationVerdictCases()
+	cases = append(cases, notificationVerdictCase{name: "valid", data: assocChangeRecord(AssocCommUp, 7, nil)})
+	for _, tc := range cases {
+		for _, split := range []string{"whole", "header-split", "body-split"} {
+			t.Run(tc.name+"/"+split, func(t *testing.T) {
+				pieces := notificationVerdictSteps(tc.data, split)
+				var state recvState
+				var got error
+				allocs := testing.AllocsPerRun(100, func() {
+					for _, piece := range pieces {
+						state.notes.add(piece.data)
+					}
+					got = state.dropRecord()
+				})
+				if got != tc.want {
+					t.Fatalf("dropRecord = %v, want %v", got, tc.want)
+				}
+				if allocs != 0 {
+					t.Fatalf("dropRecord allocated %v times, want 0", allocs)
+				}
+				checkNotificationVerdictReset(t, &state)
+				if state.notes.data != nil {
+					t.Fatal("discarding an unretained record acquired a data buffer")
+				}
+			})
+		}
+	}
+}

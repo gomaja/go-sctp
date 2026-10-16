@@ -721,7 +721,12 @@ func checkEndpointSend(id AssocID, b []byte, opts *SendOptions) error {
 // and goes on reading; an error the handler returns is returned by
 // RecvMsg. Without one, RecvMsg returns the notification's bytes with
 // MsgInfo.Notification set, in pieces as long as b, with EOR on the last;
-// ParseNotification decodes the whole.
+// ParseNotification decodes the whole. A record must carry the whole 8-byte
+// header and exactly the length its sn_length declares (RFC 6458 §6.1),
+// within NotificationReassemblyLimit, even one too short to be identified
+// and delivered: one that does not fails the read that consumes its end,
+// with an error matching ErrShortNotification or ErrNotificationTooLong,
+// and the message after it stays queued for the next read.
 //
 // An Endpoint has no end of stream and no sticky error: the end of an
 // association is its AssocChange record, and an error belongs to the
@@ -777,8 +782,11 @@ func (e *Endpoint) recvNext(b []byte) (int, MsgInfo, Notification, error) {
 			return 0, MsgInfo{}, nil, e.readEnded(err)
 		case record:
 			if !s.kept {
-				// A record whose start could not be read whole.
-				s.notes.reset()
+				// A record whose header never arrived whole: its framing
+				// still decides (RFC 6458 §6.1), so it fails this read.
+				if err := s.dropRecord(); err != nil {
+					return 0, MsgInfo{}, nil, err
+				}
 				continue
 			}
 			data, ferr := s.notes.finish()

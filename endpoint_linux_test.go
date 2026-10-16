@@ -3717,3 +3717,11 @@ func wakeScriptedEndpoint(t testing.TB, e *Endpoint) {
 		t.Fatalf("waking the scripted endpoint: %v", err)
 	}
 }
+
+// TestEndpointNotificationFramingVerdict: Endpoint always retains typed
+// notifications, but a record ending before its eight-byte header is
+// complete must fail just as a retained malformed record does. The
+// following DATA, its EOR and its RCVINFO stay queued for the next read.
+func TestEndpointNotificationFramingVerdict(t *testing.T) {
+	runNotificationVerdictMatrix(t, "Endpoint.RecvMsg")
+}

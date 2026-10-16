@@ -154,6 +154,13 @@ func (s *recvState) bind(term *termState, subs *atomic.Uint32) {
 // EventAssocChange. A type switched on outside the package, through
 // Config.Control or SyscallConn, is delivered when the kernel queues it,
 // but Subscribed reports only what Config.Notifications and Subscribe set.
+// Whether or not the caller receives it, a record must carry the whole
+// 8-byte header and exactly the length its sn_length declares (RFC 6458
+// §6.1), within NotificationReassemblyLimit: one that does not fails the
+// read that consumes its end, with an error matching ErrShortNotification
+// or ErrNotificationTooLong, and the message after it stays queued for the
+// next read. A well-formed record the caller does not receive is consumed
+// unseen.
 //
 // The control buffer holds SCTP_RCVINFO and SCTP_NXTINFO. Other ancillary
 // data switched on through Config.Control or SyscallConn can outgrow it:
@@ -292,9 +299,13 @@ func (c *Conn) recvNext(b []byte, raw bool) (int, MsgInfo, Notification, error) 
 			return 0, MsgInfo{}, nil, c.readEnded(err)
 		case record:
 			if !s.kept {
-				// Not the caller's: consumed. After AssocShutdownComplete,
-				// the check above ends the read with io.EOF.
-				s.notes.reset()
+				// Not the caller's: consumed, once its framing has been
+				// checked (RFC 6458 §6.1). A malformed one fails this
+				// read; after AssocShutdownComplete, the check above ends
+				// the next read with io.EOF.
+				if err := s.dropRecord(); err != nil {
+					return 0, MsgInfo{}, nil, err
+				}
 				continue
 			}
 			data, ferr := s.notes.finish()
@@ -475,6 +486,17 @@ func (s *recvState) addPiece(p []byte) {
 		}
 	}
 	a.add(p)
+}
+
+// dropRecord reports the completed record's framing verdict before
+// discarding it. Even a record not retained must have the common header
+// and exactly its declared length (RFC 6458 §6.1). The caller has already
+// consumed through MSG_EOR; reset releases its state before another read.
+// Neither finishing nor resetting an unkept record allocates.
+func (s *recvState) dropRecord() error {
+	_, err := s.notes.finish()
+	s.notes.reset()
+	return err
 }
 
 // endRecordLocked ends the record in progress and applies what an
@@ -773,9 +795,9 @@ func (c *Conn) readMsg(max int) (data []byte, info RcvInfo, err error) {
 
 // readMsgNotification takes a whole notification record ReadMsg consumed,
 // and reports whether the read goes on in the same callback. A record the
-// caller does not receive is dropped, and ends the read with io.EOF when it
-// was the association's AssocShutdownComplete. One for the handler before
-// the message starts ends the callback, so that the handler can run; one
+// caller does not receive is validated before it is dropped, and a valid
+// one ends the read with io.EOF when it was AssocShutdownComplete. One for
+// the handler before the message starts ends the callback, so it can run; one
 // that comes while the message is being read is queued, bounded by
 // NotificationReassemblyLimit in total, and past that dropped with an
 // error matching ErrNotificationTooLong.
@@ -787,19 +809,33 @@ func (c *Conn) readMsgNotification(state *readMsgState) bool {
 			// still goes to the handler, after the read, if it is the
 			// caller's.
 			state.partialApplicationErr = cut
+			// The interruption does not supersede the record's own
+			// framing or parsing error; both belong to this read.
 			if s.kept {
-				if data, err := s.notes.finish(); err == nil {
-					if note, err := ParseNotification(data); err == nil {
+				data, err := s.notes.finish()
+				if err == nil {
+					var note Notification
+					note, err = ParseNotification(data)
+					if err == nil {
 						state.queued = append(state.queued, note)
 					}
 				}
+				s.notes.reset()
+				state.addError(err)
+			} else {
+				state.addError(s.dropRecord())
 			}
-			s.notes.reset()
 			return false
 		}
 	}
 	if !s.kept {
-		s.notes.reset()
+		// Validate before applying the end-of-association policy. An
+		// error before the message starts returns now; one between its
+		// pieces stays with the result while the callback finishes it.
+		if err := s.dropRecord(); err != nil {
+			state.addError(err)
+			return state.haveFirstFragment
+		}
 		if c.term.hasEnded() {
 			if state.haveFirstFragment && !state.applicationComplete {
 				state.partialApplicationErr = io.EOF
