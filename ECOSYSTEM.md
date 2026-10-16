@@ -350,10 +350,13 @@ reassembles whole messages up to a limit and drains the rest of a longer
 one, so the next read starts at the next message; `Read` never returns
 notification bytes; a truncated control buffer is reported as
 `ErrControlTruncated` rather than trusted; notifications are reassembled
-within a bound and parsed without panicking, and an unknown kind arrives as
-`UnknownNotification` (`TestReadMsgSkipsNotifications`,
-`TestRecvMsgReportsTruncation`, `FuzzParseNotification`,
-`FuzzNotificationAccumulator`, `FuzzReadMsg`).
+within a bound and parsed without panicking; a record whose framing is
+broken fails the read even when the reader does not deliver it (RFC 6458
+§6.1), and the message after it stays queued; and an unknown kind arrives
+as `UnknownNotification` (`TestReadMsgSkipsNotifications`,
+`TestRecvMsgReportsTruncation`, `TestConnNotificationFramingVerdict`,
+`FuzzParseNotification`, `FuzzNotificationAccumulator`, `FuzzReadMsg`,
+`FuzzReceiveNotificationVerdict`).
 
 **Fuzzing and hostile input.** Pion's
 [issue #124](https://github.com/pion/sctp/issues/124) and

@@ -158,7 +158,11 @@ already-resolved addresses and never resolve hostnames themselves.
   or for a name it has not seen).
 - **Notifications.** Subscribe with `Config.Notifications` or
   `Conn.Subscribe`; a `NotificationHandler` receives parsed values such as
-  `*AssocChange` and `*SendFailed`.
+  `*AssocChange` and `*SendFailed`. Every notification record's framing is
+  checked against its header (RFC 6458 §6.1), including a record the reader
+  does not deliver: a malformed one fails the read with
+  `ErrShortNotification` or `ErrNotificationTooLong`, and the message after
+  it stays queued.
 - **The end of an association.** Reads end with `io.EOF` after a graceful
   end on every kind of connection, except that a record consumed through
   `SyscallConn` is never seen by the package. After a failure every read
