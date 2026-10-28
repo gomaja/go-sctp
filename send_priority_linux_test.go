@@ -65,8 +65,7 @@ func TestSendMsgContextRetainsPriority(t *testing.T) {
 				case <-time.After(time.Second):
 					cancel()
 					c.state.mu.Unlock()
-					<-victim
-					t.Fatal("victim did not enter cancellable lock wait")
+					t.Fatalf("victim did not enter cancellable lock wait (victim send: %v)", <-victim)
 				}
 				// Give the victim time to register while ownership stays held
 				// and to exceed the starvation threshold before the wake.
