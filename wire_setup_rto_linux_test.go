@@ -89,8 +89,16 @@ func setupRTOResidualServer(s *hostStep) {
 	}
 	s.fact("received", 1)
 	s.send("received")
-	if got := s.readUntilEOF(c); len(got) != 0 {
-		s.t.Errorf("%d extra messages arrived", len(got))
+	// The same end record as recordEnd, which would count only the
+	// messages read here, after the one already received.
+	rest, err := readMessagesToEOF(c)
+	if err != nil {
+		s.fact("eof", 0)
+		s.t.Fatal(err)
+	}
+	s.fact("eof", 1)
+	if len(rest) != 0 {
+		s.t.Errorf("%d extra messages arrived", len(rest))
 	}
 }
 

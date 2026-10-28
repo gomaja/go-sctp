@@ -366,7 +366,7 @@ type prepared struct {
 	handler           NotificationHandler
 	closeTimeout      time.Duration // resolved: 0 → 3 * time.Second
 	abandon           AbandonPolicy
-	setupRTOInitialMS uint32
+	setupRTOInitialMS uint32             // Config.SetupRTOInitial in whole milliseconds, 0 when unset; Dial only
 	subscribed        eventSet           // caller's logical subscriptions (Notifications, plus EventAssocChange on endpoints)
 	fragLevel         FragmentInterleave // the effective level: Config.FragmentInterleave, or InterleaveAssocs on an Endpoint when nil
 
