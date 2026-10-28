@@ -42,6 +42,10 @@ func TestSetupRTOUnsetClaim(t *testing.T) {
 	wrongAssociation := append([]frame(nil), good...)
 	wrongAssociation[2].sport++
 	wantFail(t, check(t, c, wrongAssociation, facts), "original association")
+	squeezed := []frame{c2s(1, 0, 41028, chunkINIT), c2s(2, 10, 41028, chunkINIT), c2s(3, 20, 41028, chunkINIT)}
+	wantFail(t, check(t, c, squeezed, facts), "followed the previous one by 10ms, want the T1 interval 200ms")
+	undoubled := []frame{c2s(1, 0, 41028, chunkINIT), c2s(2, 200, 41028, chunkINIT), c2s(3, 400, 41028, chunkINIT)}
+	wantFail(t, check(t, c, undoubled, facts), "followed the previous one by 200ms, want the T1 interval 400ms")
 	wrong := setupRTOFacts("41028", "1200000000")
 	wantFail(t, check(t, c, good, wrong), "unset case recorded")
 }

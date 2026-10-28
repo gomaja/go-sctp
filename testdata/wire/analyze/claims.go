@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"math/bits"
+	"strings"
 	"time"
 )
 
@@ -121,10 +122,36 @@ func checkSetupRTO(setup bool) func(*claimRun) {
 		if dropped := r.int("dropped"); dropped != int64(want) {
 			r.failf("the INPUT rule dropped %d INITs, capture shows %d", dropped, want)
 		}
+		// Each retransmission follows the previous INIT by the T1 interval
+		// in force: RTO.Initial first, then doubling up to MaxInitTimeout.
+		// The kernel's timer fires up to a tick early (msecs_to_jiffies
+		// rounds the interval up from the tick it was armed on) and a few
+		// timer-wheel slots late.
+		var gaps []string
+		interval := initial
+		for i := 1; i < len(out); i++ {
+			gap := out[i].at.Sub(out[i-1].at)
+			if gap < interval-initGapEarly || gap > interval+initGapLate {
+				r.failf("INIT frame %d followed the previous one by %v, want the T1 interval %v", out[i].number, gap, interval)
+			}
+			gaps = append(gaps, gap.Round(time.Millisecond).String())
+			interval = min(interval*2, maximum)
+		}
 		r.covered(returned, "Dial returned")
-		r.note("exactly %d INIT(s), first interval %v, subsequent T1 intervals double up to %v; no server response", want, initial, maximum)
+		if len(gaps) == 0 {
+			r.note("exactly 1 INIT; T1 at %v would have retransmitted it after the deadline; no server response", initial)
+		} else {
+			r.note("exactly %d INITs, %s apart (T1 from %v, doubling up to %v); no server response", want, strings.Join(gaps, " then "), initial, maximum)
+		}
 	}
 }
+
+// initGapEarly and initGapLate bound how far an INIT retransmission may
+// stray from its T1 interval in checkSetupRTO.
+const (
+	initGapEarly = 20 * time.Millisecond
+	initGapLate  = 150 * time.Millisecond
+)
 
 // checkSetupRTOResidual pins Linux's existing-path RTO: restoring the
 // association's RTO.Initial leaves the first DATA retry at the setup RTO
