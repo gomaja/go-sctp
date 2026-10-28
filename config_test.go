@@ -768,6 +768,7 @@ func TestPrepareFileStyleRejectsEveryOtherField(t *testing.T) {
 	}{
 		{"Control", &Config{Control: func(string, string, syscall.RawConn) error { return nil }}},
 		{"AbandonPolicy", &Config{AbandonPolicy: AbandonQuiet}},
+		{"SetupRTOInitial", &Config{SetupRTOInitial: time.Second}},
 		{"InitMsg", &Config{InitMsg: InitMsg{OutStreams: 1}}},
 		{"AdaptationLayer", &Config{AdaptationLayer: ptr(uint32(1))}},
 		{"HMACIdentifiers", &Config{HMACIdentifiers: []HMACID{}}}, // empty but non-nil
@@ -1269,5 +1270,36 @@ func TestPrepareMarksOnlyTheFileStyleAdopted(t *testing.T) {
 		if got, want := p.adopted, style == styleFile; got != want {
 			t.Errorf("prepare(%v).adopted = %v, want %v", style, got, want)
 		}
+	}
+}
+
+// TestSetupRTOInitialValidation pins the same whole-millisecond __u32
+// boundary as RTOInfo, without adding a lasting typed operation.
+func TestSetupRTOInitialValidation(t *testing.T) {
+	for _, d := range []time.Duration{-time.Millisecond, time.Microsecond, (time.Duration(math.MaxUint32) + 1) * time.Millisecond} {
+		_, err := (&Config{SetupRTOInitial: d}).prepare(styleDial)
+		wantRefused(t, err, "Config.SetupRTOInitial")
+	}
+	for _, d := range []time.Duration{0, time.Millisecond, time.Duration(math.MaxUint32) * time.Millisecond} {
+		p, err := (&Config{SetupRTOInitial: d}).prepare(styleDial)
+		if err != nil {
+			t.Fatalf("prepare(%v): %v", d, err)
+		}
+		if p.setupRTOInitialMS != uint32(d/time.Millisecond) {
+			t.Errorf("setupRTOInitialMS = %d, want %d", p.setupRTOInitialMS, d/time.Millisecond)
+		}
+		wantKinds(t, p.ops, []configOpKind{opRecvRcvInfo, opAssocChange})
+	}
+}
+
+func TestSetupRTOInitialDialOnly(t *testing.T) {
+	for _, style := range []socketStyle{styleListen, styleListenEndpoint, styleOpenEndpoint, styleFile} {
+		t.Run(style.String(), func(t *testing.T) {
+			_, err := (&Config{SetupRTOInitial: time.Second}).prepare(style)
+			wantRefused(t, err, "Config.SetupRTOInitial")
+			if style != styleFile && !strings.Contains(err.Error(), "applies only to Dial") {
+				t.Errorf("err = %v, want Dial-only explanation", err)
+			}
+		})
 	}
 }

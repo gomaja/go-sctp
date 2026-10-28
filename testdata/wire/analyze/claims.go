@@ -16,6 +16,9 @@ var claims = []claim{
 	{"abandon-quiet-cookie-wait", 1, checkAbandon(false, false)},
 	{"abandon-abort-cookie-echoed", 1, checkAbandon(true, true)},
 	{"abandon-quiet-cookie-echoed", 1, checkAbandon(false, true)},
+	{"setup-rto-initial-single-init", 1, checkSetupRTO(true)},
+	{"setup-rto-initial-unset", 1, checkSetupRTO(false)},
+	{"setup-rto-initial-data-residual", 1, checkSetupRTOResidual},
 	{"abort-during-close", 1, checkAbortDuringClose},
 	{"abort-during-peeled-close", 1, checkAbortDuringClose},
 	{"abort-during-endpoint-close", 2, checkAbortDuringClose},
@@ -59,11 +62,103 @@ const (
 	ppidAfter      = 0x57490011
 	ppidInterleave = 0x57490013
 	ppidCanceled   = 0x57490015
+	ppidSetupRTO   = 0x57490016
 )
 
 // abortLimit is how soon after the Abort call its ABORT must be on the
 // wire.
 const abortLimit = 100 * time.Millisecond
+
+// checkSetupRTO counts every INIT while the receiver drops them. T1's
+// first interval is RTO.Initial; subsequent intervals double, capped by
+// MaxInitTimeout, not RTO.Max (net/sctp/sm_sideeffect.c:
+// sctp_cmd_t1_timer_update; RFC 9260 §5.1).
+func checkSetupRTO(setup bool) func(*claimRun) {
+	return func(r *claimRun) {
+		port := r.ports[0]
+		deadline, returned := r.time("deadline_ns"), r.time("return_ns")
+		out, in := r.out(port), r.in(port)
+		first := r.first(out, chunkINIT, "the setup never started")
+		if len(in) != 0 {
+			r.failf("the server answered (frame %d): INITs were not blackholed", in[0].number)
+		}
+		initial := r.duration("lasting_initial_ns")
+		override := r.duration("setup_initial_ns")
+		maximum := r.duration("max_init_timeout_ns")
+		if setup {
+			if override <= deadline.Sub(first.at) {
+				r.failf("SetupRTOInitial %v does not exceed the remaining deadline", override)
+			}
+			initial = override
+		} else if override != 0 {
+			r.failf("unset case recorded SetupRTOInitial %v", override)
+		}
+		if initial <= 0 || maximum <= 0 || !first.at.Before(deadline) {
+			r.failf("invalid initial RTO, maximum INIT timeout or deadline")
+		}
+		want := 1
+		for at, interval := first.at.Add(initial), initial; at.Before(deadline); at = at.Add(interval) {
+			want++
+			if want > 100 {
+				r.failf("more than 100 expected INITs: invalid timer facts")
+			}
+			interval = min(interval*2, maximum)
+		}
+		if !setup && want != 3 {
+			r.failf("the unset case has time for %d INITs, want 3: setup started too late", want)
+		}
+		if len(out) != want {
+			r.failf("%d client frames, want exactly %d INITs before the deadline", len(out), want)
+		}
+		for _, f := range out {
+			if len(f.chunks) != 1 || f.count(chunkINIT) != 1 || f.sport != first.sport {
+				r.failf("frame %d is not one INIT for the original association", f.number)
+			}
+			if !f.at.Before(deadline.Add(tolerance)) {
+				r.failf("INIT frame %d came after the deadline", f.number)
+			}
+		}
+		if dropped := r.int("dropped"); dropped != int64(want) {
+			r.failf("the INPUT rule dropped %d INITs, capture shows %d", dropped, want)
+		}
+		r.covered(returned, "Dial returned")
+		r.note("exactly %d INIT(s), first interval %v, subsequent T1 intervals double up to %v; no server response", want, initial, maximum)
+	}
+}
+
+// checkSetupRTOResidual pins Linux's existing-path RTO: restoring the
+// association's RTO.Initial leaves the first DATA retry at the setup RTO
+// (net/sctp/socket.c: sctp_setsockopt_rtoinfo; RFC 9260 §6.3.1 C1-C3/C7,
+// §6.3.3 E2).
+func checkSetupRTOResidual(r *claimRun) {
+	port := r.ports[0]
+	out, in := r.out(port), r.in(port)
+	sent := dataWith(out, ppidSetupRTO)
+	if len(sent) != 2 || len(distinctTSNs(sent)) != 1 {
+		r.failf("%d DATA transmissions with %d TSNs, want the first DATA and one retry of its TSN", len(sent), len(distinctTSNs(sent)))
+	}
+	setup, lasting := r.duration("setup_initial_ns"), r.duration("lasting_initial_ns")
+	if setup <= 2*lasting || lasting <= 0 {
+		r.failf("setup RTO %v does not distinguish the lasting RTO %v", setup, lasting)
+	}
+	first, retry := sent[0].f, sent[1].f
+	if first.at.Before(r.time("sent_ns").Add(-tolerance)) {
+		r.failf("DATA precedes the send call")
+	}
+	if elapsed := retry.at.Sub(first.at); elapsed < setup-20*time.Millisecond || elapsed > setup+500*time.Millisecond {
+		r.failf("first DATA retransmission after %v, want setup RTO %v (lasting RTO.Initial %v): this pins Linux behaviour described by SetupRTOInitial", elapsed, setup, lasting)
+	}
+	for _, f := range in {
+		if f.at.Before(retry.at) && (f.has(chunkSACK) || f.has(chunkHEARTBEATACK)) {
+			r.failf("frame %d measured an RTT before the first DATA retry", f.number)
+		}
+	}
+	if r.int("dropped") != 1 || r.int("received") != 1 || r.int("eof") != 1 {
+		r.failf("want exactly one DATA dropped, one message delivered and a graceful end")
+	}
+	r.firstSACKCovering(after(in, retry.at.Add(-tolerance)), sent[0].d.tsn)
+	r.note("TSN %d retransmitted after %v: the path kept setup RTO %v despite lasting RTO.Initial %v", sent[0].d.tsn, retry.at.Sub(first.at), setup, lasting)
+}
 
 // checkAbandon: a Dial abandoned when its context ends sends an ABORT with
 // AbandonAbort and nothing with AbandonQuiet, both in COOKIE-WAIT (the

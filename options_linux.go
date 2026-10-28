@@ -769,6 +769,15 @@ func (c *Conn) RTOInfo() (*RTOInfo, error) {
 // syscall.EINVAL before any system call; Linux refuses with EINVAL a Min
 // above the Max already in force (net/sctp/socket.c:
 // sctp_setsockopt_rtoinfo).
+//
+// Linux changes only the association's values. Each path keeps its current
+// RTO until its next RTT measurement or retransmission timeout, which
+// apply the new bounds (RFC 9260 §6.3.1 rules C3, C6 and C7, §6.3.3 rule
+// E2; net/sctp/transport.c: sctp_transport_update_rto;
+// net/sctp/sm_sideeffect.c: sctp_do_8_2_transport_strike), and the
+// T5-shutdown-guard keeps the five times RTO.Max computed when the
+// association was created (RFC 9260 §9.2; net/sctp/associola.c:
+// sctp_association_init). UPSTREAM-LINK.
 func (c *Conn) SetRTOInfo(r *RTOInfo) error {
 	if !c.opened() {
 		return c.optionError("set", net.ErrClosed)

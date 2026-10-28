@@ -84,7 +84,9 @@ func (s socketStyle) String() string {
 // ExperimentalECN, AdaptationLayer, RTOInfo, DelayedSACK, FragmentsDisabled,
 // ReusePort, ReceiveNxtInfo, NoDelay, DefaultSndInfo, DefaultPrInfo,
 // Notifications. Typed settings therefore win over anything Control wrote.
-// Then the socket is bound, and connected or put in listening state.
+// For Dial, SetupRTOInitial comes last; Dial undoes it once the association
+// is established. Then the socket is bound, and connected or put in
+// listening state.
 type Config struct {
 	// Control is called with the new socket before any typed setting is
 	// applied. As for net.Dialer and net.ListenConfig, network is the
@@ -111,6 +113,42 @@ type Config struct {
 	// AbandonPolicy says how Dial releases an association that has not reached
 	// ESTABLISHED when ctx ends or setup fails. Dial only.
 	AbandonPolicy AbandonPolicy
+
+	// SetupRTOInitial, when not zero, is the RTO.Initial Dial's association
+	// is set up with, in place of the one RTOInfo, Control or the kernel
+	// default gives the socket. Dial applies it after every other setting
+	// and, once the association is established, sets the association's
+	// RTO.Initial back to that lasting value, so RTOInfo keeps its meaning
+	// (RFC 6458 §8.1.1; net/sctp/socket.c: sctp_setsockopt_rtoinfo,
+	// sctp_id2assoc). Dial only.
+	//
+	// The INIT and COOKIE ECHO retransmission timers, T1-init and T1-cookie
+	// (RFC 9260 §5.1, and §5.1.6 as amended by Verified Erratum 8402),
+	// start at RTO.Initial (net/sctp/associola.c: sctp_association_init;
+	// net/sctp/sm_sideeffect.c: sctp_cmd_new_state), so a value beyond ctx's
+	// deadline makes the attempt a single INIT. InitMsg.MaxAttempts cannot:
+	// 0 means the default, and 1 still allows one retransmission (RFC 6458
+	// §8.1.3; net/sctp/sm_statefuns.c: sctp_sf_t1_init_timer_expire).
+	//
+	// Only RTO.Initial is replaced. RTO.Min and RTO.Max play no part in the
+	// setup on Linux, which bounds the T1 doubling with
+	// InitMsg.MaxInitTimeout instead (sctp_cmd_t1_timer_update), and a raised
+	// RTO.Max would leave the T5-shutdown-guard at five times it for the
+	// association's life (RFC 9260 §9.2; sctp_association_init).
+	//
+	// Linux keeps part of the setup value. Each peer address starts with
+	// RTO.Initial as its RTO (RFC 9260 §6.3.1 rule C1; net/sctp/associola.c:
+	// sctp_assoc_add_peer), no RTT is measured during the setup, and setting
+	// RTO.Initial on an established association does not reach its paths
+	// (sctp_setsockopt_rtoinfo). Each path therefore keeps SetupRTOInitial
+	// as its RTO until its first RTT measurement (rules C2 and C3) or its
+	// first retransmission timeout, which doubles it within the
+	// association's RTO.Max (§6.3.3 rule E2); paths added later start from
+	// the lasting value. UPSTREAM-LINK. For an association that outlives
+	// Dial, SCTP_RTOINFO cannot reach the socket's own copy either, which
+	// keeps SetupRTOInitial: Conn.RTOInfo reports it once the association
+	// has ended.
+	SetupRTOInitial time.Duration
 
 	// "Requires X" below means X must be set to true in the same Config.
 	// Linux refuses the AUTH lists with EACCES while AUTH is off
@@ -324,12 +362,13 @@ func (s eventSet) has(t EventType) bool { return s&eventBit(t) != 0 }
 // plus the package-side fields a constructor needs but that are never
 // written to the kernel through a Config-shaped setsockopt.
 type prepared struct {
-	ops          []configOp
-	handler      NotificationHandler
-	closeTimeout time.Duration // resolved: 0 → 3 * time.Second
-	abandon      AbandonPolicy
-	subscribed   eventSet           // caller's logical subscriptions (Notifications, plus EventAssocChange on endpoints)
-	fragLevel    FragmentInterleave // the effective level: Config.FragmentInterleave, or InterleaveAssocs on an Endpoint when nil
+	ops               []configOp
+	handler           NotificationHandler
+	closeTimeout      time.Duration // resolved: 0 → 3 * time.Second
+	abandon           AbandonPolicy
+	setupRTOInitialMS uint32
+	subscribed        eventSet           // caller's logical subscriptions (Notifications, plus EventAssocChange on endpoints)
+	fragLevel         FragmentInterleave // the effective level: Config.FragmentInterleave, or InterleaveAssocs on an Endpoint when nil
 
 	// adopted marks the Config form of FileConn and FileListener: the
 	// descriptor was set up by someone else, so subscribed says nothing
@@ -411,6 +450,14 @@ func (c *Config) prepare(style socketStyle) (*prepared, error) {
 	}
 	if c.AbandonPolicy != AbandonAbort && style != styleDial {
 		return nil, invalidArg("Config.AbandonPolicy is set on a %s Config; it applies only to Dial", style)
+	}
+
+	if c.SetupRTOInitial != 0 && style != styleDial {
+		return nil, invalidArg("Config.SetupRTOInitial is set on a %s Config; it applies only to Dial", style)
+	}
+	setupRTOInitialMS, err := durationToMillis("Config.SetupRTOInitial", c.SetupRTOInitial, math.MaxUint32)
+	if err != nil {
+		return nil, err
 	}
 
 	ops := []configOp{{kind: opRecvRcvInfo}, {kind: opAssocChange}}
@@ -707,12 +754,13 @@ func (c *Config) prepare(style socketStyle) (*prepared, error) {
 	}
 
 	return &prepared{
-		ops:          ops,
-		handler:      c.NotificationHandler,
-		closeTimeout: closeTimeout,
-		abandon:      c.AbandonPolicy,
-		subscribed:   subscribed,
-		fragLevel:    fragLevel,
+		ops:               ops,
+		handler:           c.NotificationHandler,
+		closeTimeout:      closeTimeout,
+		abandon:           c.AbandonPolicy,
+		setupRTOInitialMS: setupRTOInitialMS,
+		subscribed:        subscribed,
+		fragLevel:         fragLevel,
 	}, nil
 }
 
@@ -783,6 +831,7 @@ func prepareFileStyle(c *Config, closeTimeout time.Duration) (*prepared, error) 
 	}{
 		{"Control", c.Control != nil},
 		{"AbandonPolicy", c.AbandonPolicy != AbandonAbort},
+		{"SetupRTOInitial", c.SetupRTOInitial != 0},
 		{"InitMsg", c.InitMsg != (InitMsg{})},
 		{"AdaptationLayer", c.AdaptationLayer != nil},
 		{"HMACIdentifiers", c.HMACIdentifiers != nil},
