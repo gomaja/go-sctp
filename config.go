@@ -141,13 +141,16 @@ type Config struct {
 	// sctp_assoc_add_peer), no RTT is measured during the setup, and setting
 	// RTO.Initial on an established association does not reach its paths
 	// (sctp_setsockopt_rtoinfo). Each path therefore keeps SetupRTOInitial
-	// as its RTO until its first RTT measurement (rules C2 and C3) or its
+	// as its RTO until its first RTT measurement (rules C2 and C3), its
 	// first retransmission timeout, which doubles it within the
-	// association's RTO.Max (§6.3.3 rule E2); paths added later start from
-	// the lasting value. UPSTREAM-LINK. For an association that outlives
-	// Dial, SCTP_RTOINFO cannot reach the socket's own copy either, which
-	// keeps SetupRTOInitial: Conn.RTOInfo reports it once the association
-	// has ended.
+	// association's RTO.Max (§6.3.3 rule E2), or a restart of the
+	// association, which resets it to the lasting value
+	// (net/sctp/transport.c: sctp_transport_reset); paths added later start
+	// from the lasting value too. https://github.com/sctp/lksctp-tools/issues/74
+	// reports this. For an association that outlives Dial, SCTP_RTOINFO
+	// cannot reach the socket's own copy either, which keeps
+	// SetupRTOInitial: Conn.RTOInfo reports it once the association has
+	// ended.
 	SetupRTOInitial time.Duration
 
 	// "Requires X" below means X must be set to true in the same Config.
