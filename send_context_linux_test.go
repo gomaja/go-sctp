@@ -40,8 +40,9 @@ func TestNoWaitQueuesBehindExistingWriter(t *testing.T) {
 	go func() { close(entered); _, err := c.SendMsg([]byte{2}, SendOptions{NoWait: true}); second <- err }()
 	<-entered
 	early := false
+	var earlyErr error
 	select {
-	case <-second:
+	case earlyErr = <-second:
 		early = true
 	case <-time.After(50 * time.Millisecond):
 	}
@@ -56,7 +57,7 @@ func TestNoWaitQueuesBehindExistingWriter(t *testing.T) {
 		}
 	}
 	if early || before != 1 {
-		t.Fatalf("NoWait bypassed parked writer: returned=%v calls=%d", early, before)
+		t.Fatalf("NoWait bypassed parked writer: returned=%v (err %v) calls=%d", early, earlyErr, before)
 	}
 	if calls.Load() != 3 {
 		t.Fatalf("send calls=%d, want 3", calls.Load())
@@ -153,8 +154,7 @@ func TestSendMsgContextLockCancellation(t *testing.T) {
 				case <-time.After(time.Second):
 					cancel()
 					close(space)
-					<-first
-					t.Fatal("lock acquisition did not observe the context")
+					t.Fatalf("lock acquisition did not observe the context (first send: %v)", <-first)
 				}
 				cancel()
 				contextResult(t, done, context.Canceled)
@@ -538,8 +538,7 @@ func TestSendMsgContextRawWriteSerialization(t *testing.T) {
 			case <-time.After(time.Second):
 				cancel()
 				close(release)
-				<-rawDone
-				t.Fatal("lock acquisition behind raw Write did not observe the context")
+				t.Fatalf("lock acquisition behind raw Write did not observe the context (raw Write: %v)", <-rawDone)
 			}
 			cancel()
 			contextResult(t, done, context.Canceled)
@@ -693,8 +692,7 @@ func TestSendMsgContextReadDeadline(t *testing.T) {
 				}
 			case <-time.After(time.Second):
 				_ = file.SetReadDeadline(aLongTimeAgo)
-				<-read
-				t.Fatal("cancellation cleared the caller's read deadline")
+				t.Fatalf("cancellation cleared the caller's read deadline (Read: %v)", <-read)
 			}
 		})
 	}
@@ -735,8 +733,7 @@ func TestSendMsgContextSetDeadlineDuringInterrupt(t *testing.T) {
 				}
 			case <-time.After(time.Second):
 				_ = file.SetReadDeadline(aLongTimeAgo)
-				<-read
-				t.Error("SetDeadline deferred its read part until restore")
+				t.Errorf("SetDeadline deferred its read part until restore (Read: %v)", <-read)
 			}
 			close(finish)
 			contextResult(t, done, context.Canceled)
