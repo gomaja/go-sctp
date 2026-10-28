@@ -23,7 +23,9 @@ package sctp
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"runtime"
@@ -56,6 +58,9 @@ func Dial(ctx context.Context, network string, laddr, raddr *Addr) (*Conn, error
 // 3 s, rto_max 60 s, max_init_retransmits 8) that is about 333 s. A
 // refusal, such as the ABORT a peer with no listener on the port answers
 // with, ends the call as soon as it arrives.
+//
+// With Config.SetupRTOInitial beyond ctx's deadline, the attempt sends a
+// single INIT; that field says what the association keeps of it.
 //
 // Config.Control must not connect the socket: Dial sets up the
 // association itself, and when an association Control started has already
@@ -170,11 +175,55 @@ func (d *dialAttempt) run(ctx context.Context) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := connectSocket(ctx, &s, d.address, d.control, d.p.ops, d.bind, d.peer); err != nil {
+	lastingInitial, err := d.setup(&s)
+	if err == nil {
+		err = connectSocket(ctx, &s, d.bind, d.peer)
+	}
+	if err != nil {
 		_ = abandonDial(&sockCloseOps{sock: &s, kind: kindDialed}, d.p.abandon)
 		return nil, err
 	}
+	if d.p.setupRTOInitialMS != 0 {
+		if err := s.setDialRTOInitial(lastingInitial, "restoring RTO.Initial after"); err != nil {
+			// The association has reached ESTABLISHED. Release it as
+			// newConn does when its initialization fails.
+			_ = (&sockCloseOps{sock: &s, kind: kindDialed}).abortive()
+			return nil, err
+		}
+	}
 	return newConn(s, kindDialed, d.p)
+}
+
+// setup applies Control and every typed setting to s. With SetupRTOInitial
+// set, it then saves the socket's RTO.Initial, the lasting value it
+// returns, and replaces it for this attempt; the zero srto_max and
+// srto_min leave RTO.Max and RTO.Min as they are (RFC 6458 §8.1.1).
+func (d *dialAttempt) setup(s *socket) (uint32, error) {
+	if err := setupSocket(s, d.address, d.control, d.p.ops); err != nil {
+		return 0, err
+	}
+	if d.p.setupRTOInitialMS == 0 {
+		return 0, nil
+	}
+	var b [sizeRTOInfo]byte
+	l := uint32(len(b))
+	if err := s.getsockopt(optRTOInfo, unsafe.Pointer(&b[0]), &l); err != nil {
+		return 0, fmt.Errorf("sctp: reading RTO.Initial for Config.SetupRTOInitial: %w", os.NewSyscallError("getsockopt", err))
+	}
+	lasting := binary.NativeEndian.Uint32(b[rtoInfoInitialOff:])
+	return lasting, s.setDialRTOInitial(d.p.setupRTOInitialMS, "applying")
+}
+
+// setDialRTOInitial changes only Initial. Before connect it reaches the
+// socket; after awaitEstablished it reaches the association, or the socket
+// if the association has already ended (net/sctp/socket.c: sctp_id2assoc).
+func (s *socket) setDialRTOInitial(initialMS uint32, what string) error {
+	var b [sizeRTOInfo]byte
+	binary.NativeEndian.PutUint32(b[rtoInfoInitialOff:], initialMS)
+	if err := s.setsockopt(optRTOInfo, unsafe.Pointer(&b[0]), uintptr(len(b))); err != nil {
+		return fmt.Errorf("sctp: %s Config.SetupRTOInitial: %w", what, os.NewSyscallError("setsockopt", err))
+	}
+	return nil
 }
 
 // selfConnected reports whether c's association runs from its socket back
@@ -261,12 +310,9 @@ func abandonDial(ops closeOps, policy AbandonPolicy) error {
 	return ops.abortive()
 }
 
-// connectSocket configures and binds a new socket, starts the association
-// setup and waits for it.
-func connectSocket(ctx context.Context, s *socket, address string, control func(string, string, syscall.RawConn) error, ops []configOp, bind, peer []byte) error {
-	if err := setupSocket(s, address, control, ops); err != nil {
-		return err
-	}
+// connectSocket binds a configured socket, starts the association setup
+// and waits for it.
+func connectSocket(ctx context.Context, s *socket, bind, peer []byte) error {
 	if bind != nil {
 		if err := s.bindx(optSockoptBindxAdd, bind); err != nil {
 			return os.NewSyscallError("sctp_bindx", err)

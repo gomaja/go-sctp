@@ -12,6 +12,37 @@ code is written. The procedure at the end says how, and when.
 
 ## Verification record
 
+Rechecked **2026-10-28** for `Config.SetupRTOInitial`: the RFC Editor JSON,
+Datatracker document and server-filtered incoming `obs,updates`
+relationships, and full errata records at the endpoints below were fetched
+for RFC 9260 and RFC 6458. Both authorities agree: RFC 9260 remains
+Proposed Standard, RFC 6458 remains Informational, and neither is obsoleted
+or updated. The errata are unchanged:
+
+- RFC 9260: Verified 7147, 7148, 7387, 7852 and 8402; Held for Document
+  Update 8772; Rejected 7988, 8387 and 8774.
+- RFC 6458: Verified 6111, 6112, 6115, 6980, 7547 and 7548; Held for
+  Document Update 4921, 6113, 6114 and 6116; Rejected 6081, 6131, 6132 and
+  6133. None amends §8.1.1 or §8.1.3.
+
+[RFC 9260 Verified Erratum 8402](https://errata.rfc-editor.org/eid8402/),
+verified 2026-05-26, corrects §5.1.6 to distinguish INIT's T1-init from
+COOKIE ECHO's T1-cookie. `Config.SetupRTOInitial` follows that correction;
+the Held and Rejected errata retain the treatment recorded below.
+
+The [TSVWG documents](https://datatracker.ietf.org/wg/tsvwg/documents/) and
+[RFC Editor queue](https://queue.rfc-editor.org/api/v1/queue/index.json)
+were checked again. The active SCTP socket multipath and send-queue
+information proposals remain individual drafts, revision -33. The queue's
+2026-10-28T03:39:08Z snapshot still lists
+`draft-ietf-ccwg-ratelimited-increase` revision -10 as `in_progress`, while
+its [Datatracker record](https://datatracker.ietf.org/api/v1/doc/document/draft-ietf-ccwg-ratelimited-increase/?format=json)
+has revision -11 and no RFC number. That draft proposes an update to RFC
+9260's congestion-window growth, but its filtered relationships and RFC
+9260's incoming relationships still have no `updates` edge. The revision
+difference remains a source discrepancy, not a published amendment or a
+change to the RTO baseline.
+
 Checked on **2026-09-26** (16:09 to 16:35 UTC). For every RFC named in this
 document, 46 in all, the four records below were fetched and compared:
 
@@ -115,8 +146,10 @@ the maintainer before any action; there is none in the baseline.
   bytes.
 - **Verified 7387** (technical, §5.2.4.1): the restart diagram uses
   T1-cookie for COOKIE ECHO. Kernel behaviour.
-- **Verified 8402** (technical, §5.1.6): INIT is retransmitted on T1-init
-  and COOKIE ECHO on T1-cookie. Kernel behaviour.
+- **[Verified 8402](https://errata.rfc-editor.org/eid8402/)** (technical,
+  §5.1.6, verified 2026-05-26): INIT is retransmitted on T1-init and COOKIE
+  ECHO on T1-cookie. Kernel behaviour; `Config.SetupRTOInitial` documents
+  both timers.
 - **Verified 7147** (editorial, §3.2) and **7852** (editorial, §8.5: the
   verification tag is checked before any chunk is processed). Kernel
   behaviour.

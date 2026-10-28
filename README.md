@@ -143,6 +143,11 @@ already-resolved addresses and never resolve hostnames themselves.
   streams and extensions offered in the INIT, socket buffers, defaults and
   notification subscriptions, is a field of `Config`, whose methods are the
   constructors. Optional settings are pointers: `NoDelay: new(true)`.
+  `Config.SetupRTOInitial` raises or lowers RTO.Initial only while `Dial`
+  sets up the association: a value beyond the dial deadline sends a single
+  INIT within it, and the association gets the lasting RTO.Initial back once
+  it is established. Its documentation says what Linux keeps of the setup
+  value.
 - **Messages.** `SendMsg` takes a `SendOptions`: stream, PPID and flags,
   a PR-SCTP policy, an AUTH key, the peer address to send to, and a
   single-attempt mode (`NoWait`). `SendMsgContext` is `SendMsg` with a
