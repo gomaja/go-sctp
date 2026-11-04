@@ -32,15 +32,16 @@
 // descriptor another goroutine takes meanwhile nor the system-wide limit
 // can be ruled out.
 //
-// [Config] exposes the usual settings needed before an association exists: the streams and extensions offered in the INIT,
-// socket buffers, socket defaults and notification subscriptions. Other
-// pre-association options can be set through [Config.Control]; see
-// [Conn.SetRemoteUDPEncapsPort] for initial UDP encapsulation. Its
-// methods [Config.Dial], [Config.Listen], [Config.ListenEndpoint],
-// [Config.OpenEndpoint], [Config.FileConn] and [Config.FileListener] are
-// the constructors, and the package-level functions of the same names use a
-// zero Config. A Config is checked before any socket is created. Optional
-// settings are pointers, and nil leaves the kernel's default:
+// [Config] exposes the usual settings needed before an association exists:
+// the streams and extensions offered in the INIT, socket buffers, socket
+// defaults and notification subscriptions. Other pre-association options
+// can be set through [Config.Control]; see [Conn.SetRemoteUDPEncapsPort]
+// for initial UDP encapsulation. Its methods [Config.Dial],
+// [Config.Listen], [Config.ListenEndpoint], [Config.OpenEndpoint],
+// [Config.FileConn] and [Config.FileListener] are the constructors. The
+// package-level functions of the same names use a zero Config. A Config
+// is checked before any socket is created. Optional settings are pointers,
+// and nil leaves the kernel's default:
 //
 //	cfg := &sctp.Config{
 //		InitMsg:       sctp.InitMsg{OutStreams: 16, MaxInStreams: 16},

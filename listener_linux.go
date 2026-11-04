@@ -48,11 +48,7 @@ func Listen(network string, laddr *Addr) (*Listener, error) {
 // IPV6_V6ONLY to 1 inside Config.Control's RawConn.Control callback, which
 // runs after the package clears it.
 //
-// Linux silently binds only the start of a very long local address list;
-// the limit depends on the kernel. Observed IPv4 limits are 4,352 addresses
-// (69,632 bytes) on 6.12 and 8,448 (135,168 bytes) on 6.18. Check LocalAddrs
-// (Addr on a Listener or Endpoint) when using long lists:
-// https://github.com/sctp/lksctp-tools/issues/76.
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
 //
 // The backlog is the kernel's own maximum, net.core.somaxconn, read at
 // each Listen, rather than syscall.SOMAXCONN: the Go constant is 128,
@@ -270,11 +266,7 @@ func (l *Listener) SetDeadline(t time.Time) error {
 // family cannot carry is refused with an error matching syscall.EINVAL
 // before any system call.
 //
-// Linux silently binds only the start of a very long local address list;
-// the limit depends on the kernel. Observed IPv4 limits are 4,352 addresses
-// (69,632 bytes) on 6.12 and 8,448 (135,168 bytes) on 6.18. Check LocalAddrs
-// (Addr on a Listener or Endpoint) when using long lists:
-// https://github.com/sctp/lksctp-tools/issues/76.
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
 func (l *Listener) BindAdd(ips ...netip.Addr) error {
 	return l.bindx(optSockoptBindxAdd, "BindAdd", ips)
 }

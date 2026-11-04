@@ -280,8 +280,9 @@ func (c *Conn) liveAddrs(opt int) (*Addr, error) {
 //
 // Linux silently binds only the start of a very long local address list;
 // the limit depends on the kernel. Observed IPv4 limits are 4,352 addresses
-// (69,632 bytes) on 6.12 and 8,448 (135,168 bytes) on 6.18. Check LocalAddrs
-// (Addr on a Listener or Endpoint) when using long lists:
+// (69,632 bytes) on 6.12 and 8,448 (135,168 bytes) on 6.18. Check
+// [Conn.LocalAddrs], [Listener.Addr] or [Endpoint.Addr] to verify the
+// bound addresses when using long lists:
 // https://github.com/sctp/lksctp-tools/issues/76.
 func (c *Conn) BindAdd(ips ...netip.Addr) error {
 	return c.bindx(optSockoptBindxAdd, "BindAdd", ips)

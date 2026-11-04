@@ -454,13 +454,14 @@ func (c *Conn) PathThresholds(path netip.Addr) (*PathThresholds, error) {
 // SetPathThresholds changes the failure thresholds of one path, or, for the
 // zero netip.Addr, of the association and every path it has
 // (SCTP_PEER_ADDR_THLDS_V2, RFC 7829 §7.2). A nil field leaves that
-// threshold unchanged for a per-path call: Linux applies all three whatever they hold
-// (net/sctp/socket.c: sctp_setsockopt_paddr_thresholds), so the package
-// reads the thresholds, changes the fields given and writes them back,
-// holding the connection's option lock so that neither another
-// SetPathThresholds nor a SetPathParams changing the retransmission limit
-// is lost. For the association as a whole, a nil field
-// keeps the association's value, which Linux then applies to every path.
+// threshold unchanged for a per-path call: Linux applies all three,
+// whatever they hold (net/sctp/socket.c:
+// sctp_setsockopt_paddr_thresholds). The package reads the thresholds,
+// changes the fields given and writes them back, holding the connection's
+// option lock so that neither another SetPathThresholds nor a
+// SetPathParams changing the retransmission limit is lost. For the
+// association as a whole, a nil field keeps the association's value, which
+// Linux then applies to every path.
 // A nil t and a PathMaxRetrans of 0, which Linux would read as
 // "unchanged", are refused with an error matching syscall.EINVAL before
 // any system call. Linux refuses a PFThreshold above PrimarySwitchover

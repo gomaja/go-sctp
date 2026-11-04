@@ -204,7 +204,6 @@ listener, err := cfg.Listen("sctp6", &sctp.Addr{Port: port})
 ```
 
 The same callback applies to `Dial`, `ListenEndpoint` and `OpenEndpoint`.
-Use Linux's `syscall` package in this example.
 
 ## Kernel requirements
 

@@ -51,11 +51,7 @@ func Dial(ctx context.Context, network string, laddr, raddr *Addr) (*Conn, error
 // on the same port (EADDRINUSE). For IPv6 only, set IPV6_V6ONLY to 1 inside
 // Config.Control's RawConn.Control callback, after the package clears it.
 //
-// Linux silently binds only the start of a very long local address list;
-// the limit depends on the kernel. Observed IPv4 limits are 4,352 addresses
-// (69,632 bytes) on 6.12 and 8,448 (135,168 bytes) on 6.18. Check LocalAddrs
-// (Addr on a Listener or Endpoint) when using long lists:
-// https://github.com/sctp/lksctp-tools/issues/76.
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
 //
 // ctx interrupts the wait for association setup; it does not interrupt
 // Config.Control, which runs synchronously. When ctx interrupts the wait,

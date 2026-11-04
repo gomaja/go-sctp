@@ -249,11 +249,15 @@ Beyond the names, these behaviours differ from v1.
     `IPV6_V6ONLY` to 1 inside `Config.Control`'s `RawConn.Control` callback;
     it runs after the package clears the option. The README shows the
     callback, which also applies to `Dial`, `ListenEndpoint` and `OpenEndpoint`.
-32. **PR-SCTP fields must belong to the selected policy.** `PRTTL` requires
-    a positive `TTL` and zero `Value`; Linux abandons every message at once
-    for a zero TTL, so use `PRNone` for no expiry. `PRRtx` and `PRPrio`
-    require zero `TTL`, and `PRNone` requires both fields zero. This applies
-    to `SendOptions.PR`, `Config.DefaultPrInfo` and `SetDefaultPrInfo`.
+32. **PR-SCTP lifetimes move from `Value` to `TTL`.** v1's `PrInfo` and
+    `DefaultPrInfo` used `Value` for every policy, including a lifetime in
+    milliseconds for `SCTPPrPolicyTTL`, and passed it to Linux. Now use
+    `PRTTL` with a positive `TTL` duration and zero `Value`. A zero lifetime
+    is refused because Linux abandons every message at once; use `PRNone`
+    for no expiry. `PRRtx` and `PRPrio` still use `Value` and require zero
+    `TTL`; `PRNone` requires both fields zero. Unused fields are now refused
+    before reaching Linux. This applies to `SendOptions.PR`,
+    `Config.DefaultPrInfo` and `SetDefaultPrInfo`.
 
 ## Capabilities with no replacement
 

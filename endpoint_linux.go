@@ -68,11 +68,7 @@ func OpenEndpoint(network string, laddr *Addr) (*Endpoint, error) {
 // same port (EADDRINUSE). For IPv6 only, set IPV6_V6ONLY to 1 inside
 // Config.Control's RawConn.Control callback, after the package clears it.
 //
-// Linux silently binds only the start of a very long local address list;
-// the limit depends on the kernel. Observed IPv4 limits are 4,352 addresses
-// (69,632 bytes) on 6.12 and 8,448 (135,168 bytes) on 6.18. Check LocalAddrs
-// (Addr on a Listener or Endpoint) when using long lists:
-// https://github.com/sctp/lksctp-tools/issues/76.
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
 //
 // Before any association can exist, and after Config.Control, whatever
 // Control did, the package enables SCTP_RECVRCVINFO and the
@@ -106,8 +102,10 @@ func (c *Config) ListenEndpoint(network string, laddr *Addr) (*Endpoint, error) 
 // port afterwards. Like ListenEndpoint, "sctp6" is dual-stack, accepts
 // IPv4 peers and can collide with a wildcard "sctp4" bind (EADDRINUSE).
 // Config.Control can set IPV6_V6ONLY to 1 after the package clears it, as
-// described on Config. Long local address lists have the same Linux limit
-// described on ListenEndpoint. Errors are *net.OpError with Op "listen".
+// described on Config.
+//
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
+// Errors are *net.OpError with Op "listen".
 func (c *Config) OpenEndpoint(network string, laddr *Addr) (*Endpoint, error) {
 	e, err := c.openEndpoint(styleOpenEndpoint, network, laddr)
 	if err != nil {
@@ -558,11 +556,7 @@ func (e *Endpoint) SetAutoClose(d time.Duration) error {
 // socket's family cannot carry is refused with an error matching
 // syscall.EINVAL before any system call. Errors are *net.OpError with Op
 // "bindx".
-// Linux silently binds only the start of a very long local address list;
-// the limit depends on the kernel. Observed IPv4 limits are 4,352 addresses
-// (69,632 bytes) on 6.12 and 8,448 (135,168 bytes) on 6.18. Check LocalAddrs
-// (Addr on a Listener or Endpoint) when using long lists:
-// https://github.com/sctp/lksctp-tools/issues/76.
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
 func (e *Endpoint) BindAdd(ips ...netip.Addr) error {
 	return e.bindx(optSockoptBindxAdd, "BindAdd", ips)
 }

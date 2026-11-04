@@ -97,11 +97,11 @@ type DelayedSACK struct {
 // readback, clear its inactive fields as Conn.SetPathParams shows.
 // PathMTU can be set only with PMTUD false. DelayedSACK and SACKDelay are
 // a Linux extension to the RFC's struct, the per-path counterpart of
-// Config.DelayedSACK. Linux keeps an
-// association's heartbeat interval and SACK delay in kernel ticks
-// (net/sctp/socket.c: sctp_setsockopt_peer_addr_params,
-// sctp_getsockopt_peer_addr_params), so readback rounds up to a tick: exact
-// at HZ=1000, a multiple of 10 ms at HZ=100.
+// Config.DelayedSACK. Linux keeps an association's heartbeat interval and
+// SACK delay in kernel ticks (net/sctp/socket.c:
+// sctp_setsockopt_peer_addr_params, sctp_getsockopt_peer_addr_params), so
+// readback rounds up to a tick: exact at HZ=1000, a multiple of 10 ms at
+// HZ=100.
 type PathParams struct {
 	Heartbeat         *bool
 	HeartbeatInterval *time.Duration // 0 = SPP_HB_TIME_IS_ZERO
