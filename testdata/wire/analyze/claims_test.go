@@ -19,11 +19,12 @@ func TestCheckPositiveCounts(t *testing.T) {
 		{"path", "each"},
 		{"close-after-burst", "count"},
 		{"nowait-refusal", "queued"},
+		{"peeled-close-full-buffer", "queued_0"},
 	} {
 		t.Run(tc.claim, func(t *testing.T) {
 			for _, value := range []string{"", "-1", "0"} {
 				t.Run("count="+value, func(t *testing.T) {
-					facts := map[string]string{"port": "41001", "close_ns": ns(10)}
+					facts := map[string]string{"port": "41001", "close_ns": ns(10), "drain_ns": ns(15), "grace_ns": "1000000000"}
 					if value != "" {
 						facts[tc.key] = value
 					}
@@ -263,6 +264,16 @@ func TestCheckCloseWhileFull(t *testing.T) {
 				cases = append(cases,
 					captureCase{fmt.Sprintf("data-at-shutdown-%d", i), func(f []frame, _ map[string]string) []frame { f[base+1].at = f[base+3].at; return f }, "precedes queued DATA"},
 					captureCase{fmt.Sprintf("sack-at-shutdown-%d", i), func(f []frame, _ map[string]string) []frame { f[base+2].at = f[base+3].at; return f }, ""},
+					captureCase{fmt.Sprintf("empty-queue-%d", i), func(f []frame, facts map[string]string) []frame { facts[fmt.Sprintf("queued_%d", i)] = "0"; return f }, "must be positive"},
+					captureCase{fmt.Sprintf("negative-queue-%d", i), func(f []frame, facts map[string]string) []frame { facts[fmt.Sprintf("queued_%d", i)] = "-1"; return f }, "must be positive"},
+					captureCase{fmt.Sprintf("unset-queue-%d", i), func(f []frame, facts map[string]string) []frame { delete(facts, fmt.Sprintf("queued_%d", i)); return f }, "no fact"},
+					captureCase{fmt.Sprintf("one-message-%d", i), func(f []frame, facts map[string]string) []frame {
+						facts[fmt.Sprintf("queued_%d", i)] = "1"
+						facts[fmt.Sprintf("received_%d", i)] = "1"
+						f[base].data = nil
+						f[base].chunks = []int{chunkINIT}
+						return f
+					}, ""},
 					removeFrame(base, "distinct queued messages"),
 					captureCase{fmt.Sprintf("extra-message-%d", i), func(f []frame, _ map[string]string) []frame {
 						f[base+2].sackCum[0] = 99
