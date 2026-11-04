@@ -3736,7 +3736,11 @@ func TestEndpointNotificationFramingVerdict(t *testing.T) {
 // than the first receive buffer, so the callback must consume its tail.
 func queuePeelNotification(t *testing.T, e *Endpoint, id AssocID) {
 	t.Helper()
-	if _, err := e.SendMsg(id, bytes.Repeat([]byte("notification"), 80), SendOptions{PR: &PrInfo{Policy: PRTTL, TTL: 0}}); err != nil {
+	// Past the package's validation, which refuses this lifetime: Linux
+	// abandons a zero-lifetime message before sending it
+	// (https://github.com/sctp/lksctp-tools/issues/78), which queues a long
+	// SendFailed record carrying it.
+	if _, err := e.send.send(noContext, &e.sock, bytes.Repeat([]byte("notification"), 80), &SendOptions{PR: &PrInfo{Policy: PRTTL, TTL: 0}}, nil, id); err != nil {
 		t.Fatal(err)
 	}
 }
