@@ -181,6 +181,9 @@ func (l *Listener) AcceptSCTP() (*Conn, error) {
 	return c, nil
 }
 
+// testHookAccept4 replaces accept4 in tests that exercise transient errors.
+var testHookAccept4 func(fd, flags int) (int, syscall.Sockaddr, error)
+
 func (l *Listener) accept() (*Conn, error) {
 	if l == nil || l.sock.raw == nil {
 		return nil, net.ErrClosed
@@ -189,7 +192,11 @@ func (l *Listener) accept() (*Conn, error) {
 	var aerr error
 	if err := l.sock.raw.Read(func(fd uintptr) bool {
 		for {
-			nfd, _, aerr = syscall.Accept4(int(fd), syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC)
+			accept4 := syscall.Accept4
+			if testHookAccept4 != nil {
+				accept4 = testHookAccept4
+			}
+			nfd, _, aerr = accept4(int(fd), syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC)
 			switch aerr {
 			case syscall.EINTR:
 				continue
