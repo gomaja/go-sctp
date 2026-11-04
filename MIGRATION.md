@@ -209,7 +209,9 @@ Beyond the names, these behaviours differ from v1.
     `ECONNABORTED`. In v1 only the first call got it, and a later read
     waited forever.
 22. **Errors are uniform.** A refused `Config` field, `SendOptions` field or
-    argument matches `syscall.EINVAL` and names what was refused. Option
+    argument normally matches `syscall.EINVAL` and names what was refused.
+    `InterleaveStreams` instead matches `ErrUnsupported`, since Linux cannot
+    retain that valid API level. Option
     methods return a `*net.OpError` with `Op` `"get"` or `"set"` around an
     `*os.SyscallError`, as `net`'s own setters do; v1 returned the bare
     errno. The `Endpoint` constructors return a `*net.OpError` like the
@@ -240,6 +242,18 @@ Beyond the names, these behaviours differ from v1.
 30. **A link-local path given without a zone is completed** from the
     association's own addresses where exactly one zone applies, in
     `SendOptions.Path` and the path options.
+
+31. **`"sctp6"` is dual-stack.** v1 set `IPV6_V6ONLY`; this version clears
+    it, so `"sctp6"` accepts IPv4 peers. Wildcard `Listen("sctp4", :p)` and
+    `Listen("sctp6", :p)` collide with `EADDRINUSE`. To keep IPv6 only, set
+    `IPV6_V6ONLY` to 1 inside `Config.Control`'s `RawConn.Control` callback;
+    it runs after the package clears the option. The README shows the
+    callback, which also applies to `Dial`, `ListenEndpoint` and `OpenEndpoint`.
+32. **PR-SCTP fields must belong to the selected policy.** `PRTTL` requires
+    a positive `TTL` and zero `Value`; Linux abandons every message at once
+    for a zero TTL, so use `PRNone` for no expiry. `PRRtx` and `PRPrio`
+    require zero `TTL`, and `PRNone` requires both fields zero. This applies
+    to `SendOptions.PR`, `Config.DefaultPrInfo` and `SetDefaultPrInfo`.
 
 ## Capabilities with no replacement
 

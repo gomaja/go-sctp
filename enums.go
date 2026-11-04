@@ -171,7 +171,7 @@ func (l FragmentInterleave) String() string {
 type PFExposure uint32
 
 const (
-	PFExposeUnset    PFExposure = iota // follow net.sctp.pf_expose
+	PFExposeUnset    PFExposure = iota // separate legacy mode; sysctl is read only at socket creation
 	PFExposeDisabled                   // PathInfo on a PF path fails with EACCES
 	PFExposeEnabled                    // PF reported by PathInfo and by PeerAddrChange
 )
@@ -216,9 +216,9 @@ func (m StreamResetMask) String() string {
 
 // ResetDirection selects which of an association's stream directions a
 // StreamReset request covers, RFC 6525 §6.3.2 (strreset_flags,
-// include/uapi/linux/sctp.h). Unlike StreamResetMask it is a plain
-// enumeration in this API — ResetStreams takes one value, never a
-// combination — so it follows the ordinary constant-name rule.
+// include/uapi/linux/sctp.h). It is a bit set: ResetIncoming|ResetOutgoing
+// requests both directions. String joins set names with "|" and renders
+// unknown bits as a trailing hexadecimal literal, as StreamResetMask does.
 type ResetDirection uint16
 
 const (
@@ -226,16 +226,16 @@ const (
 	ResetOutgoing ResetDirection = 0x02
 )
 
-var resetDirectionNames = map[ResetDirection]string{
-	ResetIncoming: "ResetIncoming",
-	ResetOutgoing: "ResetOutgoing",
+var resetDirectionBits = []struct {
+	bit  ResetDirection
+	name string
+}{
+	{ResetIncoming, "ResetIncoming"},
+	{ResetOutgoing, "ResetOutgoing"},
 }
 
 func (d ResetDirection) String() string {
-	if name, ok := resetDirectionNames[d]; ok {
-		return name
-	}
-	return fmt.Sprintf("ResetDirection(%d)", uint16(d))
+	return joinBits(d, resetDirectionBits)
 }
 
 // HMACID is an RFC 4895 §3.3 HMAC algorithm identifier, from its IANA

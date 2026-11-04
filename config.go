@@ -65,17 +65,20 @@ func (s socketStyle) String() string {
 	}
 }
 
-// Config holds everything that must be decided before a socket is bound or
-// connected. The zero Config uses kernel defaults throughout. A Config may be
+// Config holds the usual settings needed before a socket is bound or
+// connected; Control can set options without a typed field. The zero Config uses kernel defaults throughout. A Config may be
 // reused; it must not be modified while a call that uses it is running.
 //
 // Every constructor checks the Config before it creates a socket. A field
 // that is out of range, that conflicts with another field, or that the
 // constructor cannot apply (such as ReusePort on an Endpoint, or an
 // AbandonPolicy outside Dial) is refused with an error that matches
-// syscall.EINVAL and names the field. Nothing is silently ignored.
+// syscall.EINVAL and names the field, except InterleaveStreams, which
+// matches ErrUnsupported because Linux cannot retain that valid API level.
+// Nothing is silently ignored.
 //
-// Order of application: the socket is created, then Control runs, then the
+// Order of application: the socket is created and IPV6_V6ONLY is cleared
+// on an AF_INET6 socket, including "sctp6", then Control runs, then the
 // package enables SCTP_RECVRCVINFO and applies the typed settings in this
 // order, so that each finds its prerequisites in place: ReadBuffer,
 // WriteBuffer, InitMsg, FragmentInterleave, Authentication, HMACIdentifiers,
@@ -86,7 +89,10 @@ func (s socketStyle) String() string {
 // Notifications. Typed settings therefore win over anything Control wrote.
 // For Dial, SetupRTOInitial comes last; Dial undoes it once the association
 // is established. Then the socket is bound, and connected or put in
-// listening state.
+// listening state. "sctp6" therefore accepts IPv4 peers and its wildcard
+// bind collides with "sctp4" on the same port (EADDRINUSE). To restrict it
+// to IPv6, set IPV6_V6ONLY to 1 inside Control's RawConn.Control callback;
+// Control runs after the package clears it. See README.md for an example.
 type Config struct {
 	// Control is called with the new socket before any typed setting is
 	// applied. As for net.Dialer and net.ListenConfig, network is the

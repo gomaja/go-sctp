@@ -159,6 +159,11 @@ type SndInfo struct {
 // lifetime in whole milliseconds; PRRtx a retransmission count and PRPrio a
 // priority, 0 highest (RFC 7496 §4.2). PR-SCTP must have been negotiated
 // (Config.PartialReliability) for a policy to take effect.
+// Only PRTTL accepts TTL, which must be positive; Value must be zero.
+// Linux abandons every message at once with a zero TTL; use PRNone for no
+// expiry (https://github.com/sctp/lksctp-tools/issues/78). PRRtx and PRPrio
+// accept Value, including zero, and require TTL zero. PRNone requires both
+// fields zero. Fields belonging to another policy are refused.
 type PrInfo struct {
 	Policy PRPolicy
 	TTL    time.Duration // PRTTL: lifetime

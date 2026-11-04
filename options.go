@@ -90,8 +90,11 @@ type DelayedSACK struct {
 }
 
 // PathParams is struct sctp_paddrparams (RFC 6458 §8.1.12). A nil field
-// leaves that setting unchanged; PathMTU only takes effect with PMTUD set
-// to false. DelayedSACK and SACKDelay are a Linux extension to the RFC's
+// leaves that setting unchanged when setting parameters. PathParams reports
+// even inactive values: the current path MTU with PMTUD on and retained
+// heartbeat and SACK timers with their switches off. Before writing a
+// readback, clear its inactive fields as Conn.SetPathParams shows.
+// PathMTU can be set only with PMTUD false. DelayedSACK and SACKDelay are a Linux extension to the RFC's
 // struct, the per-path counterpart of Config.DelayedSACK. Linux keeps an
 // association's heartbeat interval and SACK delay in kernel ticks
 // (net/sctp/socket.c: sctp_setsockopt_peer_addr_params,
@@ -110,7 +113,10 @@ type PathParams struct {
 }
 
 // PathThresholds is struct sctp_paddrthlds_v2 (RFC 7829 §7.2). A nil field
-// leaves that threshold unchanged.
+// leaves that threshold unchanged for a per-path SetPathThresholds. For an
+// association-wide call (zero netip.Addr), nil keeps the association's
+// threshold, which Linux then applies to every path, overwriting differing
+// per-path values. This applies to all three fields.
 type PathThresholds struct {
 	PathMaxRetrans    *uint16 // path declared inactive when exceeded
 	PFThreshold       *uint16 // path enters Potentially Failed when exceeded
@@ -180,7 +186,7 @@ type PRStatus struct {
 	AbandonedSent   uint64
 }
 
-// validatePrInfo checks pr's Policy and TTL, matching the mask
+// validatePrInfo checks the policy, its value and unused fields, matching the mask
 // net/sctp/socket.c's sctp_msghdr_parse applies to a per-message PRINFO
 // (msginfo.go's validateSendOptions, which calls this with "SendOptions.PR")
 // and Config.DefaultPrInfo (config.go, which calls this with
@@ -196,7 +202,8 @@ type PRStatus struct {
 // query answer. The TTL checks have no kernel counterpart to mirror: they
 // exist because this package converts a time.Duration to the uint32
 // millisecond count struct sctp_prinfo's pr_value carries, a conversion the
-// kernel itself never performs.
+// kernel itself never performs. Unused fields are refused so a policy never
+// silently discards a requested lifetime or value.
 func validatePrInfo(field string, pr *PrInfo) error {
 	if pr.Policy&^PRPolicy(prPolicyMask) != 0 {
 		if pr.Policy == PRAll {
@@ -206,6 +213,14 @@ func validatePrInfo(field string, pr *PrInfo) error {
 	}
 
 	if pr.Policy == PRTTL {
+		if pr.Value != 0 {
+			return invalidArg("%s.Value belongs to PRRtx or PRPrio, not PRTTL; use TTL", field)
+		}
+		if pr.TTL == 0 {
+			// Linux abandons even a message sent into an empty queue:
+			// https://github.com/sctp/lksctp-tools/issues/78.
+			return invalidArg("%s.TTL is zero: Linux abandons every message at once; use PRNone for no expiry", field)
+		}
 		if pr.TTL < 0 {
 			return invalidArg("%s.TTL %s is negative", field, pr.TTL)
 		}
@@ -214,6 +229,13 @@ func validatePrInfo(field string, pr *PrInfo) error {
 		}
 		if pr.TTL/time.Millisecond > math.MaxUint32 {
 			return invalidArg("%s.TTL %s exceeds the uint32 millisecond range struct sctp_prinfo's pr_value carries", field, pr.TTL)
+		}
+	} else {
+		if pr.TTL != 0 {
+			return invalidArg("%s.TTL belongs only to PRTTL", field)
+		}
+		if pr.Policy == PRNone && pr.Value != 0 {
+			return invalidArg("%s.Value must be zero for PRNone", field)
 		}
 	}
 
@@ -224,12 +246,9 @@ func validatePrInfo(field string, pr *PrInfo) error {
 // encoding: pr_policy, a plain copy of Policy, and pr_value, which RFC 6458
 // §5.3.7 and RFC 7496 §4.2's table define per policy — the TTL in whole
 // milliseconds for PRTTL, the retransmission count or priority for
-// PRRtx/PRPrio. An explicit PRNone always resolves to a pr_value of 0,
-// whatever pr.TTL or pr.Value holds, matching net/sctp/socket.c's own
-// handling of an explicit SCTP_PR_SCTP_NONE cmsg ("if
-// (cmsgs->prinfo->pr_policy == SCTP_PR_SCTP_NONE) cmsgs->prinfo->pr_value =
-// 0;"). pr must already have passed validatePrInfo, so the TTL-to-ms
-// division below cannot lose precision or overflow.
+// PRRtx/PRPrio. PRNone resolves to a pr_value of 0. pr must already have
+// passed validatePrInfo: unused fields are zero, PRTTL's lifetime is
+// positive, and the TTL-to-ms division cannot lose precision or overflow.
 //
 // Shared by msginfo.go's appendSendCmsgs (the per-message PRINFO cmsg) and
 // config.go's DefaultPrInfo handling (SCTP_DEFAULT_PRINFO): struct

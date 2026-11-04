@@ -43,6 +43,16 @@ func Listen(network string, laddr *Addr) (*Listener, error) {
 // kernel chooses one, and with "sctp" the socket is AF_INET6 dual-stack, so
 // that it listens on the host's IPv4 and IPv6 addresses alike. Several IPs
 // make a multi-homed endpoint, bound atomically (RFC 6458 §9.1).
+// "sctp6" is dual-stack too: it accepts IPv4 peers and its wildcard bind
+// collides with "sctp4" on the same port (EADDRINUSE). For IPv6 only, set
+// IPV6_V6ONLY to 1 inside Config.Control's RawConn.Control callback, which
+// runs after the package clears it.
+//
+// Linux silently binds only the start of a very long local address list;
+// the limit depends on the kernel. Observed IPv4 limits are 4,352 addresses
+// (69,632 bytes) on 6.12 and 8,448 (135,168 bytes) on 6.18. Check LocalAddrs
+// (Addr on a Listener or Endpoint) when using long lists:
+// https://github.com/sctp/lksctp-tools/issues/76.
 //
 // The backlog is the kernel's own maximum, net.core.somaxconn, read at
 // each Listen, rather than syscall.SOMAXCONN: the Go constant is 128,
@@ -259,6 +269,12 @@ func (l *Listener) SetDeadline(t time.Time) error {
 // afterwards. A zero netip.Addr, an empty list, or an address the socket's
 // family cannot carry is refused with an error matching syscall.EINVAL
 // before any system call.
+//
+// Linux silently binds only the start of a very long local address list;
+// the limit depends on the kernel. Observed IPv4 limits are 4,352 addresses
+// (69,632 bytes) on 6.12 and 8,448 (135,168 bytes) on 6.18. Check LocalAddrs
+// (Addr on a Listener or Endpoint) when using long lists:
+// https://github.com/sctp/lksctp-tools/issues/76.
 func (l *Listener) BindAdd(ips ...netip.Addr) error {
 	return l.bindx(optSockoptBindxAdd, "BindAdd", ips)
 }

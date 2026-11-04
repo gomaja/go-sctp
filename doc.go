@@ -32,9 +32,10 @@
 // descriptor another goroutine takes meanwhile nor the system-wide limit
 // can be ruled out.
 //
-// Everything that has to be decided before an association exists is a
-// field of [Config]: the streams and extensions offered in the INIT,
-// socket buffers, socket defaults and notification subscriptions. Its
+// [Config] exposes the usual settings needed before an association exists: the streams and extensions offered in the INIT,
+// socket buffers, socket defaults and notification subscriptions. Other
+// pre-association options can be set through [Config.Control]; see
+// [Conn.SetRemoteUDPEncapsPort] for initial UDP encapsulation. Its
 // methods [Config.Dial], [Config.Listen], [Config.ListenEndpoint],
 // [Config.OpenEndpoint], [Config.FileConn] and [Config.FileListener] are
 // the constructors, and the package-level functions of the same names use a
@@ -158,8 +159,11 @@
 //     package has been read. A record consumed through SyscallConn is
 //     never seen by the package.
 //   - An argument the package refuses, a Config field, a SendOptions field
-//     or a method argument, matches syscall.EINVAL, and the message names
-//     it. Nothing reaches the kernel then.
+//     or a method argument, normally matches syscall.EINVAL, and the message
+//     names it. InterleaveStreams instead matches [ErrUnsupported]: Linux
+//     cannot retain that valid API level. Nothing reaches the kernel then.
+//     EINVAL alone does not prove a refused argument: it can also report an
+//     unrecognized socket address family in a kernel reply.
 //   - A passed I/O deadline set with SetDeadline, SetReadDeadline or
 //     SetWriteDeadline matches os.ErrDeadlineExceeded, and a closed socket
 //     net.ErrClosed.
@@ -174,9 +178,11 @@
 //     kernel does not have.
 //   - A NoWait send that finds no space matches syscall.EAGAIN, and a
 //     message larger than the send buffer syscall.EMSGSIZE.
-//   - [ErrUnsupported], and so errors.ErrUnsupported, reports a platform
-//     without SCTP: any GOOS but Linux, and Linux whose SCTP module is
-//     absent, where the error also matches the kernel's errno.
+//   - [ErrUnsupported] usually reports a platform without SCTP: any GOOS
+//     but Linux, and Linux whose SCTP module is absent, where it also
+//     matches the kernel's errno. See its documentation for exceptions on
+//     a working stack. Test it specifically: errors.ErrUnsupported also
+//     matches ENOSYS, ENOTSUP and EOPNOTSUPP returned by a working stack.
 //
 // The Timeout method of net.Error reports true for a passed deadline, and
 // also for syscall.EAGAIN and syscall.ETIMEDOUT, as syscall.Errno's own
