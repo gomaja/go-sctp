@@ -186,11 +186,14 @@ type RcvInfo struct {
 	Stream    uint16
 	SSN       uint16
 	Unordered bool
-	PPID      uint32
-	TSN       uint32
-	CumTSN    uint32
-	Context   uint32
-	AssocID   AssocID
+	// PPID is the payload protocol identifier of the first piece. With
+	// I-DATA, Linux reports the fragment sequence number in later pieces
+	// (RFC 8260 §2.1); retain the first piece's PPID when reassembling.
+	PPID    uint32
+	TSN     uint32
+	CumTSN  uint32
+	Context uint32
+	AssocID AssocID
 }
 
 // NxtInfo is struct sctp_nxtinfo (RFC 6458 §5.3.6): what the kernel
@@ -202,7 +205,7 @@ type NxtInfo struct {
 	Unordered    bool
 	Notification bool
 	PPID         uint32
-	Length       uint32 // size of the whole next message
+	Length       uint32 // length of the next queued item: one piece during partial delivery (RFC 6458 §5.3.6)
 	AssocID      AssocID
 }
 

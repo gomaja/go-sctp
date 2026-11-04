@@ -1345,7 +1345,8 @@ func TestHandlerReentry(t *testing.T) {
 }
 
 // TestSubscribe: Subscribe changes the kernel's subscription for every type
-// but EventAssocChange, whose kernel subscription the package keeps on,
+// but EventAssocChange and EventPartialDelivery, whose kernel subscriptions
+// the package keeps on,
 // and Subscribed reports what the caller set. A notification the caller
 // switched on arrives; one switched off does not.
 func TestSubscribe(t *testing.T) {
@@ -1375,7 +1376,7 @@ func TestSubscribe(t *testing.T) {
 		if on, _ := server.Subscribed(typ); on {
 			t.Errorf("Subscribed(%v) after unsubscribing = true", typ)
 		}
-		if wantKernel := typ == EventAssocChange; subscribedInKernel(t, rc, typ) != wantKernel {
+		if wantKernel := typ == EventAssocChange || typ == EventPartialDelivery; subscribedInKernel(t, rc, typ) != wantKernel {
 			t.Errorf("%v in the kernel after unsubscribing = %t, want %t", typ, !wantKernel, wantKernel)
 		}
 	}
@@ -2307,9 +2308,6 @@ func TestReadMsgInterruptionFailsClosed(t *testing.T) {
 		{"partial delivery aborted", pdAbort, EventPartialDelivery, errPartialDeliveryAborted},
 	} {
 		for _, subscribed := range []bool{false, true} {
-			if !subscribed && rec.sub != EventAssocChange {
-				continue // Linux queues it only for a subscriber
-			}
 			t.Run(fmt.Sprintf("%s/subscribed=%t", rec.name, subscribed), func(t *testing.T) {
 				var got []Notification
 				var subs []EventType
@@ -2331,8 +2329,14 @@ func TestReadMsgInterruptionFailsClosed(t *testing.T) {
 				if subscribed != (len(got) == 1) {
 					t.Errorf("the handler received %d notifications, subscribed %t", len(got), subscribed)
 				}
-				if c.opened() {
-					t.Error("the connection is still open after its message was cut")
+				if wantOpen := rec.sub == EventPartialDelivery; c.opened() != wantOpen {
+					t.Errorf("open = %t, want %t", c.opened(), wantOpen)
+				}
+				if rec.sub == EventPartialDelivery {
+					b, _, err := c.ReadMsg(64)
+					if string(b) != "the next message" || err != nil {
+						t.Fatalf("following=%q %v", b, err)
+					}
 				}
 			})
 		}
@@ -2558,11 +2562,54 @@ func clearReadMsgClass(p *readMsgBufferCache) {
 	p.mu.Unlock()
 }
 
+// readMsgMeasurementRuns preserves the small-message sample size. Larger
+// messages use an 8 MiB payload budget per measurement. ReadMsg's
+// discarded growth buffers also allocate, so the helper's total work
+// exceeds that budget.
+func readMsgMeasurementRuns(size int) (warmup, records int) {
+	if size <= 65535 {
+		return 100, 1000
+	}
+	return 2, max(1, (8<<20)/size)
+}
+
+func TestReadMsgMeasurementRuns(t *testing.T) {
+	for _, tc := range []struct {
+		size, warmup, records int
+	}{
+		{-1, 100, 1000},
+		{0, 100, 1000},
+		{1, 100, 1000},
+		{65534, 100, 1000},
+		{65535, 100, 1000},
+		{65536, 2, 128},
+		{131071, 2, 64},
+		{131072, 2, 64},
+		{131073, 2, 63},
+		{262144, 2, 32},
+		{262145, 2, 31},
+		{524288, 2, 16},
+		{524289, 2, 15},
+		{1000000, 2, 8},
+		{8<<20 - 1, 2, 1},
+		{8 << 20, 2, 1},
+		{8<<20 + 1, 2, 1},
+		{int(^uint(0) >> 1), 2, 1},
+	} {
+		t.Run(fmt.Sprint(tc.size), func(t *testing.T) {
+			warmup, records := readMsgMeasurementRuns(tc.size)
+			if warmup != tc.warmup || records != tc.records {
+				t.Fatalf("measurement runs = %d warmup, %d measured; want %d, %d", warmup, records, tc.warmup, tc.records)
+			}
+		})
+	}
+}
+
 // measureReadMsg reports the mean allocations and bytes of one ReadMsg of
-// size bytes with max, over 1000 reads after 100 to warm up, with the
-// collector paused, so that the counts land on whole numbers rather than
-// carrying the collections the cold case would otherwise provoke. before
-// runs inside the measured loop, and must not allocate.
+// size bytes with max, with readMsgMeasurementRuns choosing the sample
+// size. The collector is paused so that the counts land on whole numbers
+// rather than carrying the collections the cold case would otherwise
+// provoke. before runs inside the measured loop, and must not allocate.
 func measureReadMsg(t *testing.T, c *Conn, size, max int, control []byte, before func()) (allocs, bytesPer float64) {
 	t.Helper()
 	payload := patterned(size)
@@ -2578,13 +2625,13 @@ func measureReadMsg(t *testing.T, c *Conn, size, max int, control []byte, before
 			bad = true
 		}
 	}
-	for range 100 {
+	warmup, records := readMsgMeasurementRuns(size)
+	for range warmup {
 		read()
 	}
 	defer debug.SetGCPercent(debug.SetGCPercent(-1))
 	var m0, m1 runtime.MemStats
 	runtime.ReadMemStats(&m0)
-	const records = 1000
 	for range records {
 		read()
 	}
@@ -2592,7 +2639,30 @@ func measureReadMsg(t *testing.T, c *Conn, size, max int, control []byte, before
 	if bad {
 		t.Fatalf("ReadMsg(%d) of a %d-byte message returned the wrong result", max, size)
 	}
-	return float64(m1.Mallocs-m0.Mallocs) / records, float64(m1.TotalAlloc-m0.TotalAlloc) / records
+	return float64(m1.Mallocs-m0.Mallocs) / float64(records), float64(m1.TotalAlloc-m0.TotalAlloc) / float64(records)
+}
+
+// TestReadMsgMeasurementBudget bounds the helper's own allocation work,
+// including warmup and discarded growth buffers while GC is paused.
+func TestReadMsgMeasurementBudget(t *testing.T) {
+	if underRaceDetector {
+		t.Skip("allocation measurement includes race instrumentation")
+	}
+	c := scriptConn(t, nil)
+	for _, size := range []int{65536, 131071, 131072, 131073, 262144, 262145, 300000, 524288, 524289, 1000000} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			measureReadMsg(t, c, size, 1<<24-1, nil, nil)
+			runtime.ReadMemStats(&after)
+			const budget = 40 << 20
+			total := after.TotalAlloc - before.TotalAlloc
+			t.Logf("measuring a %d-byte message allocated %d bytes", size, total)
+			if total > budget {
+				t.Fatalf("measurement allocated %d bytes, budget %d", total, budget)
+			}
+		})
+	}
 }
 
 // within reports whether got is within margin of want.
@@ -2603,7 +2673,8 @@ func within(got, want, margin float64) bool {
 // TestReadMsgMemoryFollowsMessage pins the allocation figures ReadMsg
 // documents (v1 TestReadMsgDocumentedAllocationContract, with v1's two
 // allocations for metadata gone, since RcvInfo is a value): warm, 3 for a
-// message of 256 bytes or fewer and 4 for a larger one, with SCTP_RCVINFO
+// message of 256 bytes or fewer, 4 up to 131,072 bytes, then one more
+// for each doubling, with SCTP_RCVINFO
 // or without; cold, one more, of a whole size class. Memory follows the
 // message, never max: ReadMsg(1<<24-1) of a 100-byte message costs what
 // ReadMsg(256) does. The counts are process-wide, so the margins are on
@@ -2614,6 +2685,10 @@ func TestReadMsgMemoryFollowsMessage(t *testing.T) {
 		t.Skip("allocation counts are unreliable under the race detector, whose instrumentation allocates on its own account")
 	}
 	const (
+		// Even the eight-read sample at 1,000,000 bytes detects a
+		// one-allocation-per-call change: its mean moves by one. Its
+		// 1/8 resolution is coarser than this margin, so even one extra
+		// allocation across the sample fails the comparison.
 		allocMargin     = 0.05
 		allocByteMargin = 16.0
 	)
@@ -2630,6 +2705,15 @@ func TestReadMsgMemoryFollowsMessage(t *testing.T) {
 		{"at-boundary", 256, 65535, 3},
 		{"above-boundary", 257, 65535, 4},
 		{"large", 65535, 65535, 4},
+		{"below-128KiB", 131071, 1<<24 - 1, 4},
+		{"at-128KiB", 131072, 1<<24 - 1, 4},
+		{"above-128KiB", 131073, 1<<24 - 1, 5},
+		{"at-256KiB", 262144, 1<<24 - 1, 5},
+		{"above-256KiB", 262145, 1<<24 - 1, 6},
+		{"300000", 300000, 1<<24 - 1, 6},
+		{"at-512KiB", 524288, 1<<24 - 1, 6},
+		{"above-512KiB", 524289, 1<<24 - 1, 7},
+		{"1000000", 1000000, 1<<24 - 1, 7},
 		// The first buffer is min(256, max), so a small max admits its
 		// own largest message without growing.
 		{"small-max", 168, 168, 3},

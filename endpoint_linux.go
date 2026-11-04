@@ -286,17 +286,20 @@ func (e *Endpoint) Addr() net.Addr {
 // EALREADY while it is being set up (net/sctp/socket.c: __sctp_connect).
 // A peer whose association was peeled off is refused with EADDRNOTAVAIL
 // (sctp_connect), and autobind without a free port fails with EAGAIN
-// (sctp_autobind). No id is returned on those errors.
-// A nil raddr, one with no IPs, and an address the
-// socket's family cannot carry are refused with an error matching
-// syscall.EINVAL before any system call. Errors are *net.OpError with Op
-// "dial".
+// (sctp_autobind). No id is returned on those errors. A nil raddr, one with
+// no IPs, one with port 0 (RFC 9260 §3.1), or an address the socket's family
+// cannot carry is refused with an error matching syscall.EINVAL before any
+// system call. Errors are *net.OpError with Op "dial".
 func (e *Endpoint) Connect(raddr *Addr) (AssocID, error) {
 	if !e.opened() {
 		return 0, e.dialError(raddr, net.ErrClosed)
 	}
 	if raddr == nil || len(raddr.IPs) == 0 {
 		return 0, e.dialError(raddr, invalidArg("Connect needs a remote address with at least one IP"))
+	}
+	// RFC 9260 §3.1 forbids destination port 0, even though Linux sends it.
+	if raddr.Port == 0 {
+		return 0, e.dialError(raddr, invalidArg("Connect needs a non-zero remote port (RFC 9260 §3.1)"))
 	}
 	peer, err := encodeAddrs(e.sock.family, raddr.IPs, raddr.Port)
 	if err != nil {
@@ -718,7 +721,12 @@ func checkEndpointSend(id AssocID, b []byte, opts *SendOptions) error {
 // pieces together themselves. PeelOff between those calls moves the
 // unread remainder of that association's data message to the Conn
 // (RFC 6458 §9.2); continue reading it there. A read of data makes no
-// allocation. An empty b returns 0 at once, and consumes nothing.
+// allocation. An empty b returns 0 at once, and consumes nothing. With
+// I-DATA, pieces of different streams may interleave: demultiplex by
+// Rcv.AssocID and Rcv.Stream, accumulating each until EOR and keeping its
+// first PPID. There is no per-association partial-message tracking: callers
+// reassembling by EOR must subscribe to EventPartialDelivery and discard
+// abandoned prefixes (RFC 6458 §6.1.7).
 //
 // Every message names one real association: data that arrives without
 // SCTP_RCVINFO, which the package enables before any association exists

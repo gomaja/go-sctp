@@ -82,7 +82,17 @@
 // than the buffer arrives over several reads. [Conn.ReadMsg] reassembles
 // one whole message, up to a size limit, and [Conn.Read] returns message
 // bytes without framing, as a net.Conn does. A read of data makes no
-// allocation.
+// allocation. ReadMsg refuses negotiated I-DATA with ErrUnsupported:
+// use RecvMsg, demultiplex by stream (and association id on an Endpoint),
+// and accumulate until EOR, keeping the first piece's PPID. Callers doing
+// their own reassembly must subscribe to EventPartialDelivery so an
+// abandoned message's prefix can be discarded (RFC 6458 §6.1.7).
+//
+// A deadline that passes while ReadMsg waits for the rest of a message
+// aborts the association. Use Read or RecvMsg for deadline-driven reading
+// across partial messages. A complete partial-delivery abort notification
+// instead marks an exact boundary: ReadMsg returns ErrMessageInterrupted
+// and leaves the following message readable.
 //
 // Notifications (RFC 6458 §6) share the receive queue with data. The caller
 // chooses the kinds it receives with [Config.Notifications] and
@@ -91,10 +101,12 @@
 // types that implement [Notification], and go on reading. Without one,
 // RecvMsg returns a notification's bytes with MsgInfo.Notification set, for
 // [ParseNotification], and Read and ReadMsg skip it. The package itself
-// keeps [EventAssocChange] subscribed in the kernel on every socket (see
+// keeps [EventAssocChange] and [EventPartialDelivery] subscribed in the
+// kernel on every socket (see
 // "The end of an association" below), and delivers those records to a Conn's
 // caller only when the caller subscribed to them; an Endpoint always
-// delivers them.
+// delivers [EventAssocChange], and delivers [EventPartialDelivery] only when
+// subscribed.
 //
 // # Writing
 //
@@ -205,7 +217,11 @@
 // the package keeps the error for every later call. Where Linux's error is
 // out of the package's reach, taken through SyscallConn or left on the
 // listening socket by an association that failed before Accept, reads
-// return an error matching syscall.ENOTCONN instead. An Endpoint has neither
+// return an error matching syscall.ENOTCONN instead. With ReceiveNxtInfo,
+// Linux also clears the pending socket error when it peeks an empty queue:
+// reads after the last record may report ENOTCONN instead of the failure's
+// errno, while AssocCommLost and its cause still arrive
+// (https://github.com/sctp/lksctp-tools/issues/75). An Endpoint has neither
 // an end of stream nor a lasting error: each association's end is its
 // AssocChange notification.
 //
