@@ -15,15 +15,22 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   format:
     name: format
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -36,19 +43,22 @@ jobs:
             exit 1
           fi
       - name: diff check
-        run: git diff --check
+        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
 
   test-linux:
     name: test-linux / Go ${{ matrix.go }}, sysctl ${{ matrix.sysctl }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         go: ['1.26.x', stable]
         sysctl: [on, off]
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go }}
           cache: true
@@ -82,9 +92,12 @@ jobs:
   test-linux-arm64:
     name: test-linux / arm64
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -100,13 +113,16 @@ jobs:
   test-linux-race:
     name: test-linux race, sysctl ${{ matrix.sysctl }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         sysctl: [on, off]
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -126,9 +142,12 @@ jobs:
   test-linux-checkptr:
     name: test-linux checkptr
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -154,9 +173,12 @@ jobs:
   vet:
     name: vet
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -172,32 +194,29 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
-      - uses: dominikh/staticcheck-action@v1.4.1
+      - uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1.4.1
         with:
-          # Go 1.27.2 writes export data version 5. Staticcheck 2026.2.1
-          # (v0.8.1) and every earlier release read at most version 4, so
-          # under the stable toolchain they stop before analysing a single
-          # package (#23). The fix, go-tools f1838cc ("Update dependency on
-          # golang.org/x/tools to v0.51.0",
-          # https://github.com/dominikh/go-tools/issues/1832), is not in a
-          # release yet; this is the master commit after it whose own CI
-          # passes on Go 1.27. Replace it with the first release that
-          # contains f1838cc.
-          version: v0.7.0-0.dev.0.20261009230814-452d5bb86b45
+          # This release understands Go 1.27.2's export data format and
+          # retains checks for the minimum Go version declared by go.mod.
+          version: 2026.2.2
           install-go: false
-      - uses: golangci/golangci-lint-action@v9.3.0
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: latest
+          version: v2.15.0
 
   portability:
     name: portability / ${{ matrix.kind }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -212,8 +231,10 @@ jobs:
             os: windows-latest
             command: go test ./... -short -count=1
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -223,9 +244,12 @@ jobs:
   arch-32bit:
     name: portability / kernel linux-386
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -261,9 +285,12 @@ jobs:
   big-endian:
     name: portability / big-endian (s390x, qemu)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -309,22 +336,15 @@ jobs:
   big-endian-kernel:
     name: portability / kernel s390x (qemu-system)
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
-      - name: Cache the pinned emulator environment
-        # snapshot.debian.org is slow and rate-limited. Persist only the
-        # compressed distribution image, keyed on the same architecture
-        # and construction inputs as run.sh; it still rebuilds the tests
-        # and checks a restored image's native architecture before use.
-        uses: actions/cache@v6.1.0
-        with:
-          path: ${{ runner.temp }}/go-sctp-bigendian-cache/*.image.tar.gz
-          key: sctp-bigendian-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('testdata/bigendian/Dockerfile', 'testdata/bigendian/boot.sh') }}
       - name: Run the socket suite against a big-endian kernel
         # qemu-user above remains useful for portable tests and fuzz seeds
         # in seconds, but cannot pass SOL_SCTP options to a native kernel.
@@ -340,12 +360,23 @@ jobs:
         env:
           SCTP_BIGENDIAN_CACHE: ${{ runner.temp }}/go-sctp-bigendian-cache
         run: testdata/bigendian/run.sh
+      - name: Upload big-endian evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: big-endian-evidence
+          path: ${{ runner.temp }}/go-sctp-bigendian-cache/run.*/
+          if-no-files-found: warn
+          retention-days: 7
 
   wire:
     name: wire harness (two hosts, tshark)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Load the SCTP kernel modules
         # The wire harness's containers are --privileged but share the
         # runner's kernel, so the sctp module (for the sysctls run.sh
@@ -360,18 +391,31 @@ jobs:
           sudo modprobe xt_sctp
           test -e /proc/net/sctp/snmp
       - name: Run the wire harness
+        env:
+          WIRE_OUT: ${{ runner.temp }}/go-sctp-wire
         run: testdata/wire/run.sh
+      - name: Upload wire evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wire-evidence
+          path: ${{ runner.temp }}/go-sctp-wire/
+          if-no-files-found: warn
+          retention-days: 7
 
   vuln:
     name: vuln
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           govulncheck ./...

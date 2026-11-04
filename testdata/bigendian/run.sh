@@ -35,8 +35,8 @@ supervisor_pid=""
 finish() {
 	status=$?
 	if [ "$status" -eq 0 ]; then
-		rm -f "$work/sctp.test" "$work/example.test" "$work/source.tar.gz" "$work/supervise"
-		echo "evidence kept in $work; successful run's binaries and source archive removed"
+		rm -f "$work/sctp.test" "$work/example.test" "$work/supervise"
+		echo "evidence kept in $work; successful run's binaries removed"
 	else
 		echo "run failed; all inputs and evidence kept in $work" >&2
 	fi
@@ -62,6 +62,7 @@ printf '%s\n' "$nonce" > "$work/nonce"
 printf '%s\n' "$states" > "$work/states"
 cp testdata/bigendian/guest.sh "$work/guest.sh"
 cp testdata/docker/setup-env.sh "$work/setup-env.sh"
+git ls-files --others --exclude-standard > "$work/untracked-files"
 COPYFILE_DISABLE=1 tar --no-xattrs -czf "$work/source.tar.gz" -- *.go go.mod example
 revision="$(git rev-parse HEAD)"
 dirty=no
@@ -80,29 +81,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=s390x "$go" test -c -o "$work/example.test" ./ex
 	echo "example.test SHA256=$("$work/supervise" hash "$work/example.test")"
 	"$go" version -m "$work/example.test"
 } | tee "$work/metadata"
-key="$("$work/supervise" hash testdata/bigendian/Dockerfile testdata/bigendian/boot.sh | cut -c1-24)"
 arch="$(docker version --format '{{.Server.Arch}}')"
 platform="linux/$arch"
-key="$arch-$key"
-image="gomaja-sctp-bigendian:$key"
-if ! docker image inspect "$image" >/dev/null 2>&1; then
-	if [ -f "$cache/$key.image.tar.gz" ]; then
-		gzip -dc "$cache/$key.image.tar.gz" | docker load
-	else
-		docker build --platform "$platform" -t "$image" testdata/bigendian
-		# Cache only pinned distribution artefacts, never a test binary or
-		# source tree. Every invocation rebuilds its own test binary.
-		archive="$(mktemp "$cache/$key.image.XXXXXXXX")"
-		docker save "$image" | gzip -1 > "$archive"
-		mv "$archive" "$cache/$key.image.tar.gz"
-	fi
-fi
-if [ "$(docker image inspect --format '{{.Architecture}}' "$image")" != "$arch" ]; then
-	echo "cached emulator image is not native to the Docker server" >&2
-	exit 1
-fi
-docker run --rm --platform "$platform" --entrypoint bash "$image" -c \
-	'printf "%s\n" /guest/lib/modules/* | sed "s,.*/,,"' > "$work/kernel-release"
+image="gomaja-sctp-bigendian:$nonce"
+# Rebuild from the digest-pinned distribution and signed snapshot packages.
+# Never load an emulator archive produced by another workflow run.
+docker build --platform "$platform" -t "$image" testdata/bigendian
+cp testdata/bigendian/kernel-release "$work/kernel-release"
 "$work/supervise" run "$work" "$image" "sctp-bigendian-$nonce" "$go" "$platform" &
 supervisor_pid=$!
 wait "$supervisor_pid"

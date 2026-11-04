@@ -240,7 +240,8 @@ What continuous integration runs on each target:
 | Target | What runs |
 |---|---|
 | `linux/amd64` | The whole suite against the runner's SCTP stack, with Go 1.26 and the latest Go, in both sysctl states (below); again under `-race`, and under `-gcflags=all=-d=checkptr` |
-| `linux/386` | The whole suite, natively on the x86_64 runner, so the `socketcall` path and the 32-bit layouts run against a real kernel; and the raw system-call tests again with the goroutine stack moved at every function call |
+| `linux/arm64` | The whole suite against the arm64 runner's SCTP stack, with the latest Go and both SCTP sysctls enabled |
+| `linux/386` | The root package suite on the x86_64 runner: the `socketcall` path and compat layouts against a 64-bit kernel, with `TestStorageLayoutOnThisKernel` checking the 64-bit layout reported by `uname -m`; the example package is covered by the other Linux jobs. Only `TestRawRecvmsgStackStorage` and `TestRawSockoptStackStorage` run again with the goroutine stack moved at every function call. Native 32-bit kernels are not exercised |
 | `linux/s390x` | The root and `example` package suites against a pinned Debian big-endian kernel under qemu-system, in both sysctl states; `TestCrossCompileSmoke` and architecture-independent `TestExportedAPI` are covered separately. The portable tests and fuzz seeds also run under the faster qemu-user job, which cannot exercise SCTP socket options |
 | `linux/arm`, `linux/mips`, `linux/386`, `linux/s390x` | `go vet` |
 | 13 targets across Linux, Android, macOS, Windows, FreeBSD and AIX | A build of each (`TestCrossCompileSmoke`) |

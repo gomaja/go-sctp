@@ -9,7 +9,7 @@ job still runs portable tests and fuzz seeds quickly; it cannot pass
 ## Usage
 
 ```sh
-GO=~/go/bin/go1.26.5 testdata/bigendian/run.sh [-sysctl both|on|off]
+GO=~/go/bin/go1.26.10 testdata/bigendian/run.sh [-sysctl both|on|off]
 ```
 
 Docker, Go and `tar` are required. Docker runs the native emulator; no host
@@ -65,23 +65,25 @@ container too.
 
 `SCTP_BIGENDIAN_CACHE` defaults to `${TMPDIR:-/tmp}/go-sctp-bigendian-cache`.
 Each run prints its evidence directory. Success removes both test binaries,
-host supervisor binary and source archive, retaining console, metadata,
-per-package, per-state text/JSON logs and `source.diff`. Failure retains all
+and host supervisor binary, retaining the source archive, console, metadata,
+per-package, per-state text/JSON logs, `source.diff` and the list of untracked
+inputs. The source archive includes untracked Go inputs compiled by the suite. Failure retains all
 inputs and prints the last 200 console lines. The host prints a PASS/FAIL/SKIP
 summary for each package in each state through the native Docker summarizer.
 
-The compressed environment image is cached by native Docker architecture,
-Dockerfile and boot script. CI persists that archive; a restored image must
-still match the Docker server's architecture. Every run rebuilds its tests
-and boots a fresh guest. Docker build layers may also be reused. The script
-never prunes Docker or deletes another run's resources.
+The emulator image is rebuilt on every run from the digest-pinned distribution
+and signed snapshot packages. No saved emulator image is restored from workflow
+caches. The expected kernel release is committed in `kernel-release`; it is
+checked against the guest rather than learned from the image being checked.
+Docker build layers may be reused. Every run rebuilds its tests and boots a
+fresh guest. The script never prunes Docker or deletes another run's resources.
 
 This qualifies the socket suite on one s390x distribution kernel. It does
 not qualify other big-endian architectures, kernel versions, race behavior
 or two-host wire claims. The [native Docker suite](../docker/README.md) and
 wire harness supply their own evidence.
 
-CI runs on push, pull request and manual dispatch, with a 35-minute limit.
+CI runs on push, pull request and manual dispatch, with a 60-minute limit.
 A two-state run takes about four minutes on arm64 Docker Desktop. Before
 example coverage was added, a hosted x86_64 runner's first run took 8 minutes:
 6 for the root suite in both states, 1.5 for building and caching the image.
