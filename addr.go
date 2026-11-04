@@ -335,14 +335,14 @@ func netAddr(a *Addr) net.Addr {
 func validateLocalIPs(family int, ips []netip.Addr) error {
 	seen := make(map[netip.Addr]int, len(ips))
 	for i, ip := range ips {
-		ip = ip.Unmap()
-		if family == afInet6 && ip.Is4() && ip.IsUnspecified() {
-			ip = netip.IPv6Unspecified()
+		key := ip.Unmap()
+		if family == afInet6 && key.Is4() && key.IsUnspecified() {
+			key = netip.IPv6Unspecified()
 		}
-		if j, ok := seen[ip]; ok {
+		if j, ok := seen[key]; ok {
 			return invalidArg("local address %d (%s) duplicates address %d", i, ip, j)
 		}
-		seen[ip] = i
+		seen[key] = i
 	}
 	return nil
 }
