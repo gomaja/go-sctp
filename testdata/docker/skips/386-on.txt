@@ -1,3 +1,5 @@
 # These cases require the separate two-host harness.
 github.com/gomaja/go-sctp TestTwoHost
 github.com/gomaja/go-sctp TestWire
+github.com/gomaja/go-sctp TestReadWriteBufferRejectsValuesBeyondInt32
+github.com/gomaja/go-sctp TestRawSyscallsAllocateNothing
