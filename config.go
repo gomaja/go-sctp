@@ -5,8 +5,9 @@
 // exists, and prepare, which turns one into an immutable, validated
 // snapshot for a single constructor call: a prepared value. Every check
 // here runs before any system call, so a mistake is reported as an error
-// that matches syscall.EINVAL and names the field, never as a kernel EINVAL
-// with no indication of which setting caused it.
+// that normally matches syscall.EINVAL and names the field, never as a kernel
+// EINVAL with no indication of which setting caused it. InterleaveStreams
+// instead matches ErrUnsupported because Linux cannot retain that API level.
 //
 // prepare's job ends at the ordered list of operations a prepared value
 // carries (configOp, configOpKind): each one already holds its

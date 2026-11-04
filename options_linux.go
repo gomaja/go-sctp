@@ -39,9 +39,10 @@
 // holding the kernel's errno, so that errors.Is(err, syscall.ENOPROTOOPT)
 // detects an option the running kernel lacks (net/sctp/socket.c: the
 // default case of sctp_setsockopt and sctp_getsockopt). An argument
-// refused before any system call matches syscall.EINVAL and names the
-// argument, inside the same *net.OpError; on a closed Conn every method
-// returns one matching net.ErrClosed.
+// refused before any system call normally matches syscall.EINVAL and names
+// the argument, inside the same *net.OpError. InterleaveStreams instead
+// matches ErrUnsupported because Linux cannot retain that API level. On a
+// closed Conn every method returns one matching net.ErrClosed.
 
 package sctp
 
