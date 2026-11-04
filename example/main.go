@@ -12,16 +12,26 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/netip"
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gomaja/go-sctp"
 )
 
 func main() {
+	if err := run(); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, flag.ErrHelp) {
+		log.Print(err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	flag := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	server := flag.Bool("server", false, "run the echo server instead of the client")
 	ips := flag.String("ip", "127.0.0.1", "comma-separated addresses: the server's to bind, the client's peer (server: empty for every address)")
 	port := flag.Int("port", 0, "the server's port (server: 0 lets the kernel choose)")
@@ -31,22 +41,28 @@ func main() {
 	rcvbuf := flag.Int("rcvbuf", 0, "socket receive buffer size (SO_RCVBUF; 0 keeps the kernel default)")
 	count := flag.Int("count", 0, "client only: messages to send before exiting (0 sends until interrupted)")
 	interval := flag.Duration("interval", time.Second, "client only: pause between messages")
-	flag.Parse()
+	if err := flag.Parse(os.Args[1:]); err != nil {
+		return err
+	}
+	invalid := func(message string) error { flag.Usage(); return errors.New(message) }
 
 	addrs, err := parseIPs(*ips)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if *port < 0 || *port > 65535 || *lport < 0 || *lport > 65535 {
-		log.Fatal("ports must be within 0-65535")
+		return invalid("ports must be within 0-65535")
+	}
+	if !*server && *port == 0 {
+		return invalid("the client requires -port within 1-65535")
 	}
 	if *bufsize <= 0 {
-		log.Fatal("-bufsize must be positive")
+		return invalid("-bufsize must be positive")
 	}
 	addr := &sctp.Addr{IPs: addrs, Port: uint16(*port)}
 	cfg := newConfig(*sndbuf, *rcvbuf)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if *server {
@@ -58,9 +74,7 @@ func main() {
 		}
 		err = runClient(ctx, cfg, laddr, addr, *bufsize, *count, *interval, os.Stdout)
 	}
-	if err != nil && !errors.Is(err, context.Canceled) {
-		log.Fatal(err)
-	}
+	return err
 }
 
 // parseIPs parses the -ip flag: comma-separated IP addresses, none for an
@@ -133,7 +147,7 @@ func bufferSizes(c bufferReporter) (send, receive int, err error) {
 
 // runServer listens on addr and echoes every association until ctx is
 // done.
-func runServer(ctx context.Context, cfg *sctp.Config, addr *sctp.Addr, bufsize int) error {
+func runServer(ctx context.Context, cfg *sctp.Config, addr *sctp.Addr, bufsize int) (retErr error) {
 	l, err := cfg.Listen("sctp", addr)
 	if err != nil {
 		return err
@@ -141,9 +155,16 @@ func runServer(ctx context.Context, cfg *sctp.Config, addr *sctp.Addr, bufsize i
 	// The address is logged once the listener is up; a caller that asked
 	// for port 0 learns the port from this line.
 	log.Printf("listening on %v", l.Addr())
-	go func() {
-		<-ctx.Done()
-		_ = l.Close()
+	stop := context.AfterFunc(ctx, func() {
+		if err := l.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			log.Printf("closing listener: %v", err)
+		}
+	})
+	defer stop()
+	defer func() {
+		if err := l.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			retErr = errors.Join(retErr, err)
+		}
 	}()
 	for {
 		c, err := l.AcceptSCTP()
@@ -151,10 +172,25 @@ func runServer(ctx context.Context, cfg *sctp.Config, addr *sctp.Addr, bufsize i
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return err
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			if !retryAccept(err) {
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+			continue
 		}
 		go func() {
-			defer func() { _ = c.Close() }()
+			defer func() {
+				if err := c.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+					log.Printf("closing association: %v", err)
+				}
+			}()
 			send, receive, err := bufferSizes(c)
 			if err != nil {
 				log.Printf("association %d: %v", c.AssocID(), err)
@@ -170,11 +206,25 @@ func runServer(ctx context.Context, cfg *sctp.Config, addr *sctp.Addr, bufsize i
 
 // echo sends every message c receives back on the stream and with the PPID
 // it arrived with, until the peer shuts the association down.
-func echo(c *sctp.Conn, bufsize int) error {
+type echoConn interface {
+	ReadMsg(int) ([]byte, sctp.RcvInfo, error)
+	SendMsg([]byte, sctp.SendOptions) (int, error)
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+}
+
+func retryAccept(err error) bool {
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) || errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM)
+}
+
+func echo(c echoConn, bufsize int) error {
 	for {
 		// ReadMsg reads one whole message, however many reads the kernel
 		// delivers it in; one longer than bufsize is refused with
 		// sctp.ErrMessageTooLong.
+		if err := c.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			return err
+		}
 		msg, info, err := c.ReadMsg(bufsize)
 		if err == io.EOF {
 			return nil
@@ -183,6 +233,9 @@ func echo(c *sctp.Conn, bufsize int) error {
 			return err
 		}
 		opts := sctp.SendOptions{Info: &sctp.SndInfo{Stream: info.Stream, PPID: info.PPID}}
+		if err := c.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			return err
+		}
 		if _, err := c.SendMsg(msg, opts); err != nil {
 			return err
 		}
@@ -193,14 +246,18 @@ func echo(c *sctp.Conn, bufsize int) error {
 // nil, and sends count messages of bufsize bytes, or messages until ctx is
 // done when count is 0, pausing for interval between them. It checks every
 // echo and prints one line per message to out.
-func runClient(ctx context.Context, cfg *sctp.Config, laddr, raddr *sctp.Addr, bufsize, count int, interval time.Duration, out io.Writer) error {
+func runClient(ctx context.Context, cfg *sctp.Config, laddr, raddr *sctp.Addr, bufsize, count int, interval time.Duration, out io.Writer) (retErr error) {
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	c, err := cfg.Dial(dialCtx, "sctp", laddr, raddr)
 	cancel()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = c.Close() }()
+	defer func() {
+		if err := c.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			retErr = errors.Join(retErr, err)
+		}
+	}()
 
 	status, err := c.Status()
 	if err != nil {
@@ -231,6 +288,9 @@ func runClient(ctx context.Context, cfg *sctp.Config, laddr, raddr *sctp.Addr, b
 		stream := uint16(i % int(status.OutStreams))
 		for j := range payload {
 			payload[j] = byte(i + j)
+		}
+		if err := c.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			return err
 		}
 		info := &sctp.SndInfo{Stream: stream, PPID: uint32(stream)}
 		if _, err := c.SendMsg(payload, sctp.SendOptions{Info: info}); err != nil {

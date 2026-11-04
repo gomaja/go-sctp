@@ -16,3 +16,6 @@
 # compared verbatim, one name per line, against the package's own
 # exported API (TestExportedAPI, api_test.go).
 testdata/api.golden -text
+
+# Docker build input must keep Unix line endings on Windows too.
+testdata/bigendian/Dockerfile text eol=lf

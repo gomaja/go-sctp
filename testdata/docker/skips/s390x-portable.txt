@@ -1,0 +1,8 @@
+# qemu-user runs portable cases without the socket suite network setup.
+github.com/gomaja/go-sctp TestZonedLinkLocalRoundTrip
+github.com/gomaja/go-sctp TestEncodeAddrRejectsNonLinkLocalZone
+github.com/gomaja/go-sctp TestEncodeAddrZoneResolvesViaInterfaceByName
+github.com/gomaja/go-sctp TestDecodeThenEncodeAFInet6RoundTrips
+github.com/gomaja/go-sctp TestEncodeZonePrefersInterfaceName
+github.com/gomaja/go-sctp TestZoneNameResolvesRealInterfaces
+github.com/gomaja/go-sctp TestEncodeAddrZonedAllocatesNothing

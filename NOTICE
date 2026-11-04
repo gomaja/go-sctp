@@ -6,8 +6,11 @@ Copyright in upstream-derived portions remains with the respective copyright
 holders. Modified files retain those notices and identify gomaja's changes.
 
 Portions of addr.go, close.go, close_linux.go, conn_linux.go,
-dial_linux.go, listener_linux.go, notification.go, recv_linux.go,
-send_linux.go, socket_linux.go and sockaddr.go, and of their tests, are
+dial_linux.go, endpoint_linux.go, listener_linux.go, notification.go,
+options.go, options_ext_linux.go, options_linux.go, recv_linux.go,
+send_linux.go, socket_linux.go and sockaddr.go, and of their tests,
+including endpoint_linux_test.go, options_ext_linux_test.go,
+options_linux_test.go and file_linux_test.go, are
 derived from Wataru Ishida's go-sctp; those files retain that copyright
 notice alongside gomaja's. crosscompile_test.go carries the same notice
 independently of that list.

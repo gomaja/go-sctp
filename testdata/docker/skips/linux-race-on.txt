@@ -1,0 +1,25 @@
+# Race runs omit allocation measurements; the other skips follow the sysctl state.
+github.com/gomaja/go-sctp TestAppendSendCmsgsAllocatesNothing
+github.com/gomaja/go-sctp TestAssocChangeInfoAllocations
+github.com/gomaja/go-sctp TestCloseClockAllocatesNothingPerStep
+github.com/gomaja/go-sctp TestDecodeAddrsAllocatesNothingOnError
+github.com/gomaja/go-sctp TestEncodeAddrZonedAllocatesNothing
+github.com/gomaja/go-sctp TestEndpointRecvMsgZeroAllocs
+github.com/gomaja/go-sctp TestEndpointSendMsgZeroAllocs
+github.com/gomaja/go-sctp TestNotificationAccumulator/assocChangeInfo_can_read_the_prefix_as_it_grows,_without_retaining
+github.com/gomaja/go-sctp TestNotificationAccumulator/reset_reuses_storage_across_records_without_leaking_stale_bytes/zero_allocations_when_capacity_already_suffices
+github.com/gomaja/go-sctp TestParseRecvCmsgsAllocatesNothing
+github.com/gomaja/go-sctp TestRawSyscallsAllocateNothing
+github.com/gomaja/go-sctp TestReadMsgMemoryFollowsMessage
+github.com/gomaja/go-sctp TestRecvZeroAllocs
+github.com/gomaja/go-sctp TestSendMsgContextFreshContextZeroAllocs
+github.com/gomaja/go-sctp TestSendMsgContextRealZeroAllocs
+github.com/gomaja/go-sctp TestSendMsgContextZeroAllocs
+github.com/gomaja/go-sctp TestSendMsgZeroAllocs
+github.com/gomaja/go-sctp TestSuccessPathsAllocateNothing
+github.com/gomaja/go-sctp TestTwoHost
+github.com/gomaja/go-sctp TestValidateSendOptionsAllocatesNothingOnSuccess
+github.com/gomaja/go-sctp TestWire
+github.com/gomaja/go-sctp TestZoneCacheHitAllocatesNothing
+# Allocation measurements are not meaningful under the race detector.
+github.com/gomaja/go-sctp TestReadMsgMeasurementBudget

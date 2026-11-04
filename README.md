@@ -58,8 +58,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net"
+	"syscall"
 	"time"
 
 	"github.com/gomaja/go-sctp"
@@ -79,6 +82,15 @@ func main() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+				if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+					errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) {
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+				log.Printf("accept: %v", err)
 				return
 			}
 			go func() {
@@ -273,7 +285,8 @@ What continuous integration runs on each target:
 | Target | What runs |
 |---|---|
 | `linux/amd64` | The whole suite against the runner's SCTP stack, with Go 1.26 and the latest Go, in both sysctl states (below); again under `-race`, and under `-gcflags=all=-d=checkptr` |
-| `linux/386` | The whole suite, natively on the x86_64 runner, so the `socketcall` path and the 32-bit layouts run against a real kernel; and the raw system-call tests again with the goroutine stack moved at every function call |
+| `linux/arm64` | The whole suite against the arm64 runner's SCTP stack, with the latest Go and both SCTP sysctls enabled |
+| `linux/386` | The root package suite on the x86_64 runner: the `socketcall` path and compat layouts against a 64-bit kernel, with `TestStorageLayoutOnThisKernel` checking the 64-bit layout reported by `uname -m`; the example package is covered by the other Linux jobs. Only `TestRawRecvmsgStackStorage` and `TestRawSockoptStackStorage` run again with the goroutine stack moved at every function call. Native 32-bit kernels are not exercised |
 | `linux/s390x` | The root and `example` package suites against a pinned Debian big-endian kernel under qemu-system, in both sysctl states; `TestCrossCompileSmoke` and architecture-independent `TestExportedAPI` are covered separately. The portable tests and fuzz seeds also run under the faster qemu-user job, which cannot exercise SCTP socket options |
 | `linux/arm`, `linux/mips`, `linux/386`, `linux/s390x` | `go vet` |
 | 13 targets across Linux, Android, macOS, Windows, FreeBSD and AIX | A build of each (`TestCrossCompileSmoke`) |
@@ -288,8 +301,11 @@ go test ./...
 
 On a machine without SCTP, such as macOS, this runs only the tests that
 need no socket: the socket-backed ones, in the `*_linux_test.go` files, are
-not built there, and a green run proves nothing about them. They run
-against a Linux kernel in Docker:
+not built there, and a green run proves nothing about them. On Linux, the
+root test package first probes for SCTP and fails immediately when the kernel
+lacks it. Try `modprobe sctp`; on RHEL-family systems, install the matching
+`kernel-modules-extra` package and check the SCTP module blacklist. Run the
+socket suite against a Linux kernel in Docker:
 
 ```
 testdata/docker/linux-suite.sh [-race] [-sysctl on|off] [-run REGEX]

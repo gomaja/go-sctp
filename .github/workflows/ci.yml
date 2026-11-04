@@ -15,15 +15,22 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   format:
     name: format
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -36,19 +43,22 @@ jobs:
             exit 1
           fi
       - name: diff check
-        run: git diff --check
+        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
 
   test-linux:
     name: test-linux / Go ${{ matrix.go }}, sysctl ${{ matrix.sysctl }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         go: ['1.26.x', stable]
         sysctl: [on, off]
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go }}
           cache: true
@@ -77,14 +87,20 @@ jobs:
         # populated instead of reusing it. PATH is passed explicitly
         # because sudo resets it by default and go must still resolve
         # on it.
-        run: sudo -E env "PATH=$PATH" go test ./... -count=1 -timeout 900s
+        shell: bash
+        run: |
+          sudo -E env "PATH=$PATH" go test ./... -count=1 -timeout 900s -json |
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/linux-${{ matrix.sysctl }}.txt
 
   test-linux-arm64:
     name: test-linux / arm64
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -95,18 +111,24 @@ jobs:
       - name: Build the tests
         run: go test -run '^$' -count=1 ./...
       - name: go test
-        run: sudo -E env "PATH=$PATH" go test ./... -count=1 -timeout 900s
+        shell: bash
+        run: |
+          sudo -E env "PATH=$PATH" go test ./... -count=1 -timeout 900s -json |
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/arm64-on.txt
 
   test-linux-race:
     name: test-linux race, sysctl ${{ matrix.sysctl }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         sysctl: [on, off]
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -121,14 +143,20 @@ jobs:
         run: go test -race -run '^$' -count=1 ./...
       - name: go test -race
         # Root, for the same reason as test-linux's go test step.
-        run: sudo -E env "PATH=$PATH" go test ./... -race -count=1 -timeout 900s
+        shell: bash
+        run: |
+          sudo -E env "PATH=$PATH" go test ./... -race -count=1 -timeout 900s -json |
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/linux-race-${{ matrix.sysctl }}.txt
 
   test-linux-checkptr:
     name: test-linux checkptr
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -147,16 +175,21 @@ jobs:
         # the same reason as test-linux's go test step; the build first,
         # as the normal user, keeps the build cache actions/setup-go set
         # up owned by it.
+        shell: bash
         run: |
           go test -gcflags=all=-d=checkptr -run '^$' -count=1 ./...
-          sudo -E env "PATH=$PATH" go test ./... -gcflags=all=-d=checkptr -count=1 -timeout 900s
+          sudo -E env "PATH=$PATH" go test ./... -gcflags=all=-d=checkptr -count=1 -timeout 900s -json |
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/checkptr-on.txt
 
   vet:
     name: vet
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -172,39 +205,44 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
-      - uses: dominikh/staticcheck-action@v1.4.1
+      - uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1.4.1
         with:
-          # Go 1.27.2 writes export data version 5. Staticcheck 2026.2.1
-          # (v0.8.1) and every earlier release read at most version 4, so
-          # under the stable toolchain they stop before analysing a single
-          # package (#23). The fix, go-tools f1838cc ("Update dependency on
-          # golang.org/x/tools to v0.51.0",
-          # https://github.com/dominikh/go-tools/issues/1832), is not in a
-          # release yet; this is the master commit after it whose own CI
-          # passes on Go 1.27. Replace it with the first release that
-          # contains f1838cc.
-          version: v0.7.0-0.dev.0.20261009230814-452d5bb86b45
+          # This release understands Go 1.27.2's export data format and
+          # retains checks for the minimum Go version declared by go.mod.
+          version: 2026.2.2
           install-go: false
-      - uses: golangci/golangci-lint-action@v9.3.0
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: latest
+          version: v2.15.0
+          args: --max-same-issues=0 --max-issues-per-linter=0 ./... ./testdata/docker ./testdata/wire/... ./testdata/bigendian/...
+      - name: Check harness Go code
+        run: '"$(go env GOPATH)/bin/staticcheck" ./testdata/docker ./testdata/wire/... ./testdata/bigendian/...'
+      - name: Test the JSON summarizer
+        run: go test ./testdata/docker -count=1
+
 
   portability:
     name: portability / ${{ matrix.kind }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           - kind: cross-compile
             os: ubuntu-latest
-            command: go test -run '^TestCrossCompileSmoke$' . -count=1 -timeout 900s
+            command: >-
+              go test -run '^TestCrossCompileSmoke$' . -count=1 -timeout 900s -json |
+              go run testdata/docker/summarize.go -require 'github.com/gomaja/go-sctp TestCrossCompileSmoke'
           - kind: unsupported-macos
             os: macos-latest
             command: go test ./... -short -count=1
@@ -212,20 +250,26 @@ jobs:
             os: windows-latest
             command: go test ./... -short -count=1
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
       - name: go test
+        shell: bash
         run: ${{ matrix.command }}
 
   arch-32bit:
     name: portability / kernel linux-386
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -247,23 +291,34 @@ jobs:
         # PATH for its own cross-compiles, and plain sudo would reset
         # PATH to one without it, skipping that test silently rather
         # than running it.
-        run: sudo -E env "PATH=$PATH" ./sctp-386.test -test.count=1 -test.timeout=900s
+        shell: bash
+        run: |
+          sudo -E env "PATH=$PATH" go tool test2json -p github.com/gomaja/go-sctp \
+            ./sctp-386.test -test.v=test2json -test.count=1 -test.timeout=900s |
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/386-on.txt
       - name: Exercise stack relocation across socketcall
+        shell: bash
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=386 go test -c \
             -gcflags=all=-d=maymorestack=runtime.mayMoreStackMove \
             -o sctp-386-stackmove.test .
-          ./sctp-386-stackmove.test \
-            -test.run '^TestRaw(Recvmsg|Sockopt)StackStorage$' \
+          go tool test2json -p github.com/gomaja/go-sctp ./sctp-386-stackmove.test \
+            -test.v=test2json -test.run '^TestRaw(Recvmsg|Sockopt)StackStorage$' \
             -test.count=10 \
-            -test.timeout=120s
+            -test.timeout=120s |
+            go run testdata/docker/summarize.go \
+              -require 'github.com/gomaja/go-sctp TestRawRecvmsgStackStorage' \
+              -require 'github.com/gomaja/go-sctp TestRawSockoptStackStorage'
 
   big-endian:
     name: portability / big-endian (s390x, qemu)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -293,6 +348,7 @@ jobs:
         # targets, so running it a second time under emulation would
         # spend qemu's extra time for no additional coverage the
         # ubuntu-latest cross-compile job does not already give.
+        shell: bash
         run: |
           portable=()
           for f in *_test.go; do
@@ -304,24 +360,31 @@ jobs:
           names="$(grep -h -E '^func (Test|Fuzz)[A-Za-z0-9_]*\(' -- "${portable[@]}" |
             sed -E 's/^func ([A-Za-z0-9_]+).*/\1/' | sort -u | paste -sd '|' -)"
           echo "running: ^($names)\$"
-          ./sctp-s390x.test -test.run "^($names)\$" -test.v -test.count=1 -test.timeout=900s
+          go tool test2json -p github.com/gomaja/go-sctp ./sctp-s390x.test \
+            -test.run "^($names)\$" -test.v=test2json -test.count=1 -test.timeout=900s |
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/s390x-portable.txt
 
   big-endian-kernel:
     name: portability / kernel s390x (qemu-system)
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
-      - name: Cache the pinned emulator environment
-        # snapshot.debian.org is slow and rate-limited. Persist only the
-        # compressed distribution image, keyed on the same architecture
-        # and construction inputs as run.sh; it still rebuilds the tests
-        # and checks a restored image's native architecture before use.
-        uses: actions/cache@v6.1.0
+      - name: Restore the emulator image
+        # snapshot.debian.org is slow and rate-limited, so the pinned
+        # emulator image is cached, keyed on its construction inputs. Only
+        # a push to main saves it, below, from this job, whose steps are
+        # all first-party; other runs only restore it. run.sh checks the
+        # image's architecture and the guest's kernel release against the
+        # committed testdata/bigendian/kernel-release.
+        id: emulator-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/go-sctp-bigendian-cache/*.image.tar.gz
           key: sctp-bigendian-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('testdata/bigendian/Dockerfile', 'testdata/bigendian/boot.sh') }}
@@ -340,12 +403,29 @@ jobs:
         env:
           SCTP_BIGENDIAN_CACHE: ${{ runner.temp }}/go-sctp-bigendian-cache
         run: testdata/bigendian/run.sh
+      - name: Save the emulator image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.emulator-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-sctp-bigendian-cache/*.image.tar.gz
+          key: ${{ steps.emulator-cache.outputs.cache-primary-key }}
+      - name: Upload big-endian evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: big-endian-evidence
+          path: ${{ runner.temp }}/go-sctp-bigendian-cache/run.*/
+          if-no-files-found: warn
+          retention-days: 7
 
   wire:
     name: wire harness (two hosts, tshark)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Load the SCTP kernel modules
         # The wire harness's containers are --privileged but share the
         # runner's kernel, so the sctp module (for the sysctls run.sh
@@ -360,18 +440,31 @@ jobs:
           sudo modprobe xt_sctp
           test -e /proc/net/sctp/snmp
       - name: Run the wire harness
+        env:
+          WIRE_OUT: ${{ runner.temp }}/go-sctp-wire
         run: testdata/wire/run.sh
+      - name: Upload wire evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wire-evidence
+          path: ${{ runner.temp }}/go-sctp-wire/
+          if-no-files-found: warn
+          retention-days: 7
 
   vuln:
     name: vuln
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           govulncheck ./...

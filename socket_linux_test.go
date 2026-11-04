@@ -354,9 +354,9 @@ func silentPeerAvailable(t testing.TB) bool {
 	return silentPeerOK
 }
 
-// countAssocs counts the associations the kernel holds, from
-// /proc/net/sctp/assocs.
-func countAssocs(t testing.TB) int {
+// countAssocs counts associations with port as either endpoint, so other
+// packages sharing this network namespace cannot disturb leak checks.
+func countAssocs(t testing.TB, port uint16) int {
 	t.Helper()
 	f, err := os.Open("/proc/net/sctp/assocs")
 	if err != nil {
@@ -364,13 +364,38 @@ func countAssocs(t testing.TB) int {
 	}
 	defer func() { _ = f.Close() }()
 	n := 0
+	lportCol, rportCol := -1, -1
 	s := bufio.NewScanner(f)
 	for s.Scan() {
-		line := strings.TrimSpace(s.Text())
-		if line == "" || strings.HasPrefix(line, "ASSOC") {
+		fields := strings.Fields(s.Text())
+		if len(fields) == 0 {
 			continue
 		}
-		n++
+		if fields[0] == "ASSOC" {
+			for i, field := range fields {
+				switch field {
+				case "LPORT":
+					lportCol = i
+				case "RPORT":
+					rportCol = i
+				}
+			}
+			continue
+		}
+		if lportCol < 0 || rportCol < 0 || len(fields) <= max(lportCol, rportCol) {
+			t.Fatalf("invalid association row: %q", s.Text())
+		}
+		local, err := strconv.ParseUint(fields[lportCol], 10, 16)
+		if err != nil {
+			t.Fatal(err)
+		}
+		remote, err := strconv.ParseUint(fields[rportCol], 10, 16)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if local == uint64(port) || remote == uint64(port) {
+			n++
+		}
 	}
 	if err := s.Err(); err != nil {
 		t.Fatalf("scanning /proc/net/sctp/assocs: %v", err)
@@ -381,11 +406,11 @@ func countAssocs(t testing.TB) int {
 // waitAssocsAtMost polls countAssocs until it is at most want or 5 s
 // pass, and returns the last count: the kernel frees an aborted
 // association within microseconds, but asynchronously.
-func waitAssocsAtMost(t testing.TB, want int) int {
+func waitAssocsAtMost(t testing.TB, port uint16, want int) int {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		got := countAssocs(t)
+		got := countAssocs(t, port)
 		if got <= want || time.Now().After(deadline) {
 			return got
 		}
@@ -1289,4 +1314,22 @@ func TestErrorsWrapExactlyOnce(t *testing.T) {
 		err := client.SetPathThresholds(netip.MustParseAddr("192.0.2.1"), &PathThresholds{})
 		singleWrap(t, err, syscall.ENOENT)
 	})
+}
+
+func TestCountAssocsPortIsolation(t *testing.T) {
+	l := mustListen(t, nil, "sctp4", loopback4(0))
+	port := listenerAddr(t, l).Port
+	connPair(t, nil, nil)
+	if got := countAssocs(t, port); got != 0 {
+		t.Fatalf("unrelated associations counted: got %d, want 0", got)
+	}
+}
+
+func TestCountAssocsMatchesEitherPort(t *testing.T) {
+	client, server := connPair(t, nil, nil)
+	for _, port := range []uint16{client.LocalAddr().(*Addr).Port, server.LocalAddr().(*Addr).Port} {
+		if got := countAssocs(t, port); got != 2 {
+			t.Errorf("port %d: got %d associations, want 2", port, got)
+		}
+	}
 }

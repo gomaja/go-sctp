@@ -55,8 +55,27 @@ off)
 esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+RUN_ID="${HARNESS_RUN_ID:-sctpsuite-$$-$RANDOM}"
+CONTAINER="$RUN_ID-suite"
+CACHE="$RUN_ID-modcache"
+LABEL="${HARNESS_LABEL:-$RUN_ID}"
+OUT="${LINUX_SUITE_OUT:-$(mktemp -d "${TMPDIR:-/tmp}/go-sctp-suite.XXXXXX")}"
+mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
+CLEANED=0
+# Cleanup is idempotent: signal handlers remove the container before exiting,
+# then EXIT invokes the same function once more.
+cleanup() {
+	if [ "$CLEANED" -eq 1 ]; then return; fi
+	CLEANED=1
+	docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+	docker volume rm "$CACHE" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
-PREFERRED_IMAGE="${LINUX_SUITE_IMAGE:-golang:1.26.5-bookworm}"
+PREFERRED_IMAGE="${LINUX_SUITE_IMAGE:-golang:1.26.10-bookworm}"
 
 # resolve_image prints the image tag to run: the preferred one if it exists
 # (checked locally first, then pulled), otherwise the newest
@@ -131,6 +150,7 @@ AUTH_ENABLE="$1"
 INTL_ENABLE="$2"
 RACE="$3"
 RUN="$4"
+ALLOWLIST="$5"
 
 # The network and sysctl setup this suite and the CI workflow both need,
 # built by the one script both call, so the two environments cannot drift
@@ -144,7 +164,7 @@ go version
 # .git pointer file (it silently omits VCS stamping rather than failing),
 # but this keeps the build from depending on that behaviour, or on VCS
 # metadata resolved against the bind-mounted host state, at all.
-export GOFLAGS=-buildvcs=false
+export GOFLAGS=-buildvcs=false GOTOOLCHAIN=local
 
 # "go test -json" is used instead of scanning "-v" text output because
 # text scanning misses two real failure shapes: go test -v indents subtest
@@ -159,20 +179,31 @@ export GOFLAGS=-buildvcs=false
 # "panic:" line, all derived from the structured events rather than from
 # text pattern matching.
 set +e
-go test ./... -count=1 -timeout 1200s -v $RACE -run "$RUN" -json 2>&1 |
-	tee /tmp/out.json |
-	go run testdata/docker/summarize.go |
-	tee /tmp/out.log
-status="${PIPESTATUS[0]}"
+go test ./... -count=1 -timeout 1200s -v $RACE -run "$RUN" -json 2>/out/stderr.log |
+	tee /out/out.json |
+	go run testdata/docker/summarize.go -allow-skips "testdata/docker/skips/$ALLOWLIST.txt" |
+	tee /out/out.log
+statuses=("${PIPESTATUS[@]}")
 set -e
-
+cat /out/stderr.log >&2
+status=0
+for code in "${statuses[@]}"; do
+	if [ "$code" -ne 0 ]; then status="$code"; break; fi
+done
 echo "EXIT=$status"
 exit "$status"
 EOF
 
-docker run --rm --privileged \
-	--label "harness=${HARNESS_RUN_ID:-sctpsuite-$$}" \
+ALLOWLIST="linux-$SYSCTL"
+if [ -n "$RACE" ]; then ALLOWLIST="linux-race-$SYSCTL"; fi
+docker volume create --label "harness=$LABEL" "$CACHE" >/dev/null
+echo "suite artifacts: $OUT"
+docker run --rm --name "$CONTAINER" --privileged \
+	--label "harness=$LABEL" \
 	-v "$REPO_ROOT":/src \
+	-v "$OUT":/out \
+	-v "$CACHE":/go/pkg/mod \
 	-w /src \
 	"$IMAGE" \
-	bash -c "$INNER_SCRIPT" bash "$AUTH_ENABLE" "$INTL_ENABLE" "$RACE" "$RUN"
+	bash -c "$INNER_SCRIPT" bash "$AUTH_ENABLE" "$INTL_ENABLE" "$RACE" "$RUN" "$ALLOWLIST" &
+wait "$!"

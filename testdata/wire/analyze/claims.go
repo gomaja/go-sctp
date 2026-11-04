@@ -295,6 +295,9 @@ func checkCloseWhileFull(r *claimRun) {
 	grace := r.duration("grace_ns")
 	for i, port := range r.ports {
 		queued := r.int(fmt.Sprintf("queued_%d", i))
+		if queued <= 0 {
+			r.failf("queued_%d must be positive, got %d", i, queued)
+		}
 		out, in := r.out(port), r.in(port)
 		r.noABORT(r.all(port))
 		sent := dataWith(out, ppidFill)
@@ -591,6 +594,9 @@ func checkNoWaitRefusal(r *claimRun) {
 	}
 	out := r.out(r.ports[0])
 	queued := r.int("queued")
+	if queued <= 0 {
+		r.failf("queued must be positive, got %d", queued)
+	}
 	if n := int64(len(distinctTSNs(dataWith(out, ppidFill)))); n != queued {
 		r.failf("%d distinct queued messages on the wire, want %d", n, queued)
 	}
@@ -642,6 +648,9 @@ func checkPath(r *claimRun) {
 	serverA, serverB := r.setupAddr("server_a"), r.setupAddr("server_b")
 	out := r.out(r.ports[0])
 	each := r.int("each")
+	if each <= 0 {
+		r.failf("each must be positive, got %d", each)
+	}
 	for _, c := range []struct {
 		ppid uint32
 		to   string
@@ -717,6 +726,9 @@ func checkPPIDByteOrder(r *claimRun) {
 func checkCloseAfterBurst(r *claimRun) {
 	closeAt := r.time("close_ns")
 	count := r.int("count")
+	if count <= 0 {
+		r.failf("count must be positive, got %d", count)
+	}
 	out, in := r.out(r.ports[0]), r.in(r.ports[0])
 	r.noABORT(r.all(r.ports[0]))
 	sent := dataWith(out, ppidBurst)

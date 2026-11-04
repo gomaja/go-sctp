@@ -5,6 +5,8 @@
 version: 2
 
 updates:
+  # go-ctxsync follows main without tags. Update its pseudo-version manually
+  # with go get github.com/gomaja/go-ctxsync@main, then run the Linux suite.
   - package-ecosystem: gomod
     directory: /
     schedule:
@@ -15,7 +17,6 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: deps
-      include: scope
     groups:
       go-modules:
         patterns:
@@ -31,8 +32,18 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: deps
-      include: scope
     groups:
       actions:
         patterns:
           - '*'
+
+  - package-ecosystem: docker
+    directory: /testdata/bigendian
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:00'
+      timezone: Europe/Paris
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: deps

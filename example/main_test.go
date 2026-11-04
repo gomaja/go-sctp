@@ -8,12 +8,15 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -156,14 +159,16 @@ func TestServerAndClientProcesses(t *testing.T) {
 	if err := server.Start(); err != nil {
 		t.Fatalf("starting the server: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = server.Process.Kill()
-		_ = server.Wait()
-	})
+	scanDone := make(chan struct{})
+	serverDone := make(chan struct{})
+	var serverErr error
+	go func() { <-scanDone; serverErr = server.Wait(); close(serverDone) }()
+	t.Cleanup(func() { _ = server.Process.Kill(); <-serverDone })
 
 	// The server logs "listening on 127.0.0.1:port" once it listens.
 	listening := make(chan string, 1)
 	go func() {
+		defer close(scanDone)
 		sc := bufio.NewScanner(logs)
 		for sc.Scan() {
 			line := sc.Text()
@@ -175,6 +180,9 @@ func TestServerAndClientProcesses(t *testing.T) {
 				}
 			}
 		}
+		if err := sc.Err(); err != nil {
+			t.Logf("reading server logs: %v", err)
+		}
 	}()
 	var addr *sctp.Addr
 	select {
@@ -182,6 +190,8 @@ func TestServerAndClientProcesses(t *testing.T) {
 		if addr, err = sctp.ResolveAddr("sctp", s); err != nil {
 			t.Fatalf("the server's address %q: %v", s, err)
 		}
+	case <-serverDone:
+		t.Fatalf("the server exited before reporting its address: %v", serverErr)
 	case <-time.After(30 * time.Second):
 		t.Fatal("the server did not report its address within 30 s")
 	}
@@ -205,6 +215,17 @@ func TestServerAndClientProcesses(t *testing.T) {
 	}
 	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
 		t.Errorf("client output:\n%s\nwant:\n%s", out, strings.Join(want, "\n"))
+	}
+	if err := server.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-serverDone:
+		if serverErr != nil {
+			t.Fatalf("server SIGTERM: %v", serverErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not stop after SIGTERM")
 	}
 }
 
@@ -264,4 +285,120 @@ func sysctlInt(t *testing.T, path string) int {
 		t.Fatalf("%s: %v", path, err)
 	}
 	return n
+}
+
+func TestClientRequiresPort(t *testing.T) {
+	for _, port := range []string{"", "0", "-1", "65536"} {
+		t.Run("port="+port, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0])
+			args := "-count\n1"
+			if port != "" {
+				args += "\n-port\n" + port
+			}
+			cmd.Env = append(os.Environ(), runMainEnv+"=1", runArgsEnv+"="+args)
+			out, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(out), "Usage of") {
+				t.Fatalf("client port %q: error %v, output %s; want usage and failure", port, err, out)
+			}
+		})
+	}
+}
+
+type deadlineEcho struct {
+	readDeadline, writeDeadline time.Time
+	fail                        string
+}
+
+func (c *deadlineEcho) SetReadDeadline(d time.Time) error {
+	c.readDeadline = d
+	if c.fail == "read deadline" {
+		return errors.New(c.fail)
+	}
+	return nil
+}
+func (c *deadlineEcho) SetWriteDeadline(d time.Time) error {
+	c.writeDeadline = d
+	if c.fail == "write deadline" {
+		return errors.New(c.fail)
+	}
+	return nil
+}
+func (c *deadlineEcho) ReadMsg(int) ([]byte, sctp.RcvInfo, error) {
+	if c.readDeadline.IsZero() {
+		return nil, sctp.RcvInfo{}, errors.New("read without deadline")
+	}
+	return []byte("echo"), sctp.RcvInfo{Stream: 2, PPID: 7}, nil
+}
+func (c *deadlineEcho) SendMsg(b []byte, opts sctp.SendOptions) (int, error) {
+	if c.writeDeadline.IsZero() {
+		return 0, errors.New("write without deadline")
+	}
+	if string(b) != "echo" || opts.Info.Stream != 2 || opts.Info.PPID != 7 {
+		return 0, errors.New("wrong echo")
+	}
+	return 0, errors.New("send sentinel")
+}
+
+func TestEchoMessageDeadlines(t *testing.T) {
+	for _, failure := range []string{"read deadline", "write deadline", "send sentinel"} {
+		t.Run(failure, func(t *testing.T) {
+			c := &deadlineEcho{fail: failure}
+			start := time.Now()
+			err := echo(c, 256)
+			if err == nil || err.Error() != failure {
+				t.Fatalf("echo = %v, want %s", err, failure)
+			}
+			for name, deadline := range map[string]time.Time{"read": c.readDeadline, "write": c.writeDeadline} {
+				if failure == "read deadline" && name == "write" {
+					continue
+				}
+				if deadline.Before(start.Add(9*time.Second)) || deadline.After(time.Now().Add(11*time.Second)) {
+					t.Errorf("%s deadline = %v, want about 10 s", name, deadline)
+				}
+			}
+		})
+	}
+}
+
+func TestRetryAccept(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{syscall.EMFILE, true}, {syscall.ENFILE, true}, {syscall.ENOBUFS, true}, {syscall.ENOMEM, true},
+		{fmt.Errorf("accept: %w", syscall.EMFILE), true}, {net.ErrClosed, false}, {syscall.EINVAL, false}, {syscall.EBADF, false}, {nil, false},
+	} {
+		if got := retryAccept(tc.err); got != tc.want {
+			t.Errorf("retryAccept(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestClientAcceptsPortBoundaries(t *testing.T) {
+	requireSCTP(t)
+	for _, port := range []string{"1", "65535"} {
+		t.Run(port, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0])
+			cmd.Env = append(os.Environ(), runMainEnv+"=1", runArgsEnv+"=-ip\n127.0.0.1\n-port\n"+port+"\n-count\n1")
+			out, err := cmd.CombinedOutput()
+			if ctx.Err() != nil || err == nil || strings.Contains(string(out), "Usage of") || !strings.Contains(string(out), "dial sctp") {
+				t.Fatalf("port %s: error %v, output %s; want a dial attempt", port, err, out)
+			}
+		})
+	}
+}
+
+func TestHelpSucceeds(t *testing.T) {
+	for _, arg := range []string{"-h", "-help"} {
+		t.Run(arg, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0])
+			cmd.Env = append(os.Environ(), runMainEnv+"=1", runArgsEnv+"="+arg)
+			out, err := cmd.CombinedOutput()
+			if err != nil || !strings.Contains(string(out), "Usage of example:") || strings.Contains(string(out), "flag: help requested") {
+				t.Fatalf("help: error %v, output %s; want usage and a successful exit", err, out)
+			}
+		})
+	}
 }

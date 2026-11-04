@@ -117,7 +117,7 @@ func TestDialSetupRTOInitialContextLeaksNothing(t *testing.T) {
 	if !silentPeerAvailable(t) {
 		t.Skip("needs the Linux suite's silent peer at 192.0.2.1")
 	}
-	baseline, before := countAssocs(t), openFds(t)
+	baseline, before := countAssocs(t, unreachableAddr().Port), openFds(t)
 	for _, policy := range []AbandonPolicy{AbandonAbort, AbandonQuiet} {
 		for range 10 {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
@@ -133,7 +133,7 @@ func TestDialSetupRTOInitialContextLeaksNothing(t *testing.T) {
 	if after := openFds(t); after > before+2 {
 		t.Errorf("descriptor count went %d -> %d", before, after)
 	}
-	if got := waitAssocsAtMost(t, baseline); got > baseline {
+	if got := waitAssocsAtMost(t, unreachableAddr().Port, baseline); got > baseline {
 		t.Errorf("%d associations remain, baseline %d", got, baseline)
 	}
 }

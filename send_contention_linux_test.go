@@ -168,8 +168,13 @@ func TestSendMsgContextContendedProgress(t *testing.T) {
 				case <-ctx.Done():
 					t.Fatal("live victim did not acquire under plain traffic")
 				}
+				// Startup is complete; its context must not consume the traffic budget.
+				cancel()
+				// Give sustained traffic its own finite budget after startup.
+				progressCtx, stopProgress := context.WithTimeout(context.Background(), 20*time.Second)
+				defer stopProgress()
 				for range 64 {
-					if n, err := c.send(ctx, []byte{2}, SendOptions{NoWait: true}); n != 1 || err != nil {
+					if n, err := c.send(progressCtx, []byte{2}, SendOptions{NoWait: true}); n != 1 || err != nil {
 						t.Fatalf("live victim under plain traffic = %d, %v", n, err)
 					}
 				}

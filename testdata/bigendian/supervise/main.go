@@ -144,7 +144,7 @@ func (s supervisor) run() (result error) {
 		cleanupCancel()
 		cancel()
 		if running {
-			<-done
+			<-done //nolint:errcheck // Cleanup only reaps the process after choosing the run result.
 			running = false
 		}
 	}
@@ -247,7 +247,12 @@ wait:
 			if err := os.WriteFile(filepath.Join(s.work, pkg.logName+"-"+state+".json"), events, 0600); err != nil {
 				return err
 			}
-			summary, err := s.execute(deadline, string(events), "run", "testdata/docker/summarize.go")
+			stateName := "off"
+			if state == "1" {
+				stateName = "on"
+			}
+			summary, err := s.execute(deadline, string(events), "run", "testdata/docker/summarize.go",
+				"-allow-skips", "testdata/docker/skips/s390x-"+stateName+".txt")
 			if _, writeErr := s.out.Write(summary); writeErr != nil {
 				return writeErr
 			}
@@ -316,7 +321,7 @@ func (s supervisor) execute(deadline time.Time, input string, args ...string) ([
 		return output.Bytes(), err
 	case sig := <-s.signals:
 		cancel()
-		<-done
+		<-done //nolint:errcheck // Reap after cancellation; the interruption is returned below.
 		return output.Bytes(), fmt.Errorf("interrupted by signal %s", sig)
 	}
 }

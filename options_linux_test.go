@@ -31,6 +31,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"reflect"
 	"strconv"
 	"strings"
@@ -1396,12 +1397,23 @@ func TestStorageLayoutOnThisKernel(t *testing.T) {
 		}
 		return
 	}
-	// A 32-bit build: CI's native linux/386 job on an x86_64 runner.
+	// A 32-bit build must select the layout of the running kernel.
 	l, err := client.sock.storageLayout()
 	if err != nil {
 		t.Fatalf("storageLayout: %v", err)
 	}
-	t.Logf("a 32-bit build chose the %s layout", map[bool]string{true: "kernel64", false: "native"}[l == &kernel64StorageLayout])
+	machineBytes, err := exec.Command("uname", "-m").Output()
+	if err != nil {
+		t.Fatalf("uname -m: %v", err)
+	}
+	machine := strings.TrimSpace(string(machineBytes))
+	want := &nativeStorageLayout
+	if strings.Contains(machine, "64") || machine == "s390x" {
+		want = &kernel64StorageLayout
+	}
+	if l != want {
+		t.Errorf("32-bit process on %s selected %p, want %p", machine, l, want)
+	}
 }
 
 // --- concurrency --------------------------------------------------------------

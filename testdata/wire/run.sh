@@ -21,7 +21,7 @@
 #
 # WIRE_OUT names the artifact directory (default: a new temporary one);
 # WIRE_GO_IMAGE the Go image the harness image is built from (default
-# golang:1.26.5-bookworm).
+# golang:1.26.10-bookworm).
 set -euo pipefail
 
 RUN=""
@@ -56,8 +56,12 @@ case "$ONLY" in
 esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-GO_IMAGE="${WIRE_GO_IMAGE:-golang:1.26.5-bookworm}"
+GO_IMAGE="${WIRE_GO_IMAGE:-golang:1.26.10-bookworm}"
 RUN_ID="${HARNESS_RUN_ID:-sctpwire-$$-$RANDOM}"
+LABEL="${HARNESS_LABEL:-$RUN_ID}"
+BUILDER="$RUN_ID-build"
+CHOWNER="$RUN_ID-chown"
+CACHE="$RUN_ID-modcache"
 IMAGE="go-sctp-wire:$RUN_ID"
 NET_A="$RUN_ID-a"
 NET_B="$RUN_ID-b"
@@ -68,6 +72,8 @@ OUT="${WIRE_OUT:-$(mktemp -d "${TMPDIR:-/tmp}/go-sctp-wire.XXXXXX")}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 BUILD="$OUT/build"
+# A reused output directory must not retain a verdict from another selection.
+rm -rf "$OUT/expected"
 mkdir -p "$BUILD" "$OUT/expected"
 
 IMAGE_BUILT=0
@@ -86,12 +92,13 @@ cleanup() {
 		docker exec "$CLIENT" sh -c 'kill -INT "$(cat /tmp/dumpcap.pid)"' >/dev/null 2>&1
 		wait "$CAPTURE_PID" >/dev/null 2>&1
 	fi
-	docker rm -f "$SERVER" "$CLIENT" >/dev/null 2>&1
+	docker rm -f "$SERVER" "$CLIENT" "$BUILDER" >/dev/null 2>&1
 	docker network rm "$NET_A" "$NET_B" >/dev/null 2>&1
+ docker volume rm "$CACHE" >/dev/null 2>&1
 	if [ "$IMAGE_BUILT" -eq 1 ]; then
 		# On a native Linux host the files the containers wrote belong to
 		# root; hand the artifact directory back to the caller.
-		docker run --rm --label "harness=$RUN_ID" -v "$OUT:/out" "$IMAGE" chown -R "$(id -u):$(id -g)" /out >/dev/null 2>&1
+		docker run --rm --name "$CHOWNER" --label "harness=$LABEL" -v "$OUT:/out" "$IMAGE" chown -R "$(id -u):$(id -g)" /out >/dev/null 2>&1
 		docker image rm "$IMAGE" >/dev/null 2>&1
 	fi
 }
@@ -111,7 +118,7 @@ echo "wire artifacts: $OUT"
 # capture, iptables for the INPUT drops, iproute2 and ethtool for the
 # interfaces. The tag is removed on exit; the build cache keeps the next
 # build fast.
-docker build -q --label "harness=$RUN_ID" -t "$IMAGE" --build-arg GO_IMAGE="$GO_IMAGE" - >/dev/null <<'EOF' || die "could not build the harness image from $GO_IMAGE"
+docker build -q --label "harness=$LABEL" -t "$IMAGE" --build-arg GO_IMAGE="$GO_IMAGE" - >/dev/null <<'EOF' || die "could not build the harness image from $GO_IMAGE"
 ARG GO_IMAGE
 FROM ${GO_IMAGE}
 RUN if command -v tshark && command -v dumpcap && command -v iptables && command -v ip && command -v ethtool; then exit 0; fi; apt-get update -qq \
@@ -125,7 +132,8 @@ IMAGE_BUILT=1
 # mounted read-only into both containers. The analyzer lives under
 # testdata/, which "go vet ./..." skips, so it is vetted and tested here.
 echo "building the test binary and the analyzer..."
-docker run --rm --label "harness=$RUN_ID" -e GOFLAGS=-buildvcs=false -v "$ROOT:/src:ro" -v "$BUILD:/build" -w /src "$IMAGE" sh -c '
+docker volume create --label "harness=$LABEL" "$CACHE" >/dev/null
+docker run --rm --name "$BUILDER" --label "harness=$LABEL" -e GOFLAGS=-buildvcs=false -e GOTOOLCHAIN=local -v "$CACHE:/go/pkg/mod" -v "$ROOT:/src:ro" -v "$BUILD:/build" -w /src "$IMAGE" sh -c '
 	set -e
 	go vet ./testdata/wire/analyze
 	if ! go test -count=1 ./testdata/wire/analyze >/tmp/analyze-test.log 2>&1; then
@@ -135,12 +143,13 @@ docker run --rm --label "harness=$RUN_ID" -e GOFLAGS=-buildvcs=false -v "$ROOT:/
 	go build -o /build/wireanalyze ./testdata/wire/analyze
 	go build -o /build/summarize ./testdata/docker/summarize.go
 	go test -c $1 -o /build/sctp.test .
-' _ "$RACE" || die "build failed"
+' _ "$RACE" &
+wait "$!" || die "build failed"
 
-docker network create --label "harness=$RUN_ID" "$NET_A" >/dev/null
-docker network create --label "harness=$RUN_ID" "$NET_B" >/dev/null
+docker network create --label "harness=$LABEL" "$NET_A" >/dev/null
+docker network create --label "harness=$LABEL" "$NET_B" >/dev/null
 for c in "$SERVER" "$CLIENT"; do
-	docker run -d --label "harness=$RUN_ID" --name "$c" --privileged --network "$NET_A" \
+	docker run -d --label "harness=$LABEL" --name "$c" --privileged --network "$NET_A" \
 		-v "$BUILD:/wire:ro" -v "$OUT:/out" "$IMAGE" sleep infinity >/dev/null
 	docker network connect "$NET_B" "$c"
 done
@@ -251,11 +260,13 @@ run_roles() {
 		local status=0
 		wait "${pids[$i]}" || status=$?
 		i=$((i + 1))
-		docker exec -i "$CLIENT" /wire/summarize <"$OUT/$phase.$role.json" >"$OUT/$phase.$role.log"
+        local summary_status=0
+		docker exec -i "$CLIENT" /wire/summarize -min-tests 2 -require "$PKG $test" \
+            <"$OUT/$phase.$role.json" >"$OUT/$phase.$role.log" || summary_status=$?
 		local summary
 		summary="$(grep '^SUMMARY:' "$OUT/$phase.$role.log" || true)"
 		echo "$phase $role: $summary EXIT=$status"
-		if [ "$status" -ne 0 ] || ! echo "$summary" | grep -Eq '^SUMMARY: PASS=[1-9][0-9]* FAIL=0 SKIP=0$'; then
+		if [ "$status" -ne 0 ] || [ "$summary_status" -ne 0 ]; then
 			failed=1
 			grep -E '^[[:space:]]*--- FAIL|^[[:space:]]+[a-z_]+_test\.go:[0-9]+:' "$OUT/$phase.$role.log" | head -40 | sed "s/^/  $role: /" >&2 || true
 		fi
@@ -323,8 +334,7 @@ if [ "$ONLY" != wire ]; then
 	run_roles twohost TestTwoHost "$RUN" || VERDICT=1
 	{
 		for role in client server; do
-			# A -run filter can match no two-host subtest; that is not a
-			# failure (run_roles already judged the phase).
+			# run_roles has already required a passing parent and case.
 			{ grep -E '^[[:space:]]*--- (PASS|FAIL|SKIP): TestTwoHost/' "$OUT/twohost.$role.log" || true; } |
 				sed -E "s/^[[:space:]]*/$role: /; s/ \([0-9.]+s\)$//"
 		done

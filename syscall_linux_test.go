@@ -22,10 +22,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"runtime"
 	"runtime/debug"
 	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -82,7 +84,7 @@ func sctpLoopbackPair(t *testing.T) (client, server int) {
 	port := sa.(*syscall.SockaddrInet4).Port
 
 	client = sctpSocket(t)
-	if err := syscall.Connect(client, &syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+	if err := connectLoopback(client, &syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}}, syscall.Connect); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 
@@ -92,6 +94,74 @@ func sctpLoopbackPair(t *testing.T) (client, server int) {
 	}
 	t.Cleanup(func() { _ = syscall.Close(server) })
 	return client, server
+}
+
+func connectLoopback(fd int, peer syscall.Sockaddr, connect func(int, syscall.Sockaddr) error) error {
+	err := connect(fd, peer)
+	if err != nil && err != syscall.EISCONN && err != syscall.EALREADY && err != syscall.EINPROGRESS {
+		return err
+	}
+	// A restarted connect can find the association already present. Wait for
+	// getpeername to confirm establishment before accepting or using the pair.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := syscall.Getpeername(fd); err == nil {
+			return nil
+		} else if err != syscall.ENOTCONN {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return errors.New("loopback association did not establish within 5 s")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestLoopbackConnectRestart(t *testing.T) {
+	for _, restart := range []error{nil, syscall.EISCONN, syscall.EALREADY, syscall.EINPROGRESS} {
+		t.Run(fmt.Sprint(restart), func(t *testing.T) {
+			listener := sctpSocket(t)
+			if err := syscall.Bind(listener, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Listen(listener, 1); err != nil {
+				t.Fatal(err)
+			}
+			peer, err := syscall.Getsockname(listener)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := sctpSocket(t)
+			done := make(chan error, 1)
+			err = connectLoopback(client, peer, func(fd int, sa syscall.Sockaddr) error {
+				if restart == syscall.EALREADY || restart == syscall.EINPROGRESS {
+					go func() { time.Sleep(20 * time.Millisecond); done <- syscall.Connect(fd, sa) }()
+					return restart
+				}
+				if err := syscall.Connect(fd, sa); err != nil {
+					return err
+				}
+				return restart
+			})
+			if err != nil {
+				t.Fatalf("connect after restart %v: %v", restart, err)
+			}
+			_, peerErr := syscall.Getpeername(client)
+			if peerErr != nil {
+				t.Fatalf("returned before establishment: %v", peerErr)
+			}
+			if restart == syscall.EALREADY || restart == syscall.EINPROGRESS {
+				select {
+				case connectedErr := <-done:
+					if connectedErr != nil && connectedErr != syscall.EISCONN {
+						t.Fatal(connectedErr)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("connect callback did not finish within 5 s")
+				}
+			}
+		})
+	}
 }
 
 // requireSCTPProtocolOptions skips the calling test in exactly one known,
