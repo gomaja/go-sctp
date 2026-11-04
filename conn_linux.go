@@ -302,6 +302,14 @@ func (c *Conn) liveAddrs(opt int) (*Addr, error) {
 // A zero netip.Addr, an empty list, or an address the socket's family
 // cannot carry is refused with an error matching syscall.EINVAL before any
 // system call.
+//
+// Linux silently binds only the start of a very long local address list;
+// the limit depends on the kernel. Measured with IPv4 addresses, it is 4,352
+// (69,632 bytes) on the Rocky Linux 9 and 10 kernels, and 8,448 (135,168
+// bytes) on the Ubuntu 24.04 and later kernels. Check [Conn.LocalAddrs],
+// [Listener.Addr] or [Endpoint.Addr] to verify the bound addresses when using
+// long lists:
+// https://github.com/sctp/lksctp-tools/issues/76.
 func (c *Conn) BindAdd(ips ...netip.Addr) error {
 	return c.bindx(optSockoptBindxAdd, "BindAdd", ips)
 }

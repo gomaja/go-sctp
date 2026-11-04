@@ -63,7 +63,13 @@ func OpenEndpoint(network string, laddr *Addr) (*Endpoint, error) {
 // is the wildcard address: with a port of 0 the kernel chooses one, and
 // with "sctp" the socket is AF_INET6 dual-stack, so that it listens on the
 // host's IPv4 and IPv6 addresses alike. Several IPs make a multi-homed
-// endpoint, bound atomically (RFC 6458 §9.1).
+// endpoint, bound atomically (RFC 6458 §9.1), up to the Linux limit on a
+// list's length described below. "sctp6" is dual-stack too,
+// accepting IPv4 peers and colliding with a wildcard "sctp4" bind on the
+// same port (EADDRINUSE). For IPv6 only, set IPV6_V6ONLY to 1 inside
+// Config.Control's RawConn.Control callback, after the package clears it.
+//
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
 //
 // Before any association can exist, and after Config.Control, whatever
 // Control did, the package enables SCTP_RECVRCVINFO and the
@@ -94,7 +100,13 @@ func (c *Config) ListenEndpoint(network string, laddr *Addr) (*Endpoint, error) 
 // sctp_sf_do_5_1B_init). A nil laddr leaves the socket unbound until its
 // first Connect, which binds it to the wildcard address and a port the
 // kernel chooses (net/sctp/socket.c: sctp_autobind); Addr reports that
-// port afterwards. Errors are *net.OpError with Op "listen".
+// port afterwards. Like ListenEndpoint, "sctp6" is dual-stack, accepts
+// IPv4 peers and can collide with a wildcard "sctp4" bind (EADDRINUSE).
+// Config.Control can set IPV6_V6ONLY to 1 after the package clears it, as
+// described on Config.
+//
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
+// Errors are *net.OpError with Op "listen".
 func (c *Config) OpenEndpoint(network string, laddr *Addr) (*Endpoint, error) {
 	e, err := c.openEndpoint(styleOpenEndpoint, network, laddr)
 	if err != nil {
@@ -562,6 +574,7 @@ func (e *Endpoint) SetAutoClose(d time.Duration) error {
 // socket's family cannot carry is refused with an error matching
 // syscall.EINVAL before any system call. Errors are *net.OpError with Op
 // "bindx".
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
 func (e *Endpoint) BindAdd(ips ...netip.Addr) error {
 	return e.bindx(optSockoptBindxAdd, "BindAdd", ips)
 }

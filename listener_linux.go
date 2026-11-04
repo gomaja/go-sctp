@@ -42,7 +42,14 @@ func Listen(network string, laddr *Addr) (*Listener, error) {
 // laddr, or one with no IPs, is the wildcard address: with a port of 0 the
 // kernel chooses one, and with "sctp" the socket is AF_INET6 dual-stack, so
 // that it listens on the host's IPv4 and IPv6 addresses alike. Several IPs
-// make a multi-homed endpoint, bound atomically (RFC 6458 §9.1).
+// make a multi-homed endpoint, bound atomically (RFC 6458 §9.1), up to the
+// Linux limit on a list's length described below.
+// "sctp6" is dual-stack too: it accepts IPv4 peers and its wildcard bind
+// collides with "sctp4" on the same port (EADDRINUSE). For IPv6 only, set
+// IPV6_V6ONLY to 1 inside Config.Control's RawConn.Control callback, which
+// runs after the package clears it.
+//
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
 //
 // The backlog is the kernel's own maximum, net.core.somaxconn, read at
 // each Listen, rather than syscall.SOMAXCONN: the Go constant is 128,
@@ -271,6 +278,8 @@ func (l *Listener) SetDeadline(t time.Time) error {
 // afterwards. A zero netip.Addr, an empty list, or an address the socket's
 // family cannot carry is refused with an error matching syscall.EINVAL
 // before any system call.
+//
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
 func (l *Listener) BindAdd(ips ...netip.Addr) error {
 	return l.bindx(optSockoptBindxAdd, "BindAdd", ips)
 }

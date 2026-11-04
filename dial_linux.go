@@ -47,7 +47,12 @@ func Dial(ctx context.Context, network string, laddr, raddr *Addr) (*Conn, error
 // AF_INET6 dual-stack, so that the peer's addresses of either family can
 // join the association. Several IPs in raddr are all given to the kernel
 // for the setup (sctp_connectx, RFC 6458 §9.9), and several in laddr make
-// a multi-homed local endpoint.
+// a multi-homed local endpoint. "sctp6" also uses an AF_INET6 dual-stack
+// socket and accepts IPv4 peers. Its wildcard bind collides with "sctp4"
+// on the same port (EADDRINUSE). For IPv6 only, set IPV6_V6ONLY to 1 inside
+// Config.Control's RawConn.Control callback, after the package clears it.
+//
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
 //
 // A nil raddr, one with no IPs, or one with port 0 (RFC 9260 §3.1) is
 // refused with an error matching syscall.EINVAL before any socket is opened.

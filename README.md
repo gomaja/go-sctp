@@ -174,9 +174,36 @@ already-resolved addresses and never resolve hostnames themselves.
   and send returns the same error (`ECONNRESET`, `ETIMEDOUT` or
   `ECONNABORTED`) instead of hanging.
 - **Errors.** The errors of socket calls are `*net.OpError` values that
-  name the call; test them with `errors.Is`. A refused argument matches `syscall.EINVAL` and
-  names the field, and an option the kernel lacks matches
-  `syscall.ENOPROTOOPT`.
+  name the call; test them with `errors.Is`. A refused argument normally
+  matches `syscall.EINVAL` and names the field. `InterleaveStreams` matches
+  `sctp.ErrUnsupported` because Linux cannot retain that valid API level.
+  An option the kernel lacks matches `syscall.ENOPROTOOPT`.
+
+## IPv6 sockets
+
+`"sctp6"` selects an AF_INET6 **dual-stack** socket: IPv4 peers are accepted.
+A wildcard `Listen("sctp4", :p)` and `Listen("sctp6", :p)` therefore collide
+with `EADDRINUSE`. v1 set `IPV6_V6ONLY` for `"sctp6"`; this version clears it.
+To listen only on IPv6, set it again through `Config.Control`, which runs
+after the package clears the option:
+
+```go
+cfg := &sctp.Config{
+    Control: func(_, _ string, raw syscall.RawConn) error {
+        var setErr error
+        err := raw.Control(func(fd uintptr) {
+            setErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, 1)
+        })
+        if err != nil {
+            return err
+        }
+        return setErr
+    },
+}
+listener, err := cfg.Listen("sctp6", &sctp.Addr{Port: port})
+```
+
+The same callback applies to `Dial`, `ListenEndpoint` and `OpenEndpoint`.
 
 ## Kernel requirements
 
@@ -227,10 +254,16 @@ among them, the package compiles, `ResolveAddr`, `ResolveAddrContext` and
 wraps `sctp.ErrUnsupported`, which wraps `errors.ErrUnsupported`:
 
 ```go
-if errors.Is(err, errors.ErrUnsupported) {
+if errors.Is(err, sctp.ErrUnsupported) {
 	// no SCTP on this platform
 }
 ```
+
+Use `sctp.ErrUnsupported` specifically: `errors.ErrUnsupported` is too broad,
+since it also matches `ENOSYS`, `ENOTSUP` and `EOPNOTSUPP` from a working
+stack. Even `sctp.ErrUnsupported` has documented exceptions on a working
+stack; see its API documentation, including the deliberate refusal of
+`InterleaveStreams` in `Config.FragmentInterleave` and `SetFragmentInterleave`.
 
 `js/wasm` and `wasip1/wasm` compile the same way. `plan9` does not: its
 `syscall` package has no `Errno` type.

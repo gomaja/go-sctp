@@ -184,7 +184,7 @@ func TestAppendSendCmsgsEncodesPrInfoWhenSet(t *testing.T) {
 // TestAppendSendCmsgsPRTTLConvertsToMilliseconds covers the PRTTL branch,
 // which converts PrInfo.TTL to a millisecond count rather than using Value.
 func TestAppendSendCmsgsPRTTLConvertsToMilliseconds(t *testing.T) {
-	pr := &PrInfo{Policy: PRTTL, TTL: 2500 * time.Millisecond, Value: 999}
+	pr := &PrInfo{Policy: PRTTL, TTL: 2500 * time.Millisecond}
 	buf := make([]byte, sndCmsgSpace)[:0]
 
 	n := appendSendCmsgs(buf, &SndInfo{}, 0, pr, nil)
@@ -192,16 +192,16 @@ func TestAppendSendCmsgsPRTTLConvertsToMilliseconds(t *testing.T) {
 
 	p := cmsgSpace(sizeSndInfo) + sizeCmsghdr
 	if got := binary.NativeEndian.Uint32(full[p+prInfoValueOff:]); got != 2500 {
-		t.Errorf("pr_value = %d, want 2500 (from a 2500ms TTL; PrInfo.Value must be ignored for PRTTL)", got)
+		t.Errorf("pr_value = %d, want 2500 (from a 2500ms TTL; PRTTL uses TTL)", got)
 	}
 }
 
 // TestAppendSendCmsgsPRNoneEncodesZeroValue pins the kernel's own rule
 // (net/sctp/socket.c: sctp_msghdr_parse, "if (cmsgs->prinfo->pr_policy ==
 // SCTP_PR_SCTP_NONE) cmsgs->prinfo->pr_value = 0;"): PRNone always encodes
-// pr_value 0, whatever PrInfo.Value or PrInfo.TTL held.
+// pr_value 0 after validation requires both fields to be zero.
 func TestAppendSendCmsgsPRNoneEncodesZeroValue(t *testing.T) {
-	pr := &PrInfo{Policy: PRNone, Value: 999, TTL: 5 * time.Second}
+	pr := &PrInfo{Policy: PRNone}
 	buf := make([]byte, sndCmsgSpace)[:0]
 
 	n := appendSendCmsgs(buf, &SndInfo{}, 0, pr, nil)
@@ -212,7 +212,7 @@ func TestAppendSendCmsgsPRNoneEncodesZeroValue(t *testing.T) {
 		t.Fatalf("pr_policy = %v, want PRNone", got)
 	}
 	if got := binary.NativeEndian.Uint32(full[p+prInfoValueOff:]); got != 0 {
-		t.Errorf("pr_value = %d, want 0 — Linux zeroes it for PRNone even though PrInfo.Value/TTL were non-zero", got)
+		t.Errorf("pr_value = %d, want 0 — PRNone has no policy value", got)
 	}
 }
 
@@ -485,11 +485,7 @@ func TestValidateSendOptionsAcceptsValidCombinations(t *testing.T) {
 		{Info: &SndInfo{Flags: SendUnordered}},
 		{Info: &SndInfo{Flags: SendUnordered | SendSACKImmediately}},
 		{PR: &PrInfo{Policy: PRNone}},
-		// TTL is meaningless for PRNone, so a value that would fail the
-		// whole-millisecond check for PRTTL must not be checked here.
-		{PR: &PrInfo{Policy: PRNone, TTL: 1500 * time.Microsecond}},
 		{PR: &PrInfo{Policy: PRTTL, TTL: 250 * time.Millisecond}},
-		{PR: &PrInfo{Policy: PRTTL, TTL: 0}},
 		{PR: &PrInfo{Policy: PRRtx, Value: 3}},
 		{PR: &PrInfo{Policy: PRPrio, Value: 10}},
 		{Info: &SndInfo{Flags: SendUnordered}, PR: &PrInfo{Policy: PRTTL, TTL: time.Second}, AuthKey: new(uint16)},

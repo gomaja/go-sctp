@@ -130,7 +130,6 @@ func TestValidatePrInfoAcceptsKnownPolicies(t *testing.T) {
 	tests := []PrInfo{
 		{Policy: PRNone},
 		{Policy: PRTTL, TTL: 500 * time.Millisecond},
-		{Policy: PRTTL, TTL: 0},
 		{Policy: PRRtx, Value: 3},
 		{Policy: PRPrio, Value: 1},
 	}
@@ -197,7 +196,7 @@ func TestResolvePrInfo(t *testing.T) {
 		wantPolicy uint16
 		wantValue  uint32
 	}{
-		{"PRNone ignores TTL and Value", PrInfo{Policy: PRNone, TTL: time.Second, Value: 5}, uint16(PRNone), 0},
+		{"PRNone has no value", PrInfo{Policy: PRNone}, uint16(PRNone), 0},
 		{"PRTTL converts to ms", PrInfo{Policy: PRTTL, TTL: 1500 * time.Millisecond}, uint16(PRTTL), 1500},
 		{"PRRtx keeps Value", PrInfo{Policy: PRRtx, Value: 4}, uint16(PRRtx), 4},
 		{"PRPrio keeps Value", PrInfo{Policy: PRPrio, Value: 2}, uint16(PRPrio), 2},

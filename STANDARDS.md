@@ -12,6 +12,18 @@ code is written. The procedure at the end says how, and when.
 
 ## Verification record
 
+Rechecked **2026-11-04** for the PR-SCTP, reset and option documentation:
+the RFC Editor `rfcNNNN.json` records and the Datatracker incoming
+relationships, filtered server-side with `relationship__slug__in=obs,updates`,
+agree for RFC 9260, 6458, 8260, 3758, 7496, 6951, 8899, 6525 and 5061.
+None is obsoleted; the only incoming relationship is RFC 6951 updated by
+RFC 8899. RFC 7829 was checked the same way and has neither relationship.
+The Datatracker document records and full RFC Editor errata records were
+also fetched: the errata counts and dispositions below are unchanged.
+Held and Rejected errata retain their recorded treatment. The active
+TSVWG documents and DTLS chunk revision -06 were checked; the draft remains
+non-normative, as described below.
+
 Rechecked **2026-10-28** for `Config.SetupRTOInitial`: the RFC Editor JSON,
 Datatracker document and server-filtered incoming `obs,updates`
 relationships, and full errata records at the endpoints below were fetched
@@ -84,8 +96,8 @@ SCTP-related congestion-control draft is recorded below after the
 2026-09-27 refresh.
 The [IANA SCTP Parameters registry](https://www.iana.org/assignments/sctp-parameters/sctp-parameters.xml)
 was read the same day. The DTLS chunk draft and the registry entries that
-cite it are recorded below after a 2026-10-15 refresh, which followed the
-draft's revision -05. RFC 6458 was checked again on 2026-10-16, for its
+cite it are recorded below after a 2026-11-04 refresh, which followed the
+draft's revision -06. RFC 6458 was checked again on 2026-10-16, for its
 notification header (below).
 
 ## Conformance boundary
@@ -371,7 +383,7 @@ last updated 2026-08-13 when read, agrees with the values the package uses.
 - The temporary chunk type 65 and parameter type 32774 (0x8006), registered
   on 2026-02-20 and expiring on 2027-02-20, still cite
   `draft-ietf-tsvwg-sctp-dtls-chunk-01`, while the working group's current
-  revision is -05. Neither is used by the package.
+  revision is -06. Neither is used by the package.
 - Parameter type 32773 (0x8005), Padding, has no reference in the registry;
   RFC 4820 §4 defines it.
 
@@ -382,7 +394,7 @@ are recorded because they may change the baseline:
 
 | Draft | State at last check | What it would do |
 |---|---|---|
-| [`draft-ietf-tsvwg-sctp-dtls-chunk`](https://datatracker.ietf.org/doc/draft-ietf-tsvwg-sctp-dtls-chunk/) | Active working group document on 2026-10-15: revision -05 of 2026-10-08, expires 2027-04-11 | A DTLS chunk protecting SCTP payloads. Its header says it obsoletes RFC 6083 and updates RFC 5061 if approved; the Datatracker records no obsoleting or updating relationship yet |
+| [`draft-ietf-tsvwg-sctp-dtls-chunk`](https://datatracker.ietf.org/doc/draft-ietf-tsvwg-sctp-dtls-chunk/) | Active working group document on 2026-11-04: revision -06 of 2026-11-02, expires 2027-05-06 | A DTLS chunk protecting SCTP payloads. Its header says it obsoletes RFC 6083 and updates RFC 5061 if approved; the Datatracker records no obsoleting or updating relationship yet |
 | [`draft-ietf-tsvwg-dtls-chunk-key-management`](https://datatracker.ietf.org/doc/draft-ietf-tsvwg-dtls-chunk-key-management/) | Expired working group document, revision -01, expired 2026-09-03 | Key management for the DTLS chunk |
 | [`draft-ietf-tsvwg-dtls-over-sctp-bis`](https://datatracker.ietf.org/doc/draft-ietf-tsvwg-dtls-over-sctp-bis/) | Expired working group document, revision -08, expired 2024-11-04 | A revision of RFC 6083 |
 | [`draft-ietf-tsvwg-rfc4895-bis`](https://datatracker.ietf.org/doc/draft-ietf-tsvwg-rfc4895-bis/) | Expired working group document, revision -05, expired 2025-10-23 | A revision of RFC 4895 |
@@ -416,19 +428,20 @@ its publication disposition is `in_progress`, while the Datatracker's
 human page says "Awaiting Editor Assignment". These are source differences,
 not evidence of a published RFC.
 
-The 2026-10-15 refresh of `draft-ietf-tsvwg-sctp-dtls-chunk` used the
+The 2026-11-04 refresh of `draft-ietf-tsvwg-sctp-dtls-chunk` used the
 [Datatracker draft record](https://datatracker.ietf.org/api/v1/doc/document/draft-ietf-tsvwg-sctp-dtls-chunk/?format=json),
-[draft relationships](https://datatracker.ietf.org/api/v1/doc/relateddocument/?source__name=draft-ietf-tsvwg-sctp-dtls-chunk&format=json),
-the [revision -05 text](https://www.ietf.org/archive/id/draft-ietf-tsvwg-sctp-dtls-chunk-05.txt),
+[draft relationships](https://datatracker.ietf.org/api/v1/doc/relateddocument/?source__name=draft-ietf-tsvwg-sctp-dtls-chunk&relationship__slug__in=obs,updates&format=json),
+the [revision -06 text](https://www.ietf.org/archive/id/draft-ietf-tsvwg-sctp-dtls-chunk-06.txt),
 the RFC Editor records and server-filtered Datatracker relationships of
 RFC 6083 and RFC 5061, and the
 [IANA registry](https://www.iana.org/assignments/sctp-parameters/sctp-parameters.xml).
-Revision -05 keeps the header's `Obsoletes: 6083` and `Updates: RFC5061`,
-both "if approved". The Datatracker records no obsoleting or updating
-relationship from the draft. In both sources RFC 6083 is updated only by
-RFC 8996, RFC 5061 by nothing, and neither is obsoleted. The registry was
-still last updated 2026-08-13, and its entries citing the draft were
-unchanged.
+The draft record gives revision -06, dated 2026-11-02 and expiring
+2027-05-06. Revision -06 keeps the header's `Obsoletes: 6083` and
+`Updates: RFC5061`, both "if approved". The Datatracker records no
+obsoleting or updating relationship from the draft. In both sources RFC
+6083 is updated only by RFC 8996, RFC 5061 by nothing, and neither is
+obsoleted. The draft has no RFC number and does not change the published
+baseline. The registry entries still cite the draft.
 
 ## Checking again
 

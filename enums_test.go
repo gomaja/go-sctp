@@ -26,7 +26,8 @@ func checkStrings(t *testing.T, cases []stringerCase) {
 
 // TestConstantNameString covers the ordinary rule every enumeration in this
 // file follows except ErrorCause, SendFlags and StreamResetMask (their own
-// tests are below): a named value's String is its exported constant name,
+// tests are below) and ResetDirection (TestResetDirectionBits): a named
+// value's String is its exported constant name,
 // and an unnamed value renders as its type and number.
 func TestConstantNameString(t *testing.T) {
 	checkStrings(t, []stringerCase{
@@ -52,7 +53,6 @@ func TestConstantNameString(t *testing.T) {
 
 		{"ResetIncoming", ResetIncoming.String(), "ResetIncoming"},
 		{"ResetOutgoing", ResetOutgoing.String(), "ResetOutgoing"},
-		{"ResetDirection(9)", ResetDirection(9).String(), "ResetDirection(9)"},
 
 		{"HMACSHA256", HMACSHA256.String(), "HMACSHA256"},
 		{"HMACID(2)", HMACID(2).String(), "HMACID(2)"}, // 2 is unassigned by IANA

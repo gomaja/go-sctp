@@ -35,14 +35,16 @@
 // neither a descriptor another goroutine takes meanwhile nor the system-wide
 // limit can be ruled out.
 //
-// Everything that has to be decided before an association exists is a
-// field of [Config]: the streams and extensions offered in the INIT,
-// socket buffers, socket defaults and notification subscriptions. Its
-// methods [Config.Dial], [Config.Listen], [Config.ListenEndpoint],
-// [Config.OpenEndpoint], [Config.FileConn] and [Config.FileListener] are
-// the constructors, and the package-level functions of the same names use a
-// zero Config. A Config is checked before any socket is created. Optional
-// settings are pointers, and nil leaves the kernel's default:
+// [Config] exposes the usual settings needed before an association exists:
+// the streams and extensions offered in the INIT, socket buffers, socket
+// defaults and notification subscriptions. Other pre-association options
+// can be set through [Config.Control]; see [Conn.SetRemoteUDPEncapsPort]
+// for initial UDP encapsulation. Its methods [Config.Dial],
+// [Config.Listen], [Config.ListenEndpoint], [Config.OpenEndpoint],
+// [Config.FileConn] and [Config.FileListener] are the constructors. The
+// package-level functions of the same names use a zero Config. A Config
+// is checked before any socket is created. Optional settings are pointers,
+// and nil leaves the kernel's default:
 //
 //	cfg := &sctp.Config{
 //		InitMsg:       sctp.InitMsg{OutStreams: 16, MaxInStreams: 16},
@@ -55,7 +57,9 @@
 // them with msecs_to_jiffies, which rounds up, and reports them with
 // jiffies_to_msecs (net/sctp/socket.c). Reading one back gives the value set
 // rounded up to the tick, exact at HZ=1000 and a multiple of 10 ms at
-// HZ=100; the documentation of each such value says so.
+// HZ=100; the documentation of each such value says so. Very large
+// durations (2^31 milliseconds and above) can saturate during conversion,
+// so readback need not equal the requested value rounded up to a tick.
 //
 // [FileConn] and [FileListener] adopt a descriptor inherited from another
 // process.
@@ -170,6 +174,9 @@
 // methods of the value SyscallConn returns. On platforms without SCTP
 // every constructor fails, so no Conn, Listener or Endpoint can be
 // obtained there; the method stubs return ErrUnsupported unwrapped.
+// Those constructors validate Config only: other arguments, such as a bad
+// network or nil context, can reach ErrUnsupported instead of the argument
+// error Linux would return.
 // ResolveAddr, ResolveAddrContext, ParseNotification, InstallAuthKey and
 // ActivateAuthKey return their causes as they are. Test a cause with errors.Is:
 //
@@ -178,9 +185,12 @@
 //     package has been read. A record consumed through SyscallConn is
 //     never seen by the package.
 //   - An argument the package refuses, a Config field, a SendOptions field
-//     or a method argument, matches syscall.EINVAL, and the message names
-//     it. Nothing reaches the kernel then. A message exceeding Linux's
-//     MAX_RW_COUNT instead matches syscall.EMSGSIZE.
+//     or a method argument, normally matches syscall.EINVAL, and the message
+//     names it. InterleaveStreams instead matches [ErrUnsupported]: Linux
+//     cannot retain that valid API level, and a message exceeding Linux's
+//     MAX_RW_COUNT matches syscall.EMSGSIZE. Nothing reaches the kernel then.
+//     EINVAL alone does not prove a refused argument: it can also report an
+//     unrecognized socket address family in a kernel reply.
 //   - A passed I/O deadline set with SetDeadline, SetReadDeadline or
 //     SetWriteDeadline matches os.ErrDeadlineExceeded, and a closed socket
 //     net.ErrClosed.
@@ -195,9 +205,11 @@
 //     kernel does not have.
 //   - A NoWait send that finds no space matches syscall.EAGAIN, and a
 //     message larger than the send buffer syscall.EMSGSIZE.
-//   - [ErrUnsupported], and so errors.ErrUnsupported, reports a platform
-//     without SCTP: any GOOS but Linux, and Linux whose SCTP module is
-//     absent, where the error also matches the kernel's errno.
+//   - [ErrUnsupported] usually reports a platform without SCTP: any GOOS
+//     but Linux, and Linux whose SCTP module is absent, where it also
+//     matches the kernel's errno. See its documentation for exceptions on
+//     a working stack. Test it specifically: errors.ErrUnsupported also
+//     matches ENOSYS, ENOTSUP and EOPNOTSUPP returned by a working stack.
 //
 // The Timeout method of net.Error reports true for a passed deadline, and
 // also for syscall.EAGAIN and syscall.ETIMEDOUT, as syscall.Errno's own
