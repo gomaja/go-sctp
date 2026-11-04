@@ -3725,3 +3725,260 @@ func wakeScriptedEndpoint(t testing.TB, e *Endpoint) {
 func TestEndpointNotificationFramingVerdict(t *testing.T) {
 	runNotificationVerdictMatrix(t, "Endpoint.RecvMsg")
 }
+
+// queuePeelNotification asks the kernel for a SendFailed record longer
+// than the first receive buffer, so the callback must consume its tail.
+func queuePeelNotification(t *testing.T, e *Endpoint, id AssocID) {
+	t.Helper()
+	if _, err := e.SendMsg(id, bytes.Repeat([]byte("notification"), 80), SendOptions{PR: &PrInfo{Policy: PRTTL, TTL: 0}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func peelPeer(t *testing.T, e *Endpoint) *Conn {
+	t.Helper()
+	p, err := Dial(testContext(t, endpointWait), "sctp4", nil, endpointAddr(t, e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Abort() })
+	return p
+}
+
+// TestEndpointPeelOffWaitsForNotification checks the system-call boundary
+// inside a real notification, then proves unrelated associations survive.
+func TestEndpointPeelOffWaitsForNotification(t *testing.T) {
+	e := listenEndpoint(t, &Config{Notifications: []EventType{EventSendFailed}}, "sctp4", loopback4(0))
+	peers := []*Conn{peelPeer(t, e)}
+	awaitCommUp(t, e)
+	peers = append(peers, peelPeer(t, e))
+	awaitCommUp(t, e)
+	_ = peelPeer(t, e)
+	id := awaitCommUp(t, e).AssocID
+	queuePeelNotification(t, e, id)
+	var efd int
+	rawFd(t, mustEndpointRawConn(t, e), func(fd int) { efd = fd })
+	reached, resume := make(chan struct{}), make(chan struct{})
+	var once atomic.Bool
+	testHookRecvmsg = func(fd int, msg *syscall.Msghdr, flags int) (int, error) {
+		n, err := rawRecvmsg(fd, msg, flags)
+		if fd == efd && err == nil && msg.Flags&msgNotification != 0 && msg.Flags&msgEOR == 0 && once.CompareAndSwap(false, true) {
+			close(reached)
+			<-resume
+		}
+		return n, err
+	}
+	setEndpointReadDeadline(t, e, endpointWait)
+	type result struct {
+		b    []byte
+		info MsgInfo
+		err  error
+	}
+	read := make(chan result, 1)
+	go func() { b := make([]byte, 64); n, info, err := e.RecvMsg(b); read <- result{b[:n], info, err} }()
+	select {
+	case <-reached:
+	case <-time.After(endpointWait):
+		close(resume)
+		<-read
+		testHookRecvmsg = nil
+		t.Fatal("notification did not split")
+	}
+	type peeled struct {
+		c   *Conn
+		err error
+	}
+	done := make(chan peeled, 1)
+	started := make(chan struct{})
+	go func() { close(started); c, err := e.PeelOff(id); done <- peeled{c, err} }()
+	<-started
+	var early *peeled
+	select {
+	case r := <-done:
+		early = &r
+		t.Error("PeelOff completed before the notification callback consumed its tail")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(resume)
+	r := <-read
+	testHookRecvmsg = nil
+	var pr peeled
+	if early != nil {
+		pr = *early
+	} else {
+		pr = <-done
+	}
+	if pr.c != nil {
+		t.Cleanup(func() { _ = pr.c.Abort() })
+	}
+	if pr.err != nil {
+		t.Fatalf("PeelOff: %v", pr.err)
+	}
+	if r.err != nil {
+		t.Fatalf("notification read: %v", r.err)
+	}
+	whole := r.b
+	for !r.info.EOR {
+		b := make([]byte, 64)
+		n, info, err := e.RecvMsg(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		whole = append(whole, b[:n]...)
+		r.info = info
+	}
+	note, err := ParseNotification(whole)
+	if err != nil || note.Type() != EventSendFailed {
+		t.Fatalf("whole notification: %T, %v", note, err)
+	}
+	for _, p := range peers {
+		if _, err := p.Write([]byte("ping")); err != nil {
+			t.Fatal(err)
+		}
+		data, info := endpointData(t, e)
+		if string(data) != "ping" {
+			t.Fatalf("endpoint data %q", data)
+		}
+		if _, err := e.SendMsg(info.Rcv.AssocID, data, SendOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		setReadDeadline(t, p, endpointWait)
+		b := make([]byte, 4)
+		if n, err := p.Read(b); err != nil || string(b[:n]) != "ping" {
+			t.Fatalf("unrelated peer: %q, %v", b[:n], err)
+		}
+	}
+}
+
+func TestEndpointPeelOffNotificationStress(t *testing.T) {
+	for i := range 200 {
+		func() {
+			e, err := (&Config{Notifications: []EventType{EventSendFailed}}).ListenEndpoint("sctp4", loopback4(0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = e.Abort() }()
+			var peers []*Conn
+			defer func() {
+				for _, p := range peers {
+					_ = p.Abort()
+				}
+			}()
+			var id AssocID
+			for range 3 {
+				p, err := Dial(testContext(t, endpointWait), "sctp4", nil, endpointAddr(t, e))
+				if err != nil {
+					t.Fatal(err)
+				}
+				peers = append(peers, p)
+				id = awaitCommUp(t, e).AssocID
+			}
+			queuePeelNotification(t, e, id)
+			setEndpointReadDeadline(t, e, 5*time.Millisecond)
+			done := make(chan error, 1)
+			go func() { _, _, err := e.RecvMsg(make([]byte, 64)); done <- err }()
+			if i%4 != 0 {
+				time.Sleep(time.Duration(i%4) * time.Microsecond)
+			}
+			c, err := e.PeelOff(id)
+			if c != nil {
+				defer func() { _ = c.Abort() }()
+			}
+			re := <-done
+			if err != nil {
+				t.Fatalf("run %d PeelOff: %v", i, err)
+			}
+			if re != nil && !errors.Is(re, os.ErrDeadlineExceeded) {
+				t.Fatalf("run %d RecvMsg: %v", i, re)
+			}
+			ids, err := e.AssocIDs()
+			if err != nil || len(ids) != 2 {
+				t.Fatalf("run %d surviving associations: %v, %v", i, ids, err)
+			}
+		}()
+	}
+}
+
+func TestEndpointPeelOffMovesDataRemainder(t *testing.T) {
+	e, p, id, pid := endpointPair(t, nil, nil)
+	payload := []byte("message split across public calls")
+	if _, err := p.SendMsg(pid, payload, SendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 7)
+	n, info, err := e.RecvMsg(b)
+	if err != nil || n != len(b) || info.EOR || !bytes.Equal(b, payload[:n]) {
+		t.Fatalf("first piece: %q, %+v, %v", b[:n], info, err)
+	}
+	c, err := e.PeelOff(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Abort() })
+	setReadDeadline(t, c, endpointWait)
+	tail := make([]byte, len(payload))
+	m, info, err := c.RecvMsg(tail)
+	if err != nil || !info.EOR || !bytes.Equal(tail[:m], payload[n:]) {
+		t.Fatalf("migrated tail: %q, %+v, %v", tail[:m], info, err)
+	}
+	if ids, err := e.AssocIDs(); err != nil || len(ids) != 0 {
+		t.Fatalf("endpoint retains %v, %v", ids, err)
+	}
+}
+
+func TestEndpointPeelOffRefusesSetup(t *testing.T) {
+	if !silentPeerAvailable(t) {
+		t.Skip("requires the suite's silently routed peer")
+	}
+	e := openEndpoint(t, nil, "sctp4", nil)
+	id, err := e.Connect(unreachableAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := e.PeelOff(id)
+	if c != nil {
+		_ = c.Abort()
+		t.Error("PeelOff moved an association during setup")
+	}
+	if !errors.Is(err, syscall.EINPROGRESS) || !strings.Contains(fmt.Sprint(err), "AssocCommUp") {
+		t.Errorf("PeelOff during setup: %v, want EINPROGRESS with AssocCommUp guidance", err)
+	}
+	if ids, err := e.AssocIDs(); err != nil || len(ids) != 1 || ids[0] != id {
+		t.Errorf("setup left endpoint: %v, %v", ids, err)
+	}
+}
+
+func TestEndpointSetupCancellationNotifications(t *testing.T) {
+	if !silentPeerAvailable(t) {
+		t.Skip("requires the suite's silently routed peer")
+	}
+	for _, abort := range []bool{false, true} {
+		t.Run(fmt.Sprintf("abort=%v", abort), func(t *testing.T) {
+			e := openEndpoint(t, nil, "sctp4", nil)
+			id, err := e.Connect(unreachableAddr())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if abort {
+				err = e.AbortAssoc(id, []byte("cancel"))
+			} else {
+				err = e.CloseAssoc(id)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ids, err := e.AssocIDs(); err != nil || len(ids) != 0 {
+				t.Fatalf("cancelled setup: %v, %v", ids, err)
+			}
+			if abort {
+				if ac := nextAssocChange(t, e); ac.AssocID != id || ac.State != AssocCantStart {
+					t.Fatalf("abort setup: %+v", ac)
+				}
+			}
+			setEndpointReadDeadline(t, e, 20*time.Millisecond)
+			if _, _, err := e.RecvMsg(make([]byte, 256)); !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatalf("unexpected record after cancellation: %v", err)
+			}
+		})
+	}
+}
