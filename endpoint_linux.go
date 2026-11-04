@@ -283,8 +283,11 @@ func (e *Endpoint) Addr() net.Addr {
 //
 // A peer the endpoint already has an association with is refused by the
 // kernel: with EISCONN once the association is established, and with
-// EALREADY while it is being set up (net/sctp/socket.c: __sctp_connect);
-// no id is returned then. A nil raddr, one with no IPs, and an address the
+// EALREADY while it is being set up (net/sctp/socket.c: __sctp_connect).
+// A peer whose association was peeled off is refused with EADDRNOTAVAIL
+// (sctp_connect), and autobind without a free port fails with EAGAIN
+// (sctp_autobind). No id is returned on those errors.
+// A nil raddr, one with no IPs, and an address the
 // socket's family cannot carry are refused with an error matching
 // syscall.EINVAL before any system call. Errors are *net.OpError with Op
 // "dial".
