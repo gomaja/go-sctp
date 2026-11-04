@@ -1375,7 +1375,7 @@ func TestSubscribe(t *testing.T) {
 		if on, _ := server.Subscribed(typ); on {
 			t.Errorf("Subscribed(%v) after unsubscribing = true", typ)
 		}
-		if wantKernel := typ == EventAssocChange; subscribedInKernel(t, rc, typ) != wantKernel {
+		if wantKernel := typ == EventAssocChange || typ == EventPartialDelivery; subscribedInKernel(t, rc, typ) != wantKernel {
 			t.Errorf("%v in the kernel after unsubscribing = %t, want %t", typ, !wantKernel, wantKernel)
 		}
 	}

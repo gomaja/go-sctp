@@ -188,6 +188,36 @@ func TestReadMsgQueueFullNotificationVerdict(t *testing.T) {
 	}
 }
 
+// TestReadMsgQueuedHandlerErrors preserves notifications already consumed
+// between pieces, even when an earlier handler invocation failed.
+func TestReadMsgQueuedHandlerErrors(t *testing.T) {
+	firstError, secondError := errors.New("first handler"), errors.New("second handler")
+	calls := 0
+	c := scriptConn(t, func(Notification) error {
+		calls++
+		if calls == 1 {
+			return firstError
+		}
+		return secondError
+	}, EventAssocChange)
+	script := &recvScript{steps: []recvStep{
+		{data: []byte("before/")},
+		{data: assocChangeRecord(AssocCommUp, 7, nil), flags: msgNotification | msgEOR},
+		{data: assocChangeRecord(AssocCommUp, 7, nil), flags: msgNotification | msgEOR},
+		{data: []byte("after"), flags: msgEOR},
+		{data: []byte("next"), flags: msgEOR},
+	}}
+	hookRecvmsg(t, script.recvmsg)
+	b, _, err := c.ReadMsg(64)
+	if string(b) != "before/after" || calls != 2 || !errors.Is(err, firstError) || !errors.Is(err, secondError) || script.step != 4 {
+		t.Fatalf("data=%q calls=%d err=%v step=%d", b, calls, err, script.step)
+	}
+	b, _, err = c.ReadMsg(64)
+	if string(b) != "next" || err != nil {
+		t.Fatalf("next=%q %v", b, err)
+	}
+}
+
 // FuzzReceiveNotificationVerdict compares three receive policies with a
 // framing oracle independent of notificationAccumulator (RFC 6458 §6.1).
 // Association state is held at CommUp so the corpus varies framing without
