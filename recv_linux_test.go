@@ -2562,8 +2562,15 @@ func clearReadMsgClass(p *readMsgBufferCache) {
 	p.mu.Unlock()
 }
 
+// readMsgMeasurementRuns preserves the small-message sample size. Larger
+// messages use an 8 MiB payload budget per measurement. ReadMsg's
+// discarded growth buffers also allocate, so the helper's total work
+// exceeds that budget.
 func readMsgMeasurementRuns(size int) (warmup, records int) {
-	return 100, 1000
+	if size <= 65535 {
+		return 100, 1000
+	}
+	return 2, max(1, (8<<20)/size)
 }
 
 func TestReadMsgMeasurementRuns(t *testing.T) {
@@ -2587,6 +2594,7 @@ func TestReadMsgMeasurementRuns(t *testing.T) {
 		{8<<20 - 1, 2, 1},
 		{8 << 20, 2, 1},
 		{8<<20 + 1, 2, 1},
+		{int(^uint(0) >> 1), 2, 1},
 	} {
 		t.Run(fmt.Sprint(tc.size), func(t *testing.T) {
 			warmup, records := readMsgMeasurementRuns(tc.size)
@@ -2598,10 +2606,10 @@ func TestReadMsgMeasurementRuns(t *testing.T) {
 }
 
 // measureReadMsg reports the mean allocations and bytes of one ReadMsg of
-// size bytes with max, over 1000 reads after 100 to warm up, with the
-// collector paused, so that the counts land on whole numbers rather than
-// carrying the collections the cold case would otherwise provoke. before
-// runs inside the measured loop, and must not allocate.
+// size bytes with max, with readMsgMeasurementRuns choosing the sample
+// size. The collector is paused so that the counts land on whole numbers
+// rather than carrying the collections the cold case would otherwise
+// provoke. before runs inside the measured loop, and must not allocate.
 func measureReadMsg(t *testing.T, c *Conn, size, max int, control []byte, before func()) (allocs, bytesPer float64) {
 	t.Helper()
 	payload := patterned(size)
@@ -2641,13 +2649,19 @@ func TestReadMsgMeasurementBudget(t *testing.T) {
 		t.Skip("allocation measurement includes race instrumentation")
 	}
 	c := scriptConn(t, nil)
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
-	measureReadMsg(t, c, 1000000, 1<<24-1, nil, nil)
-	runtime.ReadMemStats(&after)
-	const budget = 40 << 20
-	if total := after.TotalAlloc - before.TotalAlloc; total > budget {
-		t.Fatalf("measuring a 1,000,000-byte message allocated %d bytes, budget %d", total, budget)
+	for _, size := range []int{65536, 131071, 131072, 131073, 262144, 262145, 300000, 524288, 524289, 1000000} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			measureReadMsg(t, c, size, 1<<24-1, nil, nil)
+			runtime.ReadMemStats(&after)
+			const budget = 40 << 20
+			total := after.TotalAlloc - before.TotalAlloc
+			t.Logf("measuring a %d-byte message allocated %d bytes", size, total)
+			if total > budget {
+				t.Fatalf("measurement allocated %d bytes, budget %d", total, budget)
+			}
+		})
 	}
 }
 
@@ -2671,6 +2685,10 @@ func TestReadMsgMemoryFollowsMessage(t *testing.T) {
 		t.Skip("allocation counts are unreliable under the race detector, whose instrumentation allocates on its own account")
 	}
 	const (
+		// Even the eight-read sample at 1,000,000 bytes detects a
+		// one-allocation-per-call change: its mean moves by one. Its
+		// 1/8 resolution is coarser than this margin, so even one extra
+		// allocation across the sample fails the comparison.
 		allocMargin     = 0.05
 		allocByteMargin = 16.0
 	)
