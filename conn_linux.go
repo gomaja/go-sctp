@@ -80,11 +80,10 @@ func (c *Conn) init(p *prepared) error {
 
 	if c.kind == kindAccepted || c.kind == kindAdopted || c.kind == kindPeeled {
 		// The package keeps SCTP_ASSOC_CHANGE and SCTP_PARTIAL_DELIVERY_EVENT
-		// subscribed on every socket
-		// it uses (Config.Notifications). An association takes its own
-		// copy of the endpoint's subscriptions when it is created
-		// (net/sctp/associola.c: sctp_association_init), so one queued on
-		// a listener before the package owned it, set up on a descriptor
+		// subscribed on every socket it uses (Config.Notifications). An
+		// association takes its own copy of the endpoint's subscriptions when
+		// it is created (net/sctp/associola.c: sctp_association_init), so one
+		// queued on a listener before the package owned it, set up on a descriptor
 		// elsewhere, or switched off for one association of an Endpoint
 		// through its SyscallConn, may lack it; on an established
 		// one-to-one or peeled socket SCTP_EVENT reaches that copy
@@ -113,10 +112,12 @@ func (c *Conn) init(p *prepared) error {
 		return os.NewSyscallError("getsockopt", err)
 	}
 
-	// The negotiated capability is fixed for the association's lifetime,
-	// including restarts (RFC 8260 §4.3.1). An ended association above
-	// needs no reassembly guard. Recheck status after the option read:
-	// the association may have ended while the getter read its default.
+	// Linux fixes the negotiated capability when the association is created,
+	// and a restart keeps it (net/sctp/associola.c: sctp_assoc_update does not
+	// copy intl_capable); RFC 8260 §4.3.1 defines the query. An ended
+	// association above needs no reassembly guard. Recheck status after the
+	// option read: the association may have ended, and the getter then reports
+	// the socket's default.
 	interleaved, err := c.InterleavingSupported()
 	if err != nil {
 		return err

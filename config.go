@@ -234,9 +234,8 @@ type Config struct {
 // part of that order: they are the two operations prepare always emits
 // first, on every style including styleFile, because the package's receive
 // path depends on both regardless of what Config asked for — RCVINFO to
-// read the association metadata every message carries, and internal
-// subscriptions to detect abandoned partial messages (RFC 6458 §6.1.7)
-// and ASSOC_CHANGE to
+// read the association metadata every message carries, PARTIAL_DELIVERY to
+// detect an abandoned partial message (RFC 6458 §6.1.7), and ASSOC_CHANGE to
 // notice an association ending at all. On a one-to-one or peeled socket,
 // Linux sets the socket error once when an association fails
 // (net/sctp/sm_sideeffect.c: sctp_cmd_set_sk_err — it does nothing at all

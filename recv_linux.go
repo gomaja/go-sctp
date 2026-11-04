@@ -164,9 +164,9 @@ func (s *recvState) bind(term *termState, subs *atomic.Uint32) {
 // partial-delivery abort record is consumed unseen, RecvMsg returns zero
 // bytes with ErrMessageInterrupted once; later messages remain readable.
 // A caller who receives the record, raw or through a handler, gets no
-// additional interruption error. A type switched on outside the package, through
-// Config.Control or SyscallConn, is delivered when the kernel queues it,
-// but Subscribed reports only what Config.Notifications and Subscribe set.
+// additional interruption error. A type switched on outside the package,
+// through Config.Control or SyscallConn, is delivered when the kernel queues
+// it, but Subscribed reports only what Config.Notifications and Subscribe set.
 // Whether or not the caller receives it, a record must carry the whole
 // 8-byte header and exactly the length its sn_length declares (RFC 6458
 // §6.1), within NotificationReassemblyLimit: one that does not fails the
@@ -1028,9 +1028,9 @@ func getReadMsgBuffer(size int) ([]byte, int) {
 // Subscribe starts (on) or stops delivery of one notification type (RFC
 // 6458 §6.2.2) to the caller: to the NotificationHandler, or from RecvMsg.
 // For types other than EventAssocChange and EventPartialDelivery it sets
-// the kernel's subscription
-// with SCTP_EVENT (RFC 6458 §8.1.28), which on a connected socket applies
-// to the association (net/sctp/socket.c: sctp_setsockopt_event). The
+// the kernel's subscription with SCTP_EVENT (RFC 6458 §8.1.28), which on a
+// connected socket applies to the association (net/sctp/socket.c:
+// sctp_setsockopt_event). The
 // package keeps both internal types subscribed in the kernel either way,
 // to notice association ends and abandoned partial messages, and
 // Subscribe decides only whether they reach the caller. A record already
