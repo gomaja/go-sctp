@@ -24,8 +24,8 @@ var (
 	// errors.Is(err, errors.ErrUnsupported) holds too. Config.FragmentInterleave
 	// and SetFragmentInterleave also report it, for InterleaveStreams, the
 	// level Linux cannot keep. ReadMsg also reports it when I-DATA was
-	// negotiated or an ended socket's default enables it; use RecvMsg to
-	// reassemble each stream separately.
+	// negotiated, or when the association has ended and the socket's default
+	// enables I-DATA; use RecvMsg to reassemble each stream separately.
 	ErrUnsupported = fmt.Errorf("sctp: socket operation unsupported: %w", errors.ErrUnsupported)
 
 	// ErrMessageTooLong is ReadMsg's report that a message exceeded the
