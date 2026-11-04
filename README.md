@@ -174,10 +174,10 @@ already-resolved addresses and never resolve hostnames themselves.
   and send returns the same error (`ECONNRESET`, `ETIMEDOUT` or
   `ECONNABORTED`) instead of hanging.
 - **Errors.** The errors of socket calls are `*net.OpError` values that
-  name the call; test them with `errors.Is`. A refused argument normally matches `syscall.EINVAL` and
-  names the field; `InterleaveStreams` matches `sctp.ErrUnsupported` because
-  Linux cannot retain that valid API level, and an option the kernel lacks matches
-  `syscall.ENOPROTOOPT`.
+  name the call; test them with `errors.Is`. A refused argument normally
+  matches `syscall.EINVAL` and names the field. `InterleaveStreams` matches
+  `sctp.ErrUnsupported` because Linux cannot retain that valid API level.
+  An option the kernel lacks matches `syscall.ENOPROTOOPT`.
 
 ## IPv6 sockets
 
