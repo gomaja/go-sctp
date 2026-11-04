@@ -100,6 +100,12 @@ type recvState struct {
 	// by RecvMsg.
 	keepNotes bool
 
+	// partial tracks the last data piece returned while mu is held. A
+	// partial-delivery abort ends it without ending the association
+	// (RFC 6458 §6.1.7). Endpoints do not track individual associations.
+	partial     bool
+	interleaved bool // negotiated I-DATA, fixed by Conn.init
+
 	// The notification record in progress.
 	scratch [NotificationMaxSize]byte // where its pieces after the first land
 	noting  bool                      // it has started and not yet ended
@@ -137,9 +143,12 @@ func (s *recvState) bind(term *termState, subs *atomic.Uint32) {
 // SCTP_RCVINFO record (RFC 6458 §5.3.5), which the package enables on
 // every socket, fills Rcv. When b is shorter than the message, the rest is
 // returned by the next reads, and EOR is false until the last. With
-// ReceiveNxtInfo on, Nxt describes the next message queued, if there is
+// ReceiveNxtInfo on, Nxt describes the next queued item, if there is
 // one (RFC 6458 §5.3.6). A read of data makes no allocation. An empty b
-// returns 0 at once, and consumes nothing.
+// returns 0 at once, and consumes nothing. Concurrent readers can receive
+// different pieces of one message. With I-DATA, pieces of different streams
+// may interleave: demultiplex by Rcv.Stream and accumulate each stream until
+// EOR. Only the first piece carries its PPID; see RcvInfo.
 //
 // Notifications share the receive queue with data. With a
 // NotificationHandler, RecvMsg hands each notification the caller receives
@@ -148,10 +157,14 @@ func (s *recvState) bind(term *termState, subs *atomic.Uint32) {
 // bytes with MsgInfo.Notification set, in pieces as long as b, with EOR on
 // the last, as for a message; ParseNotification decodes the whole. The
 // caller receives the notifications Subscribe and Config.Notifications
-// switch on. The package keeps EventAssocChange subscribed in the kernel on
-// every socket, because its records are how the package sees the
-// association end, and consumes them unseen unless the caller subscribed to
-// EventAssocChange. A type switched on outside the package, through
+// switch on. The package keeps EventAssocChange and EventPartialDelivery
+// subscribed in the kernel on every socket, to notice association ends and
+// abandoned partial messages, and consumes them unseen unless the caller
+// subscribed to them. If the last data piece lacked EOR and an internal
+// partial-delivery abort record is consumed unseen, RecvMsg returns zero
+// bytes with ErrMessageInterrupted once; later messages remain readable.
+// A caller who receives the record, raw or through a handler, gets no
+// additional interruption error. A type switched on outside the package, through
 // Config.Control or SyscallConn, is delivered when the kernel queues it,
 // but Subscribed reports only what Config.Notifications and Subscribe set.
 // Whether or not the caller receives it, a record must carry the whole
@@ -181,7 +194,8 @@ func (s *recvState) bind(term *termState, subs *atomic.Uint32) {
 // syscall.ETIMEDOUT when retransmissions ran out, syscall.ECONNABORTED
 // when this side aborted it, or syscall.ENOTCONN when that error was taken
 // outside the package, through SyscallConn, or left on the listening
-// socket because the association failed before Accept.
+// socket because the association failed before Accept. ReceiveNxtInfo can
+// also consume the pending error; see Config.ReceiveNxtInfo.
 func (c *Conn) RecvMsg(b []byte) (int, MsgInfo, error) {
 	if !c.opened() {
 		return 0, MsgInfo{}, c.readError(net.ErrClosed)
@@ -211,7 +225,9 @@ func (c *Conn) RecvMsg(b []byte) (int, MsgInfo, error) {
 // reads, with nothing to mark where it ends; use RecvMsg or ReadMsg when
 // the message boundary matters. A read of data makes no allocation. Errors
 // are as for RecvMsg, except that Read ignores MSG_CTRUNC, since it returns
-// no ancillary data.
+// no ancillary data. After an abandoned partial message, Read returns zero
+// bytes with ErrMessageInterrupted once, even when its handler receives the
+// partial-delivery record. The association remains usable.
 func (c *Conn) Read(b []byte) (int, error) {
 	if !c.opened() {
 		return 0, c.readError(net.ErrClosed)
@@ -222,7 +238,8 @@ func (c *Conn) Read(b []byte) (int, error) {
 	for {
 		n, _, note, err := c.recvNext(b, false)
 		if note != nil {
-			if err := c.handler(note); err != nil {
+			err = errors.Join(err, c.handler(note))
+			if err != nil {
 				return 0, c.readError(err)
 			}
 			continue
@@ -298,13 +315,24 @@ func (c *Conn) recvNext(b []byte, raw bool) (int, MsgInfo, Notification, error) 
 		case err != nil:
 			return 0, MsgInfo{}, nil, c.readEnded(err)
 		case record:
+			interrupted := s.typed && s.typ == EventPartialDelivery && s.partial
+			if s.typed && s.typ == EventPartialDelivery {
+				s.partial = false
+			}
+			var interruption error
+			if interrupted && (!raw || !s.kept) {
+				interruption = errors.Join(ErrMessageInterrupted, errPartialDeliveryAborted)
+			}
 			if !s.kept {
 				// Not the caller's: consumed, once its framing has been
 				// checked (RFC 6458 §6.1). A malformed one fails this
 				// read; after AssocShutdownComplete, the check above ends
 				// the next read with io.EOF.
 				if err := s.dropRecord(); err != nil {
-					return 0, MsgInfo{}, nil, err
+					return 0, MsgInfo{}, nil, errors.Join(err, interruption)
+				}
+				if interruption != nil {
+					return 0, MsgInfo{}, nil, interruption
 				}
 				continue
 			}
@@ -322,7 +350,7 @@ func (c *Conn) recvNext(b []byte, raw bool) (int, MsgInfo, Notification, error) 
 				if perr != nil {
 					return 0, MsgInfo{}, nil, perr
 				}
-				return 0, MsgInfo{}, note, nil
+				return 0, MsgInfo{}, note, interruption
 			}
 			// RecvMsg without a handler: the record is returned in
 			// pieces, with the metadata of its last recvmsg (NXTINFO
@@ -332,6 +360,7 @@ func (c *Conn) recvNext(b []byte, raw bool) (int, MsgInfo, Notification, error) 
 			n, info := s.servePiece(b)
 			return n, info, nil, nil
 		}
+		s.partial = flags&msgEOR == 0
 		if !raw {
 			return n, MsgInfo{}, nil, nil
 		}
@@ -468,9 +497,8 @@ func (s *recvState) recvmsg(fd int) (int, error) {
 // record with its first. Once the record's header is complete, its type
 // decides whether it is retained: a record the caller receives is, when
 // the reader keeps notes; an SCTP_ASSOC_CHANGE the caller did not
-// subscribe to never is, and every other type the kernel queued is one the
-// caller subscribed to, since Subscribe changes the kernel's subscription
-// for it.
+// subscribe to never is. SCTP_PARTIAL_DELIVERY_EVENT follows the same
+// internal subscription rule. Other types follow the kernel subscription.
 func (s *recvState) addPiece(p []byte) {
 	a := &s.notes
 	if !s.noting {
@@ -480,7 +508,7 @@ func (s *recvState) addPiece(p []byte) {
 	if !s.typed {
 		if typ, ok := a.peekType(p); ok {
 			s.typed, s.typ = true, typ
-			if s.keepNotes && (typ != EventAssocChange || eventSet(s.subs.Load()).has(EventAssocChange)) {
+			if s.keepNotes && ((typ != EventAssocChange && typ != EventPartialDelivery) || eventSet(s.subs.Load()).has(typ)) {
 				s.kept = a.keep()
 			}
 		}
@@ -533,7 +561,7 @@ func (s *recvState) endRecordLocked() {
 // Linux puts a record's rest back at the head of the queue at once, so this
 // is a defensive path. c.recv.mu must be held.
 func (c *Conn) abortInterruptedNotification(cause error) error {
-	err := errors.Join(c.recv.notes.interrupted(), closedCause(cause))
+	err := errors.Join(c.recv.notes.interrupted(), c.readEnded(cause))
 	c.recv.notes.reset()
 	return c.abortInterrupted(err)
 }
@@ -566,11 +594,17 @@ func (c *Conn) abortInterrupted(err error) error {
 // At most max bytes are kept. A longer message is read to its end and
 // dropped past max, and ReadMsg returns its first max bytes with an error
 // matching ErrMessageTooLong: the next read starts at the next message. When
-// the message cannot be read to its end, because the association ended or
-// restarted, a partial delivery was aborted, or a deadline passed in the
-// middle of it, ReadMsg returns what it read with an error matching
-// ErrMessageInterrupted, and aborts the connection, whose receive queue
-// could otherwise be misread from there. A max of zero or
+// a partial delivery is abandoned, its complete abort notification marks
+// the boundary (RFC 6458 §6.1.7; RFC 3758 §3.6): ReadMsg returns the prefix
+// with ErrMessageInterrupted and the interruption cause, and the next call
+// reads the following message. When the message cannot be read to its end
+// because the association ended or restarted, a record was cut, a deadline
+// passed, or the connection was closed, ReadMsg returns what it read with
+// ErrMessageInterrupted and aborts the connection to protect its framing.
+// Use Read or RecvMsg for deadline-driven reading across partial messages.
+// With negotiated I-DATA (RFC 8260), ReadMsg returns ErrUnsupported, naming
+// RecvMsg, before consuming anything: pieces of different streams may
+// interleave. A max of zero or
 // less is refused with an error matching syscall.EINVAL. Errors are as for
 // RecvMsg.
 //
@@ -579,7 +613,8 @@ func (c *Conn) abortInterrupted(err error) error {
 // message, through bounded intermediate buffers shared across the process,
 // copying the finished message into its own before it releases them.
 // Warm, with the shared buffers populated, a call allocates 3 times for a
-// message of 256 bytes or fewer and 4 times for a larger one. A call that
+// message of 256 bytes or fewer, 4 times up to 131,072 bytes, and once more
+// for each doubling beyond that. A call that
 // finds no shared buffer free, the first calls in a process or more
 // concurrent readers in one size class than it holds, adds one allocation
 // of that whole size class, which for a small message exceeds the message
@@ -591,6 +626,9 @@ func (c *Conn) ReadMsg(max int) ([]byte, RcvInfo, error) {
 	}
 	if !c.opened() {
 		return nil, RcvInfo{}, c.readError(net.ErrClosed)
+	}
+	if c.recv.interleaved {
+		return nil, RcvInfo{}, c.readError(unsupportedField("ReadMsg", "I-DATA can interleave streams; use RecvMsg and reassemble by Stream and EOR"))
 	}
 	data, info, err := c.readMsg(max)
 	if err != nil {
@@ -604,14 +642,16 @@ func (c *Conn) ReadMsg(max int) ([]byte, RcvInfo, error) {
 // apart from the connection's storage, which a nested read from a
 // NotificationHandler reuses.
 type readMsgState struct {
-	buf                 []byte
-	bufferClass         int
-	total               int
-	first               RcvInfo
-	haveFirstFragment   bool
-	applicationComplete bool
-	tooLong             bool
-	resultErr           error
+	buf                     []byte
+	bufferClass             int
+	total                   int
+	first                   RcvInfo
+	haveFirstFragment       bool
+	applicationComplete     bool
+	tooLong                 bool
+	controlTruncated        bool
+	partialDeliveryBoundary bool
+	resultErr               error
 
 	queued      []Notification // for the handler, once the message is read
 	queuedBytes int
@@ -627,6 +667,12 @@ type readMsgState struct {
 func (s *readMsgState) addError(err error) {
 	if err == nil {
 		return
+	}
+	if err == ErrControlTruncated {
+		if s.controlTruncated {
+			return
+		}
+		s.controlTruncated = true
 	}
 	if s.resultErr == nil {
 		s.resultErr = err
@@ -729,13 +775,16 @@ func (c *Conn) readMsg(max int) (data []byte, info RcvInfo, err error) {
 						var mi MsgInfo
 						state.addError(parseRecvCmsgs(s.control(), flags, &mi))
 						state.first = mi.Rcv
-					} else if flags&msgCtrunc != 0 {
-						state.addError(ErrControlTruncated)
 					}
 					if state.total == max && flags&msgEOR == 0 {
 						state.tooLong = true
 					}
 				}
+				// Report ancillary loss once, including pieces drained past max.
+				if flags&msgCtrunc != 0 {
+					state.addError(ErrControlTruncated)
+				}
+				s.partial = flags&msgEOR == 0
 				if flags&msgEOR != 0 {
 					state.completedReceive = true
 					state.applicationComplete = true
@@ -763,12 +812,16 @@ func (c *Conn) readMsg(max int) (data []byte, info RcvInfo, err error) {
 			if recordInterrupted {
 				state.addError(ErrMessageInterrupted)
 			}
+		case recordInterrupted && state.partialDeliveryBoundary:
+			// Under DATA the complete abort record is an exact boundary:
+			// later messages follow it (RFC 3758 §3.6; RFC 6458 §6.1.7).
+			state.addError(errors.Join(ErrMessageInterrupted, state.partialApplicationErr))
 		case recordInterrupted:
 			cause := state.partialApplicationErr
 			if pollErr != nil {
 				cause = pollErr
 			}
-			state.addError(c.abortInterruptedMessage(cause))
+			state.addError(c.abortInterruptedMessage(c.readEnded(cause)))
 		case pollErr != nil:
 			state.addError(c.readEnded(pollErr))
 		}
@@ -784,7 +837,6 @@ func (c *Conn) readMsg(max int) (data []byte, info RcvInfo, err error) {
 		for _, note := range state.queued {
 			if err := c.handler(note); err != nil {
 				state.addError(err)
-				break
 			}
 		}
 		state.queued = nil
@@ -809,6 +861,7 @@ func (c *Conn) readMsgNotification(state *readMsgState) bool {
 			// still goes to the handler, after the read, if it is the
 			// caller's.
 			state.partialApplicationErr = cut
+			s.partial = false
 			// The interruption does not supersede the record's own
 			// framing or parsing error; both belong to this read.
 			if s.kept {
@@ -822,8 +875,11 @@ func (c *Conn) readMsgNotification(state *readMsgState) bool {
 				}
 				s.notes.reset()
 				state.addError(err)
+				state.partialDeliveryBoundary = cut == errPartialDeliveryAborted && err == nil
 			} else {
-				state.addError(s.dropRecord())
+				err := s.dropRecord()
+				state.addError(err)
+				state.partialDeliveryBoundary = cut == errPartialDeliveryAborted && err == nil
 			}
 			return false
 		}
@@ -966,14 +1022,15 @@ func getReadMsgBuffer(size int) ([]byte, int) {
 
 // Subscribe starts (on) or stops delivery of one notification type (RFC
 // 6458 §6.2.2) to the caller: to the NotificationHandler, or from RecvMsg.
-// For every type but EventAssocChange it sets the kernel's subscription
+// For types other than EventAssocChange and EventPartialDelivery it sets
+// the kernel's subscription
 // with SCTP_EVENT (RFC 6458 §8.1.28), which on a connected socket applies
 // to the association (net/sctp/socket.c: sctp_setsockopt_event). The
-// package keeps EventAssocChange subscribed in the kernel either way,
-// because its records are how the package sees the association end, and
+// package keeps both internal types subscribed in the kernel either way,
+// to notice association ends and abandoned partial messages, and
 // Subscribe decides only whether they reach the caller. A record already
 // queued when the subscription changes is delivered as the subscription was
-// when it was queued, except that an EventAssocChange record is delivered
+// when it was queued, except that either internal type is delivered
 // as the subscription is when it is read. A type switched on outside the
 // package, through Config.Control or SyscallConn, is delivered when the
 // kernel queues it, but Subscribed reports only what Config.Notifications
@@ -988,7 +1045,7 @@ func (c *Conn) Subscribe(t EventType, on bool) error {
 	}
 	c.subMu.Lock()
 	defer c.subMu.Unlock()
-	if t != EventAssocChange {
+	if t != EventAssocChange && t != EventPartialDelivery {
 		if err := c.sock.control(func(fd int) error { return setEvent(fd, t, on) }); err != nil {
 			return c.optionError("set", err)
 		}
@@ -1003,8 +1060,9 @@ func (c *Conn) Subscribe(t EventType, on bool) error {
 
 // Subscribed reports whether the caller subscribed to notifications of
 // type t: the subscriptions Config.Notifications and Subscribe set, or,
-// for a connection FileConn adopted, those the descriptor had. EventAssocChange
-// is reported as the caller set it, although the package keeps it
+// for a connection FileConn adopted, those the descriptor had, excluding
+// internal types. EventAssocChange and EventPartialDelivery are reported
+// as the caller set them, although the package keeps them
 // subscribed in the kernel. A type switched on outside the package, through
 // Config.Control or SyscallConn, is delivered when the kernel queues it,
 // but Subscribed reports only what Config.Notifications and Subscribe set.

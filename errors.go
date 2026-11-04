@@ -23,7 +23,8 @@ var (
 	// EPROTONOSUPPORT or ESOCKTNOSUPPORT. It wraps errors.ErrUnsupported, so
 	// errors.Is(err, errors.ErrUnsupported) holds too. Config.FragmentInterleave
 	// and SetFragmentInterleave also report it, for InterleaveStreams, the
-	// level Linux cannot keep.
+	// level Linux cannot keep. ReadMsg also reports it when I-DATA was
+	// negotiated; use RecvMsg to reassemble each stream separately.
 	ErrUnsupported = fmt.Errorf("sctp: socket operation unsupported: %w", errors.ErrUnsupported)
 
 	// ErrMessageTooLong is ReadMsg's report that a message exceeded the
@@ -31,25 +32,29 @@ var (
 	// next ReadMsg starts at the next message.
 	ErrMessageTooLong = errors.New("sctp: message exceeds the requested maximum")
 
-	// ErrMessageInterrupted is ReadMsg's report that it could not reach the
-	// end of a message: the association ended, a deadline passed or the
-	// connection was closed partway through. ReadMsg returns what it read,
-	// and aborts the connection, whose receive queue could otherwise be
-	// misread from there.
+	// ErrMessageInterrupted reports an incomplete message. ReadMsg returns
+	// the prefix and joins the cause: association end or restart, abandoned
+	// partial delivery, a cut record, a deadline or local close. It aborts
+	// the association except when a complete partial-delivery abort record
+	// marks the next message boundary. Read and RecvMsg report it once after
+	// a partial message is abandoned, unless RecvMsg delivers the record to
+	// the caller, raw or through a handler; Read always reports it.
 	ErrMessageInterrupted = errors.New("sctp: could not reach end of message")
 
 	// ErrNotificationTooLong is ParseNotification's report that a
-	// notification's declared length exceeds NotificationReassemblyLimit.
+	// notification's declared length exceeds NotificationReassemblyLimit,
+	// or ReadMsg's queued notifications together exceed that limit.
 	ErrNotificationTooLong = errors.New("sctp: notification exceeds the reassembly limit")
 
 	// ErrShortNotification is ParseNotification's report that a notification
 	// is shorter than its fixed header, or than the fixed portion its type
-	// declares.
+	// declares, has an inconsistent declared length or an odd stream-reset
+	// tail, or was cut short while being read.
 	ErrShortNotification = errors.New("sctp: notification shorter than its fixed header")
 
 	// ErrControlTruncated reports that the kernel truncated a message's
-	// ancillary data (MSG_CTRUNC), so RcvInfo or a notification could not be
-	// read in full.
+	// ancillary data (MSG_CTRUNC), so RcvInfo or NxtInfo could not be read
+	// in full. Notifications do not report this flag.
 	ErrControlTruncated = errors.New("sctp: ancillary data truncated")
 
 	// ErrInvalidRcvInfo reports that the SCTP_RCVINFO record of a message

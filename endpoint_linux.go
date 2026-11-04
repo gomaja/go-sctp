@@ -702,7 +702,12 @@ func checkEndpointSend(id AssocID, b []byte, opts *SendOptions) error {
 // the message, the rest is returned by the next reads, and EOR is false
 // until the last; readers that share the endpoint must keep one message's
 // pieces together themselves. A read of data makes no allocation. An empty
-// b returns 0 at once, and consumes nothing.
+// b returns 0 at once, and consumes nothing. With I-DATA, pieces of
+// different streams may interleave: demultiplex by Rcv.AssocID and
+// Rcv.Stream, accumulating each until EOR and keeping its first PPID.
+// There is no per-association partial-message tracking: callers reassembling
+// by EOR must subscribe to EventPartialDelivery and discard abandoned
+// prefixes (RFC 6458 §6.1.7).
 //
 // Every message names one real association: data that arrives without
 // SCTP_RCVINFO, which the package enables before any association exists

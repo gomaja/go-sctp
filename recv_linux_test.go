@@ -1345,7 +1345,8 @@ func TestHandlerReentry(t *testing.T) {
 }
 
 // TestSubscribe: Subscribe changes the kernel's subscription for every type
-// but EventAssocChange, whose kernel subscription the package keeps on,
+// but EventAssocChange and EventPartialDelivery, whose kernel subscriptions
+// the package keeps on,
 // and Subscribed reports what the caller set. A notification the caller
 // switched on arrives; one switched off does not.
 func TestSubscribe(t *testing.T) {
@@ -2307,9 +2308,6 @@ func TestReadMsgInterruptionFailsClosed(t *testing.T) {
 		{"partial delivery aborted", pdAbort, EventPartialDelivery, errPartialDeliveryAborted},
 	} {
 		for _, subscribed := range []bool{false, true} {
-			if !subscribed && rec.sub != EventAssocChange {
-				continue // Linux queues it only for a subscriber
-			}
 			t.Run(fmt.Sprintf("%s/subscribed=%t", rec.name, subscribed), func(t *testing.T) {
 				var got []Notification
 				var subs []EventType
@@ -2331,8 +2329,14 @@ func TestReadMsgInterruptionFailsClosed(t *testing.T) {
 				if subscribed != (len(got) == 1) {
 					t.Errorf("the handler received %d notifications, subscribed %t", len(got), subscribed)
 				}
-				if c.opened() {
-					t.Error("the connection is still open after its message was cut")
+				if wantOpen := rec.sub == EventPartialDelivery; c.opened() != wantOpen {
+					t.Errorf("open = %t, want %t", c.opened(), wantOpen)
+				}
+				if rec.sub == EventPartialDelivery {
+					b, _, err := c.ReadMsg(64)
+					if string(b) != "the next message" || err != nil {
+						t.Fatalf("following=%q %v", b, err)
+					}
 				}
 			})
 		}
@@ -2603,7 +2607,8 @@ func within(got, want, margin float64) bool {
 // TestReadMsgMemoryFollowsMessage pins the allocation figures ReadMsg
 // documents (v1 TestReadMsgDocumentedAllocationContract, with v1's two
 // allocations for metadata gone, since RcvInfo is a value): warm, 3 for a
-// message of 256 bytes or fewer and 4 for a larger one, with SCTP_RCVINFO
+// message of 256 bytes or fewer, 4 up to 131,072 bytes, then one more
+// for each doubling, with SCTP_RCVINFO
 // or without; cold, one more, of a whole size class. Memory follows the
 // message, never max: ReadMsg(1<<24-1) of a 100-byte message costs what
 // ReadMsg(256) does. The counts are process-wide, so the margins are on
@@ -2630,6 +2635,15 @@ func TestReadMsgMemoryFollowsMessage(t *testing.T) {
 		{"at-boundary", 256, 65535, 3},
 		{"above-boundary", 257, 65535, 4},
 		{"large", 65535, 65535, 4},
+		{"below-128KiB", 131071, 1<<24 - 1, 4},
+		{"at-128KiB", 131072, 1<<24 - 1, 4},
+		{"above-128KiB", 131073, 1<<24 - 1, 5},
+		{"at-256KiB", 262144, 1<<24 - 1, 5},
+		{"above-256KiB", 262145, 1<<24 - 1, 6},
+		{"300000", 300000, 1<<24 - 1, 6},
+		{"at-512KiB", 524288, 1<<24 - 1, 6},
+		{"above-512KiB", 524289, 1<<24 - 1, 7},
+		{"1000000", 1000000, 1<<24 - 1, 7},
 		// The first buffer is min(256, max), so a small max admits its
 		// own largest message without growing.
 		{"small-max", 168, 168, 3},

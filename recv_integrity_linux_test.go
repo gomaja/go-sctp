@@ -10,8 +10,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -249,6 +252,99 @@ func TestReadPartialDeliveryFraming(t *testing.T) {
 				n, err = read()
 				if string(buf[:n]) != "next" || err != nil {
 					t.Fatalf("following=%q %v", buf[:n], err)
+				}
+			})
+		}
+	}
+}
+
+// A read parked between DATA pieces, or in a cut notification, must
+// normalize the local shutdown's EOF before joining interruption errors.
+func TestReadMsgLocalAbortCause(t *testing.T) {
+	for _, closing := range []bool{false, true} {
+		for _, cutRecord := range []bool{false, true} {
+			if closing && cutRecord {
+				continue
+			}
+			t.Run(fmt.Sprintf("grace=%t/cut-record=%t", closing, cutRecord), func(t *testing.T) {
+				client, server := connPair(t, nil, nil)
+				if _, err := server.Write([]byte("prime")); err != nil {
+					t.Fatal(err)
+				}
+				if b, _, err := client.ReadMsg(64); string(b) != "prime" || err != nil {
+					t.Fatalf("prime=%q %v", b, err)
+				}
+				if closing {
+					args := []string{"INPUT", "-p", "sctp", "--sport", fmt.Sprint(client.LocalAddr().(*Addr).Port), "-m", "sctp", "--chunk-types", "any", "SHUTDOWN", "-j", "DROP"}
+					if out, err := exec.Command("iptables", append([]string{"-I"}, args...)...).CombinedOutput(); err != nil {
+						t.Fatalf("drop: %v %s", err, out)
+					}
+					t.Cleanup(func() {
+						if out, err := exec.Command("iptables", append([]string{"-D"}, args...)...).CombinedOutput(); err != nil {
+							t.Errorf("restore: %v %s", err, out)
+						}
+					})
+				}
+				steps := []recvStep{{data: []byte("prefix")}}
+				if cutRecord {
+					steps = append(steps, recvStep{data: commUp(sizeAssocChange, 0)[:notificationHeaderSize], flags: msgNotification})
+				}
+				script := &recvScript{steps: steps}
+				parked := make(chan struct{})
+				once := sync.Once{}
+				hookRecvmsg(t, func(fd int, msg *syscall.Msghdr, flags int) (int, error) {
+					if script.step < len(script.steps) {
+						return script.recvmsg(fd, msg, flags)
+					}
+					if cutRecord {
+						once.Do(func() { close(parked) })
+						for lifeState(client.life.state.Load()) == lifeOpen {
+							time.Sleep(time.Millisecond)
+						}
+						msg.SetControllen(0)
+						msg.Flags = 0
+						return 0, nil
+					}
+					n, err := rawRecvmsg(fd, msg, flags)
+					if err == syscall.EAGAIN {
+						once.Do(func() { close(parked) })
+					}
+					return n, err
+				})
+				done := make(chan error, 1)
+				go func() {
+					b, _, err := client.ReadMsg(64)
+					if string(b) != "prefix" {
+						err = fmt.Errorf("prefix=%q: %w", b, err)
+					}
+					done <- err
+				}()
+				select {
+				case <-parked:
+				case <-time.After(3 * time.Second):
+					t.Fatal("read did not park")
+				}
+				start := time.Now()
+				if closing {
+					if err := client.CloseWithTimeout(60 * time.Millisecond); err != nil {
+						t.Fatal(err)
+					}
+					if time.Since(start) < 60*time.Millisecond {
+						t.Fatal("Close did not reach its grace expiry")
+					}
+				} else {
+					if err := client.Abort(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				select {
+				case err := <-done:
+					wantReadError(t, err, ErrMessageInterrupted)
+					if !errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
+						t.Fatalf("local abort cause: %v", err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("read did not wake")
 				}
 			})
 		}

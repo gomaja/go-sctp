@@ -238,6 +238,18 @@ func FuzzReceiveNotificationVerdict(f *testing.F) {
 	for _, declared := range []int{4, 100} {
 		f.Add(notifSized(EventPeerAddrChange, declared, 16, 0), uint16(0), uint16(3), uint16(8))
 	}
+	for _, n := range []int{0, 1, 7, 8, sizePDAPIEvent - 1, sizePDAPIEvent, sizePDAPIEvent + 1} {
+		for _, declared := range []uint32{0, 7, 8, sizePDAPIEvent - 1, sizePDAPIEvent, sizePDAPIEvent + 1, NotificationReassemblyLimit + 1} {
+			rec := make([]byte, n)
+			if n >= 2 {
+				binary.NativeEndian.PutUint16(rec, uint16(EventPartialDelivery))
+			}
+			if n >= 8 {
+				binary.NativeEndian.PutUint32(rec[4:], declared)
+			}
+			f.Add(rec, uint16(1), uint16(4), uint16(9))
+		}
+	}
 	f.Fuzz(func(t *testing.T, record []byte, x, y, z uint16) {
 		record = append([]byte(nil), record[:min(len(record), 4096)]...)
 		if len(record) >= 10 && EventType(binary.NativeEndian.Uint16(record)) == EventAssocChange {
@@ -281,10 +293,11 @@ func FuzzReceiveNotificationVerdict(f *testing.F) {
 				c := scriptConn(t, nil)
 				read = func() (int, MsgInfo, error) { n, err := c.Read(buf); return n, MsgInfo{}, err }
 			case "RecvMsg":
-				c := scriptConn(t, nil, EventAssocChange)
+				c := scriptConn(t, nil, EventAssocChange, EventPartialDelivery)
 				read = func() (int, MsgInfo, error) { return c.RecvMsg(buf) }
 			case "Endpoint":
 				e := scriptEndpoint(t, nil)
+				e.subs.Or(uint32(eventBit(EventPartialDelivery)))
 				read = func() (int, MsgInfo, error) { return e.RecvMsg(buf) }
 			}
 			n, info, err := read()
