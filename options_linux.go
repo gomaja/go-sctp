@@ -359,8 +359,10 @@ func (c *Conn) PathParams(path netip.Addr) (*PathParams, error) {
 // Linux reads a value only together with its switch, so a
 // HeartbeatInterval needs Heartbeat set to true in the same call, a
 // PathMTU needs PMTUD set to false, and a SACKDelay needs DelayedSACK set
-// to true; a HeartbeatInterval of 0 sends heartbeats without a delay
-// (SPP_HB_TIME_IS_ZERO). A zero PathMaxRetrans, PathMTU or SACKDelay,
+// to true. A HeartbeatInterval of 0 removes the configured interval
+// (SPP_HB_TIME_IS_ZERO), but the RTO-dependent scheduling delay remains
+// (net/sctp/transport.c: sctp_transport_timeout, sctp_transport_reset_hb_timer;
+// RFC 9260 §8.3). A zero PathMaxRetrans, PathMTU or SACKDelay,
 // which Linux would read as "unchanged", a PathMTU below 512 bytes, a
 // SACKDelay above RFC 9260 §6.2's 500 ms or not in whole milliseconds, an
 // IPv6FlowLabel beyond 20 bits and a DSCP whose low two bits are set are

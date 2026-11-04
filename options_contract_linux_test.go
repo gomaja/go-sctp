@@ -46,7 +46,7 @@ func TestPrInfoPolicyFieldsThroughSocket(t *testing.T) {
 			if err := c.SetDefaultPrInfo(got); err != nil {
 				t.Fatalf("set unchanged readback: %v", err)
 			}
-			payload := []byte(fmt.Sprintf("accepted-policy-%d", i))
+			payload := fmt.Appendf(nil, "accepted-policy-%d", i)
 			if n, err := c.SendMsg(payload, SendOptions{}); err != nil || n != len(payload) {
 				t.Fatalf("send = %d, %v", n, err)
 			}
@@ -113,7 +113,7 @@ func TestSctp6PortCollisionAndIPv6OnlyControl(t *testing.T) {
 	port := listenerAddr(t, l4).Port
 	l6, err := Listen("sctp6", &Addr{Port: port})
 	if l6 != nil {
-		l6.Close()
+		_ = l6.Close()
 		t.Fatal("dual-stack listener shared an IPv4 wildcard port")
 	}
 	if !errors.Is(err, syscall.EADDRINUSE) {
@@ -133,7 +133,7 @@ func TestSctp6PortCollisionAndIPv6OnlyControl(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IPv6-only listener beside IPv4: %v", err)
 	}
-	defer l6.Close()
+	defer func() { _ = l6.Close() }()
 	rc, err := l6.SyscallConn()
 	if err != nil {
 		t.Fatal(err)

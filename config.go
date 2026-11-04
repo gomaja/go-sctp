@@ -168,7 +168,7 @@ type Config struct {
 
 	// Announced in the INIT.
 	InitMsg         InitMsg  // RFC 6458 §8.1.3
-	AdaptationLayer *uint32  // RFC 6458 §8.1.10
+	AdaptationLayer *uint32  // RFC 6458 §8.1.10; 0 announces no adaptation indication
 	HMACIdentifiers []HMACID // RFC 4895 §§3.3, 6.1; must include HMACSHA1; requires Authentication
 	AuthChunks      []uint8  // RFC 4895 §§3.2, 6.1; chunk types to require AUTH on; requires Authentication
 

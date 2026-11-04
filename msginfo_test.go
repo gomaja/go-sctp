@@ -485,8 +485,6 @@ func TestValidateSendOptionsAcceptsValidCombinations(t *testing.T) {
 		{Info: &SndInfo{Flags: SendUnordered}},
 		{Info: &SndInfo{Flags: SendUnordered | SendSACKImmediately}},
 		{PR: &PrInfo{Policy: PRNone}},
-		// TTL is meaningless for PRNone, so a value that would fail the
-		// whole-millisecond check for PRTTL must not be checked here.
 		{PR: &PrInfo{Policy: PRTTL, TTL: 250 * time.Millisecond}},
 		{PR: &PrInfo{Policy: PRRtx, Value: 3}},
 		{PR: &PrInfo{Policy: PRPrio, Value: 10}},

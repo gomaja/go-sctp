@@ -24,6 +24,7 @@ func invalidPolicyFields() []struct {
 		{"ttl value without lifetime", PrInfo{Policy: PRTTL, Value: 3000}, "Value"},
 		{"ttl zero", PrInfo{Policy: PRTTL}, "TTL"},
 		{"ttl negative", PrInfo{Policy: PRTTL, TTL: -time.Nanosecond}, "TTL"},
+		{"ttl negative whole millisecond", PrInfo{Policy: PRTTL, TTL: -time.Millisecond}, "TTL"},
 		{"ttl below millisecond", PrInfo{Policy: PRTTL, TTL: time.Millisecond - time.Nanosecond}, "TTL"},
 		{"ttl above millisecond", PrInfo{Policy: PRTTL, TTL: time.Millisecond + time.Nanosecond}, "TTL"},
 		{"ttl overflow", PrInfo{Policy: PRTTL, TTL: (time.Duration(math.MaxUint32) + 1) * time.Millisecond}, "TTL"},
