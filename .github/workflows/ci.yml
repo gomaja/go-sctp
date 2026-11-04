@@ -322,7 +322,7 @@ jobs:
         with:
           go-version: stable
           cache: true
-      - name: Install qemu-user-static
+      - name: Install qemu-user and its binfmt registration
         # Registers the s390x binfmt_misc handler on the runner's own
         # kernel: from here on, executing an s390x ELF directly invokes
         # qemu-s390x-static transparently, the same way the kernel invokes
@@ -330,11 +330,11 @@ jobs:
         # that, and it sidesteps the official golang image publishing no
         # s390x variant at all (confirmed: docker manifest inspect lists
         # only amd64, arm/v7, arm64/v8, 386 and ppc64le for it).
-        run: sudo apt-get -qq update && sudo apt-get -qq install -y qemu-user-static
+        run: sudo apt-get -qq update && sudo apt-get -qq install -y qemu-user-binfmt
       - name: Build the portable test binary for s390x
         run: CGO_ENABLED=0 GOOS=linux GOARCH=s390x go test -c -o sctp-s390x.test .
       - name: Run the portable tests under s390x emulation
-        # qemu-user blocks SOL_SCTP (confirmed against qemu-user-static),
+        # qemu-user blocks SOL_SCTP (confirmed against the static qemu-user),
         # so every socket-backed test — every file named *_linux_test.go,
         # by this package's own convention — would hang or fail for a
         # reason that has nothing to do with byte order. The regex below
