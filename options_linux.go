@@ -39,9 +39,10 @@
 // holding the kernel's errno, so that errors.Is(err, syscall.ENOPROTOOPT)
 // detects an option the running kernel lacks (net/sctp/socket.c: the
 // default case of sctp_setsockopt and sctp_getsockopt). An argument
-// refused before any system call matches syscall.EINVAL and names the
-// argument, inside the same *net.OpError; on a closed Conn every method
-// returns one matching net.ErrClosed.
+// refused before any system call normally matches syscall.EINVAL and names
+// the argument, inside the same *net.OpError. InterleaveStreams instead
+// matches ErrUnsupported because Linux cannot retain that API level. On a
+// closed Conn every method returns one matching net.ErrClosed.
 
 package sctp
 
@@ -320,7 +321,9 @@ func (c *Conn) PathInfo(path netip.Addr) (*PathInfo, error) {
 // set except IPv6FlowLabel and DSCP, which Linux reports only once a value
 // has been set through this option, and which are nil otherwise
 // (net/sctp/socket.c: sctp_getsockopt_peer_addr_params). A path that is
-// not the peer's is refused by Linux with EINVAL.
+// not the peer's is refused by Linux with EINVAL. Readback includes the
+// current MTU and retained timers even when their switches are inactive;
+// see SetPathParams for how to write it back.
 //
 // A link-local path given without a zone is completed as for
 // SendOptions.Path.
@@ -342,13 +345,25 @@ func (c *Conn) PathParams(path netip.Addr) (*PathParams, error) {
 // SetPathParams changes the parameters of one path, or, for the zero
 // netip.Addr, of the association and every path it has
 // (SCTP_PEER_ADDR_PARAMS, RFC 6458 §8.1.12). A nil field leaves that
-// setting unchanged.
+// setting unchanged. To modify a PathParams readback, clear inactive fields
+// before passing it here; the getter preserves information the setter
+// refuses when its switch is inactive:
+//
+//	p, err := conn.PathParams(path)
+//	if err != nil { return err }
+//	// Make the desired changes to p, then clear inactive values.
+//	if !*p.Heartbeat { p.HeartbeatInterval = nil }
+//	if *p.PMTUD { p.PathMTU = nil }
+//	if !*p.DelayedSACK { p.SACKDelay = nil }
+//	return conn.SetPathParams(path, p)
 //
 // Linux reads a value only together with its switch, so a
 // HeartbeatInterval needs Heartbeat set to true in the same call, a
 // PathMTU needs PMTUD set to false, and a SACKDelay needs DelayedSACK set
-// to true; a HeartbeatInterval of 0 sends heartbeats without a delay
-// (SPP_HB_TIME_IS_ZERO). A zero PathMaxRetrans, PathMTU or SACKDelay,
+// to true. A HeartbeatInterval of 0 removes the configured interval
+// (SPP_HB_TIME_IS_ZERO), but the RTO-dependent scheduling delay remains
+// (net/sctp/transport.c: sctp_transport_timeout, sctp_transport_reset_hb_timer;
+// RFC 9260 §8.3). A zero PathMaxRetrans, PathMTU or SACKDelay,
 // which Linux would read as "unchanged", a PathMTU below 512 bytes, a
 // SACKDelay above RFC 9260 §6.2's 500 ms or not in whole milliseconds, an
 // IPv6FlowLabel beyond 20 bits and a DSCP whose low two bits are set are
@@ -439,13 +454,14 @@ func (c *Conn) PathThresholds(path netip.Addr) (*PathThresholds, error) {
 // SetPathThresholds changes the failure thresholds of one path, or, for the
 // zero netip.Addr, of the association and every path it has
 // (SCTP_PEER_ADDR_THLDS_V2, RFC 7829 §7.2). A nil field leaves that
-// threshold unchanged: Linux applies all three whatever they hold
-// (net/sctp/socket.c: sctp_setsockopt_paddr_thresholds), so the package
-// reads the thresholds, changes the fields given and writes them back,
-// holding the connection's option lock so that neither another
-// SetPathThresholds nor a SetPathParams changing the retransmission limit
-// is lost. For the association as a whole, a nil field
-// keeps the association's value, which Linux then applies to every path.
+// threshold unchanged for a per-path call: Linux applies all three,
+// whatever they hold (net/sctp/socket.c:
+// sctp_setsockopt_paddr_thresholds). The package reads the thresholds,
+// changes the fields given and writes them back, holding the connection's
+// option lock so that neither another SetPathThresholds nor a
+// SetPathParams changing the retransmission limit is lost. For the
+// association as a whole, a nil field keeps the association's value, which
+// Linux then applies to every path.
 // A nil t and a PathMaxRetrans of 0, which Linux would read as
 // "unchanged", are refused with an error matching syscall.EINVAL before
 // any system call. Linux refuses a PFThreshold above PrimarySwitchover
@@ -585,6 +601,17 @@ func (c *Conn) RemoteUDPEncapsPort(path netip.Addr) (uint16, error) {
 // network byte order RFC 6951 §6.1 specifies. Linux encapsulates only
 // while net.sctp.udp_port is set. A path that is not the peer's is refused
 // by Linux with EINVAL (net/sctp/socket.c: sctp_setsockopt_encap_port).
+// Setting this on a live Conn changes that association's traffic, including
+// its existing paths; it cannot change the INIT already sent.
+//
+// An INIT uses the socket's remote encapsulation port. To encapsulate the
+// initial handshake, set SCTP_REMOTE_UDP_ENCAPS_PORT (132 at IPPROTO_SCTP)
+// in Config.Control, inside RawConn.Control, before Dial or Endpoint.Connect.
+// Pass a native struct sctp_udpencaps with association id 0, a wildcard
+// address and the peer's UDP port in network byte order (RFC 6951 §6.1).
+// Return both RawConn.Control and setsockopt errors from the callback.
+// Set net.sctp.udp_port to a nonzero local listening port in each network
+// namespace first; setting only the remote port does not enable UDP.
 //
 // A link-local path given without a zone is completed as for
 // SendOptions.Path.
@@ -906,7 +933,9 @@ func (c *Conn) MaxBurst() (int, error) {
 // SetMaxBurst sets how many packets the association may send in one burst
 // (SCTP_MAX_BURST, RFC 6458 §8.1.24; RFC 9260 §6.1); 0 removes the
 // limit. A negative count, or one beyond the kernel's __u32, is refused
-// with an error matching syscall.EINVAL before any system call.
+// with an error matching syscall.EINVAL before any system call. Use 0 for
+// no limit: Linux computes the burst limit in 32 bits, so very large values
+// can wrap and tighten it instead (https://github.com/sctp/lksctp-tools/issues/77).
 func (c *Conn) SetMaxBurst(n int) error {
 	if !c.opened() {
 		return c.optionError("set", net.ErrClosed)
@@ -955,7 +984,7 @@ func (c *Conn) SetFragmentInterleave(level FragmentInterleave) error {
 	switch level {
 	case InterleaveNone, InterleaveAssocs:
 	case InterleaveStreams:
-		return c.argError("set", unsupportedField("SetFragmentInterleave", "Linux stores SCTP_FRAGMENT_INTERLEAVE as a boolean and collapses any nonzero value to InterleaveAssocs (net/sctp/socket.c: sctp_setsockopt_fragment_interleave), so it cannot deliver cross-stream interleaving"))
+		return c.argError("set", unsupportedField("SetFragmentInterleave", "Linux stores SCTP_FRAGMENT_INTERLEAVE as a boolean and collapses any nonzero value to InterleaveAssocs (net/sctp/socket.c: sctp_setsockopt_fragment_interleave), so level 2 cannot be selected; negotiated I-DATA can still interleave streams (RFC 8260)"))
 	default:
 		return c.argError("set", invalidArg("SetFragmentInterleave: %v is not InterleaveNone, InterleaveAssocs or InterleaveStreams", level))
 	}
@@ -1001,7 +1030,10 @@ func (c *Conn) ReceiveNxtInfo() (bool, error) {
 
 // SetReceiveNxtInfo chooses whether RecvMsg describes the next message
 // queued, in MsgInfo.Nxt, as Config.ReceiveNxtInfo does (SCTP_RECVNXTINFO,
-// RFC 6458 §8.1.30).
+// RFC 6458 §8.1.30). On an empty queue Linux's peek clears the pending
+// socket error, so reads after the last record may report ENOTCONN instead
+// of the failure's errno. AssocCommLost and its cause still arrive.
+// https://github.com/sctp/lksctp-tools/issues/75
 func (c *Conn) SetReceiveNxtInfo(on bool) error {
 	return c.setBoolOption(optRecvNxtInfo, on)
 }

@@ -1158,7 +1158,7 @@ func TestSendWaitsForBufferSpace(t *testing.T) {
 		go func() { closed <- client.Close() }()
 		select {
 		case err := <-done:
-			wantWriteError(t, err, net.ErrClosed)
+			wantWriteError(t, err, syscall.ESHUTDOWN)
 		case <-time.After(5 * time.Second):
 			t.Fatal("Close did not release the waiting send")
 		}
@@ -1784,13 +1784,13 @@ func TestSendMsgRetainsNothing(t *testing.T) {
 	if _, err := client.SendMsg([]byte("kept?"), SendOptions{Info: &SndInfo{Stream: 1}}); err != nil {
 		t.Fatalf("SendMsg: %v", err)
 	}
-	if client.send.b != nil || client.send.iov.Base != nil {
-		t.Errorf("after SendMsg the send storage still refers to the payload: b %p, iov.Base %p", client.send.b, client.send.iov.Base)
+	if client.send.iov.Base != nil {
+		t.Errorf("after SendMsg the send storage still refers to the payload: iov.Base %p", client.send.iov.Base)
 	}
 	if _, err := client.SendMsg(nil, SendOptions{}); err == nil {
 		t.Fatal("an empty SendMsg succeeded")
 	}
-	if client.send.b != nil || client.send.iov.Base != nil {
+	if client.send.iov.Base != nil {
 		t.Error("after a refused SendMsg the send storage refers to a payload")
 	}
 }
@@ -2276,6 +2276,462 @@ func BenchmarkSendPath(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
+			}
+		})
+	}
+}
+
+func TestSendShortCount(t *testing.T) {
+	for _, count := range []int{0, 1, 3, 4} {
+		for _, write := range []bool{false, true} {
+			t.Run(fmt.Sprintf("count%d/write%v", count, write), func(t *testing.T) {
+				c := fakeConn(&fakeRawConn{}, nil)
+				calls := 0
+				hookSendmsg(t, func(int, *syscall.Msghdr, int) (int, error) { calls++; return count, nil })
+				b := []byte("test")
+				var n int
+				var err error
+				if write {
+					n, err = c.Write(b)
+				} else {
+					n, err = c.SendMsg(b, SendOptions{})
+				}
+				if n != count {
+					t.Fatalf("count = %d, want %d", n, count)
+				}
+				if count < len(b) {
+					wantWriteError(t, err, io.ErrShortWrite)
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if calls != 1 {
+					t.Fatalf("sendmsg calls = %d, want one message", calls)
+				}
+			})
+		}
+	}
+}
+
+func TestSendSizeLimit(t *testing.T) {
+	limit := int(0x7fffffff) &^ (os.Getpagesize() - 1)
+	for _, n := range []int{-1, 0, 1, limit - 1, limit, limit + 1, int(0x7fffffff)} {
+		err := checkSendSize(n)
+		switch {
+		case n <= 0:
+			if !errors.Is(err, syscall.EINVAL) {
+				t.Errorf("size %d = %v, want EINVAL", n, err)
+			}
+		case n > limit:
+			if !errors.Is(err, syscall.EMSGSIZE) {
+				t.Errorf("size %d = %v, want EMSGSIZE", n, err)
+			}
+		default:
+			if err != nil {
+				t.Errorf("size %d = %v, want nil", n, err)
+			}
+		}
+	}
+}
+
+// fullShutdownSender leaves the peer's window closed and the local send
+// buffer full, so no later DATA can release a send's poller wait.
+func fullShutdownSender(t *testing.T) *Conn {
+	t.Helper()
+	c, peer := connPair(t, nil, &Config{ReadBuffer: new(closingReadBuffer)})
+	fillContextBuffer(t, contextSender{send: c.SendMsgContext}, peer, func() uint64 {
+		st, err := c.Stats()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.SACKsIn
+	}, 0x72600001)
+	return c
+}
+
+func TestSendFullBufferAfterShutdownNoWait(t *testing.T) {
+	c := fullShutdownSender(t)
+	if err := c.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	n, err := c.SendMsg([]byte("refused"), SendOptions{NoWait: true})
+	if n != 0 {
+		t.Fatalf("send queued %d bytes", n)
+	}
+	wantWriteError(t, err, syscall.ESHUTDOWN)
+}
+
+func TestSendParkedLocalShutdown(t *testing.T) {
+	for _, closing := range []string{"shutdown", "close", "timeout"} {
+		t.Run(closing, func(t *testing.T) {
+			c := fullShutdownSender(t)
+			blocked := make(chan struct{}, 1)
+			hookSendmsg(t, func(fd int, msg *syscall.Msghdr, flags int) (int, error) {
+				n, err := rawSendmsg(fd, msg, flags)
+				if err == syscall.EAGAIN {
+					select {
+					case blocked <- struct{}{}:
+					default:
+					}
+				}
+				return n, err
+			})
+			if err := c.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { _, err := c.Write([]byte("parked")); done <- err }()
+			<-blocked
+			awaitSendParked(t, c)
+			closed := make(chan error, 1)
+			if closing != "shutdown" {
+				go func() {
+					if closing == "close" {
+						closed <- c.Close()
+					} else {
+						closed <- c.CloseWithTimeout(time.Second)
+					}
+				}()
+			} else if err := c.Shutdown(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				wantWriteError(t, err, syscall.ESHUTDOWN)
+			case <-time.After(200 * time.Millisecond):
+				_ = c.Abort()
+				err := <-done
+				t.Errorf("parked writer was not woken within 200 ms; after abort: %v", err)
+			}
+			if closing != "shutdown" {
+				_ = c.Abort()
+				if err := <-closed; err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func awaitSendParked(t *testing.T, c *Conn) {
+	t.Helper()
+	until := time.Now().Add(time.Second)
+	for {
+		c.send.deadlineMu.Lock()
+		parked := c.send.parked
+		c.send.deadlineMu.Unlock()
+		if parked {
+			return
+		}
+		if time.Now().After(until) {
+			t.Fatal("send did not reach its buffer wait")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestSendShutdownDeadlineRestoration(t *testing.T) {
+	for _, latest := range []string{"unset", "future", "past"} {
+		t.Run(latest, func(t *testing.T) {
+			c := fullShutdownSender(t)
+			if err := c.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			returned, resume := make(chan struct{}), make(chan struct{})
+			testHookSendWriteReturn = func() { close(returned); <-resume }
+			t.Cleanup(func() { testHookSendWriteReturn = nil })
+			done := make(chan error, 1)
+			go func() { _, err := c.Write([]byte("parked")); done <- err }()
+			awaitSendParked(t, c)
+			if err := c.Shutdown(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-returned:
+			case <-time.After(time.Second):
+				_ = c.Abort()
+				t.Fatal("shutdown did not wake send")
+			}
+			var deadline time.Time
+			if latest == "future" {
+				deadline = time.Now().Add(100 * time.Millisecond)
+			}
+			if latest == "past" {
+				deadline = time.Now().Add(-time.Second)
+			}
+			if err := c.SetDeadline(deadline); err != nil {
+				t.Fatal(err)
+			}
+			// SetDeadline must keep the private wake active until
+			// restore.
+			if err := c.sock.raw.Write(func(uintptr) bool { return true }); !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Errorf("during wake = %v, want deadline exceeded", err)
+			}
+			close(resume)
+			wantWriteError(t, <-done, syscall.ESHUTDOWN)
+			testHookSendWriteReturn = nil
+			c.send.deadlineMu.Lock()
+			if c.send.parked || c.send.shutdownWake || c.send.interrupted || !c.send.callerDeadline.Equal(deadline) {
+				t.Error("send left wake state or lost caller deadline")
+			}
+			c.send.deadlineMu.Unlock()
+			// Observe the actual poller deadline, not just the
+			// cached value.
+			if latest == "unset" {
+				if err := c.sock.raw.Write(func(uintptr) bool { return true }); err != nil {
+					t.Fatalf("cleared deadline = %v", err)
+				}
+			} else {
+				start := time.Now()
+				err := c.sock.raw.Write(func(uintptr) bool { return false })
+				if !errors.Is(err, os.ErrDeadlineExceeded) {
+					t.Fatalf("restored deadline = %v", err)
+				}
+				if latest == "future" && time.Since(start) < 50*time.Millisecond {
+					t.Fatal("wake deadline remained in the past")
+				}
+			}
+		})
+	}
+}
+
+func TestSendShutdownContextPrecedence(t *testing.T) {
+	for _, first := range []string{"shutdown", "context", "caller"} {
+		t.Run(first, func(t *testing.T) {
+			c := fullShutdownSender(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			returned, resume := make(chan struct{}), make(chan struct{})
+			interrupted := make(chan struct{})
+			testHookSendInterrupt = func() { close(interrupted) }
+			t.Cleanup(func() { testHookSendInterrupt = nil })
+			testHookSendWriteReturn = func() { close(returned); <-resume }
+			t.Cleanup(func() { testHookSendWriteReturn = nil })
+			done := make(chan error, 1)
+			go func() { _, err := c.SendMsgContext(ctx, []byte("parked"), SendOptions{}); done <- err }()
+			awaitSendParked(t, c)
+			cause := error(syscall.ESHUTDOWN)
+			switch first {
+			case "shutdown":
+				if err := c.Shutdown(); err != nil {
+					t.Fatal(err)
+				}
+			case "context":
+				cancel()
+				cause = context.Canceled
+			case "caller":
+				if err := c.SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				cause = os.ErrDeadlineExceeded
+			}
+			select {
+			case <-returned:
+			case <-time.After(time.Second):
+				_ = c.Abort()
+				t.Fatal("send never returned from poller")
+			}
+			if err := c.Shutdown(); err != nil {
+				t.Fatal(err)
+			}
+			if first == "shutdown" {
+				if err := c.SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cancel()
+			select {
+			case <-interrupted:
+			case <-time.After(time.Second):
+				t.Fatal("context interrupt did not finish")
+			}
+			close(resume)
+			wantWriteError(t, <-done, cause)
+			testHookSendWriteReturn = nil
+		})
+	}
+}
+
+func TestShutdownWithoutParkedSendPreservesDeadline(t *testing.T) {
+	c, _ := connPair(t, nil, nil)
+	if err := c.SetWriteDeadline(time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.sock.raw.Write(func(uintptr) bool { return true }); err != nil {
+		t.Fatalf("shutdown changed deadline without a parked send: %v", err)
+	}
+	if err := c.SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.sock.raw.Write(func(uintptr) bool { return true }); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("later deadline failed: %v", err)
+	}
+	if err := c.SetWriteDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.sock.raw.Write(func(uintptr) bool { return true }); err != nil {
+		t.Fatalf("later deadline clear failed: %v", err)
+	}
+}
+
+func TestSendShutdownBeforeParkedMark(t *testing.T) {
+	c := fullShutdownSender(t)
+	attempted, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	hookSendmsg(t, func(fd int, msg *syscall.Msghdr, flags int) (int, error) {
+		n, err := rawSendmsg(fd, msg, flags)
+		if err == syscall.EAGAIN {
+			once.Do(func() { close(attempted); <-resume })
+		}
+		return n, err
+	})
+	done := make(chan error, 1)
+	go func() { _, err := c.Write([]byte("mark after shutdown")); done <- err }()
+	<-attempted
+	if err := c.Shutdown(); err != nil {
+		close(resume)
+		t.Fatal(err)
+	}
+	close(resume)
+	select {
+	case err := <-done:
+		wantWriteError(t, err, syscall.ESHUTDOWN)
+	case <-time.After(200 * time.Millisecond):
+		_ = c.Abort()
+		err := <-done
+		t.Fatalf("send missed shutdown before its parked mark; after abort: %v", err)
+	}
+}
+
+func TestSendShutdownCancellationRace(t *testing.T) {
+	for round := range 20 {
+		c := fullShutdownSender(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		var deadline time.Time
+		if round%2 == 0 {
+			deadline = time.Now().Add(time.Hour)
+		}
+		if err := c.SetWriteDeadline(deadline); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			n, err := c.SendMsgContext(ctx, []byte("racing"), SendOptions{})
+			if n != 0 {
+				done <- fmt.Errorf("queued %d bytes", n)
+			} else {
+				done <- err
+			}
+		}()
+		awaitSendParked(t, c)
+		start := make(chan struct{})
+		shutdown := make(chan error, 1)
+		go func() { <-start; cancel() }()
+		go func() { <-start; shutdown <- c.Shutdown() }()
+		close(start)
+		select {
+		case err := <-done:
+			if !errors.Is(err, syscall.ESHUTDOWN) && !errors.Is(err, context.Canceled) {
+				t.Fatalf("round %d: %v", round, err)
+			}
+		case <-time.After(time.Second):
+			_ = c.Abort()
+			err := <-done
+			t.Fatalf("racing wake lost; after abort: %v", err)
+		}
+		if err := <-shutdown; err != nil {
+			t.Fatal(err)
+		}
+		if err := c.sock.raw.Write(func(uintptr) bool { return true }); err != nil {
+			t.Fatalf("round %d: private wake deadline remained: %v", round, err)
+		}
+		_ = c.Abort()
+	}
+}
+
+func TestSendBufferAllocationContract(t *testing.T) {
+	c := fakeConn(&fakeRawConn{}, nil)
+	hookSendmsg(t, func(_ int, msg *syscall.Msghdr, _ int) (int, error) { return int(msg.Iov.Len), nil })
+	heap := make([]byte, 1)
+	if got := testing.AllocsPerRun(100, func() {
+		if _, err := c.Write(heap); err != nil {
+			panic(err)
+		}
+	}); got != 0 {
+		t.Fatalf("reused heap buffer allocations = %v, want 0", got)
+	}
+	if got := testing.AllocsPerRun(100, func() {
+		var local [1]byte
+		if _, err := c.Write(local[:]); err != nil {
+			panic(err)
+		}
+	}); got != 1 {
+		t.Fatalf("fresh local array allocations = %v, want 1", got)
+	}
+}
+
+func TestPeeledSendParkedShutdown(t *testing.T) {
+	l := mustListen(t, &Config{ReadBuffer: new(closingReadBuffer)}, "sctp4", loopback4(0))
+	e := openEndpoint(t, nil, "sctp4", loopback4(0))
+	id, err := e.Connect(listenerAddr(t, l))
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := l.AcceptSCTP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = peer.Abort() })
+	awaitCommUp(t, e)
+	c, err := e.PeelOff(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Abort() })
+	fillContextBuffer(t, contextSender{send: c.SendMsgContext}, peer, func() uint64 {
+		st, err := c.Stats()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.SACKsIn
+	}, 0x72600001)
+	done := make(chan error, 1)
+	go func() { _, err := c.Write([]byte("peeled buffer wait")); done <- err }()
+	awaitSendParked(t, c)
+	if err := c.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		wantWriteError(t, err, syscall.ESHUTDOWN)
+	case <-time.After(200 * time.Millisecond):
+		_ = c.Abort()
+		err := <-done
+		t.Fatalf("peeled Shutdown did not wake sender; after abort: %v", err)
+	}
+	_, err = c.SendMsg([]byte("after shutdown"), SendOptions{NoWait: true})
+	wantWriteError(t, err, syscall.ESHUTDOWN)
+}
+
+func TestEndpointSendShortCount(t *testing.T) {
+	for _, count := range []int{0, 1, 3, 4} {
+		t.Run(fmt.Sprintf("count%d", count), func(t *testing.T) {
+			c := fakeContextSender(t, true, &fakeRawConn{})
+			calls := 0
+			hookSendmsg(t, func(int, *syscall.Msghdr, int) (int, error) { calls++; return count, nil })
+			n, err := c.ordinary([]byte("test"), SendOptions{})
+			if n != count {
+				t.Fatalf("count = %d, want %d", n, count)
+			}
+			if count < 4 {
+				wantWriteError(t, err, io.ErrShortWrite)
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("sendmsg calls = %d, want one message", calls)
 			}
 		})
 	}

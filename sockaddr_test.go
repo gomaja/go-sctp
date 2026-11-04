@@ -22,6 +22,7 @@ package sctp
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"runtime/debug"
@@ -861,8 +862,8 @@ func TestZoneCacheMissOnANameRefetches(t *testing.T) {
 }
 
 // TestZoneCacheNumericMissDoesNotRefetch: a decimal zone that names no
-// interface in a fresh table is answered as a miss without reading the
-// table again, so a send to a link-local address zoned by index does not
+// interface in the cached table is answered as a miss without another
+// read, even after the TTL. A link-local address zoned by index does not
 // cost an interface dump each time; encodeZone then takes the number.
 func TestZoneCacheNumericMissDoesNotRefetch(t *testing.T) {
 	f := &fakeZoneTable{ifs: []net.Interface{{Index: 7, Name: "zoneA"}}}
@@ -875,11 +876,15 @@ func TestZoneCacheNumericMissDoesNotRefetch(t *testing.T) {
 	if f.calls != 1 {
 		t.Errorf("the interface table was read %d times for a decimal zone, want 1", f.calls)
 	}
-	// An interface really named with digits is still found by name.
-	f.ifs = append(f.ifs, net.Interface{Index: 30, Name: "12"})
-	f.clock = f.clock.Add(zoneCacheTTL)
-	if idx, ok := z.index("12"); !ok || idx != 30 {
-		t.Errorf("index(12) with an interface named 12 = %d, %v; want 30, true", idx, ok)
+	start := f.clock
+	for _, elapsed := range []time.Duration{zoneCacheTTL - 1, zoneCacheTTL, zoneCacheTTL + 1, 10 * zoneCacheTTL} {
+		f.clock = start.Add(elapsed)
+		if _, ok := z.index("12"); ok {
+			t.Fatal("unexpected numeric interface")
+		}
+		if f.calls != 1 {
+			t.Fatalf("numeric lookup after %v read table %d times, want 1", elapsed, f.calls)
+		}
 	}
 }
 
@@ -957,5 +962,54 @@ func BenchmarkEncodeAddrs(b *testing.B) {
 		if _, err := encodeAddrs(afInet, ips, 9999); err != nil {
 			b.Fatalf("encodeAddrs: %v", err)
 		}
+	}
+}
+
+func TestZoneCacheNumericInterfaceName(t *testing.T) {
+	for _, removed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("removed%v", removed), func(t *testing.T) {
+			f := &fakeZoneTable{ifs: []net.Interface{{Index: 30, Name: "12"}}}
+			z := f.cache()
+			if idx, ok := z.index("12"); !ok || idx != 30 {
+				t.Fatalf("first lookup = %d, %v; want 30, true", idx, ok)
+			}
+			start := f.clock
+			f.ifs = []net.Interface{{Index: 31, Name: "12"}}
+			if removed {
+				f.ifs = nil
+			}
+			for _, elapsed := range []time.Duration{zoneCacheTTL - 1, zoneCacheTTL, zoneCacheTTL + 1} {
+				f.clock = start.Add(elapsed)
+				want, present, calls := 30, true, 1
+				if elapsed >= zoneCacheTTL {
+					want, calls = 31, 2
+					if removed {
+						want, present = 0, false
+					}
+				}
+				if idx, ok := z.index("12"); idx != want || ok != present {
+					t.Fatalf("lookup after %v = %d, %v; want %d, %v", elapsed, idx, ok, want, present)
+				}
+				if f.calls != calls {
+					t.Fatalf("lookup after %v read table %d times, want %d", elapsed, f.calls, calls)
+				}
+			}
+		})
+	}
+}
+
+func TestZoneCacheRefreshTimeIsCompletion(t *testing.T) {
+	f := &fakeZoneTable{ifs: []net.Interface{{Index: 7, Name: "zoneA"}}}
+	z := f.cache()
+	read := z.interfaces
+	z.interfaces = func() ([]net.Interface, error) {
+		f.clock = f.clock.Add(zoneCacheTTL / 2)
+		return read()
+	}
+	if _, ok := z.index("zoneA"); !ok {
+		t.Fatal("name not found")
+	}
+	if !z.fetched.Equal(f.clock) {
+		t.Fatalf("fetch time = %v, want completion %v", z.fetched, f.clock)
 	}
 }

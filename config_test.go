@@ -581,7 +581,7 @@ func TestInterleaveStreamsMessageDoesNotStutter(t *testing.T) {
 	if err == nil {
 		t.Fatal("prepare unexpectedly succeeded")
 	}
-	const want = "sctp: Config.FragmentInterleave: Linux stores SCTP_FRAGMENT_INTERLEAVE as a boolean and collapses any nonzero value to InterleaveAssocs (net/sctp/socket.c: sctp_setsockopt_fragment_interleave), so it cannot deliver cross-stream interleaving"
+	const want = "sctp: Config.FragmentInterleave: Linux stores SCTP_FRAGMENT_INTERLEAVE as a boolean and collapses any nonzero value to InterleaveAssocs (net/sctp/socket.c: sctp_setsockopt_fragment_interleave), so level 2 cannot be selected; negotiated I-DATA can still interleave streams (RFC 8260)"
 	if err.Error() != want {
 		t.Fatalf("err = %q, want exactly %q", err.Error(), want)
 	}
@@ -921,7 +921,7 @@ func TestDefaultSndInfoOpPPIDMatchesWireBytes(t *testing.T) {
 // prPolicy/prValue are the same resolution resolvePrInfo (options.go)
 // documents and appendSendCmsgs's per-message PRINFO cmsg already relies
 // on: pr_value is the TTL in milliseconds for PRTTL, Value for
-// PRRtx/PRPrio, and 0 for PRNone regardless of what TTL or Value holds.
+// PRRtx/PRPrio, and 0 for PRNone, whose other fields validation keeps zero.
 func TestDefaultPrInfoOpResolvesKernelUnits(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -929,7 +929,7 @@ func TestDefaultPrInfoOpResolvesKernelUnits(t *testing.T) {
 		wantPolicy uint16
 		wantValue  uint32
 	}{
-		{"PRNone ignores TTL and Value", PrInfo{Policy: PRNone, TTL: time.Second, Value: 99}, uint16(PRNone), 0},
+		{"PRNone has no value", PrInfo{Policy: PRNone}, uint16(PRNone), 0},
 		{"PRTTL converts to ms", PrInfo{Policy: PRTTL, TTL: 250 * time.Millisecond}, uint16(PRTTL), 250},
 		{"PRRtx keeps Value", PrInfo{Policy: PRRtx, Value: 7}, uint16(PRRtx), 7},
 		{"PRPrio keeps Value", PrInfo{Policy: PRPrio, Value: 3}, uint16(PRPrio), 3},

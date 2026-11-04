@@ -5,8 +5,9 @@
 // exists, and prepare, which turns one into an immutable, validated
 // snapshot for a single constructor call: a prepared value. Every check
 // here runs before any system call, so a mistake is reported as an error
-// that matches syscall.EINVAL and names the field, never as a kernel EINVAL
-// with no indication of which setting caused it.
+// that normally matches syscall.EINVAL and names the field, never as a kernel
+// EINVAL with no indication of which setting caused it. InterleaveStreams
+// instead matches ErrUnsupported because Linux cannot retain that API level.
 //
 // prepare's job ends at the ordered list of operations a prepared value
 // carries (configOp, configOpKind): each one already holds its
@@ -65,17 +66,21 @@ func (s socketStyle) String() string {
 	}
 }
 
-// Config holds everything that must be decided before a socket is bound or
-// connected. The zero Config uses kernel defaults throughout. A Config may be
-// reused; it must not be modified while a call that uses it is running.
+// Config holds the usual settings needed before a socket is bound or
+// connected; Control can set options without a typed field. The zero
+// Config uses kernel defaults throughout. A Config may be reused; it must
+// not be modified while a call that uses it is running.
 //
 // Every constructor checks the Config before it creates a socket. A field
 // that is out of range, that conflicts with another field, or that the
 // constructor cannot apply (such as ReusePort on an Endpoint, or an
 // AbandonPolicy outside Dial) is refused with an error that matches
-// syscall.EINVAL and names the field. Nothing is silently ignored.
+// syscall.EINVAL and names the field, except InterleaveStreams, which
+// matches ErrUnsupported because Linux cannot retain that valid API level.
+// Nothing is silently ignored.
 //
-// Order of application: the socket is created, then Control runs, then the
+// Order of application: the socket is created and IPV6_V6ONLY is cleared
+// on an AF_INET6 socket, including "sctp6", then Control runs, then the
 // package enables SCTP_RECVRCVINFO and applies the typed settings in this
 // order, so that each finds its prerequisites in place: ReadBuffer,
 // WriteBuffer, InitMsg, FragmentInterleave, Authentication, HMACIdentifiers,
@@ -86,7 +91,10 @@ func (s socketStyle) String() string {
 // Notifications. Typed settings therefore win over anything Control wrote.
 // For Dial, SetupRTOInitial comes last; Dial undoes it once the association
 // is established. Then the socket is bound, and connected or put in
-// listening state.
+// listening state. "sctp6" therefore accepts IPv4 peers and its wildcard
+// bind collides with "sctp4" on the same port (EADDRINUSE). To restrict it
+// to IPv6, set IPV6_V6ONLY to 1 inside Control's RawConn.Control callback;
+// Control runs after the package clears it. See README.md for an example.
 type Config struct {
 	// Control is called with the new socket before any typed setting is
 	// applied. As for net.Dialer and net.ListenConfig, network is the
@@ -162,7 +170,7 @@ type Config struct {
 
 	// Announced in the INIT.
 	InitMsg         InitMsg  // RFC 6458 §8.1.3
-	AdaptationLayer *uint32  // RFC 6458 §8.1.10
+	AdaptationLayer *uint32  // RFC 6458 §8.1.10; 0 announces no adaptation indication
 	HMACIdentifiers []HMACID // RFC 4895 §§3.3, 6.1; must include HMACSHA1; requires Authentication
 	AuthChunks      []uint8  // RFC 4895 §§3.2, 6.1; chunk types to require AUTH on; requires Authentication
 
@@ -208,19 +216,24 @@ type Config struct {
 	ReusePort          *bool               // RFC 6458 §8.1.27; one-to-one sockets only
 	FragmentsDisabled  *bool               // RFC 6458 §8.1.11
 	FragmentInterleave *FragmentInterleave // RFC 6458 §8.1.20; nil on an Endpoint means InterleaveAssocs
-	ReceiveNxtInfo     *bool               // RFC 6458 §8.1.30
-	StreamResetMask    *StreamResetMask    // RFC 6525 §6.3; non-zero requires StreamReconfiguration
-	RTOInfo            *RTOInfo            // RFC 6458 §8.1.1
-	DelayedSACK        *DelayedSACK        // RFC 6458 §8.1.19; Delay at most 500 ms (RFC 9260 §6.2)
+	// ReceiveNxtInfo enables SCTP_NXTINFO (RFC 6458 §8.1.30). When Linux
+	// peeks an empty queue for it, it clears the pending socket error:
+	// reads after the last record may report ENOTCONN instead of the
+	// failure's errno. AssocCommLost and its cause still arrive.
+	// https://github.com/sctp/lksctp-tools/issues/75
+	ReceiveNxtInfo  *bool
+	StreamResetMask *StreamResetMask // RFC 6525 §6.3; non-zero requires StreamReconfiguration
+	RTOInfo         *RTOInfo         // RFC 6458 §8.1.1
+	DelayedSACK     *DelayedSACK     // RFC 6458 §8.1.19; Delay at most 500 ms (RFC 9260 §6.2)
 
 	// Notifications the caller receives, subscribed at creation, before bind,
 	// connect or listen (RFC 6458 §6.2.2). Linux starts every socket with
-	// none. The package also keeps EventAssocChange subscribed in the kernel
-	// on every socket, because it is how the package learns that an
-	// association has ended. On a Conn those records are consumed by
-	// the package and never delivered unless EventAssocChange is listed here
-	// or subscribed later. An Endpoint always delivers them, since its callers
-	// route by association id.
+	// none. The package also keeps EventAssocChange and EventPartialDelivery
+	// subscribed in the kernel on every socket, to detect association ends
+	// and abandoned partial messages. On a Conn those records are consumed by
+	// the package and never delivered unless their type is listed here or
+	// subscribed later. An Endpoint always delivers EventAssocChange, since
+	// its callers route by association id.
 	Notifications []EventType
 }
 
@@ -229,7 +242,8 @@ type Config struct {
 // part of that order: they are the two operations prepare always emits
 // first, on every style including styleFile, because the package's receive
 // path depends on both regardless of what Config asked for — RCVINFO to
-// read the association metadata every message carries, and ASSOC_CHANGE to
+// read the association metadata every message carries, PARTIAL_DELIVERY to
+// detect an abandoned partial message (RFC 6458 §6.1.7), and ASSOC_CHANGE to
 // notice an association ending at all. On a one-to-one or peeled socket,
 // Linux sets the socket error once when an association fails
 // (net/sctp/sm_sideeffect.c: sctp_cmd_set_sk_err — it does nothing at all
@@ -799,7 +813,7 @@ func resolveFragmentInterleave(c *Config, style socketStyle) (FragmentInterleave
 	case InterleaveNone, InterleaveAssocs:
 		return level, nil
 	case InterleaveStreams:
-		return 0, unsupportedField("Config.FragmentInterleave", "Linux stores SCTP_FRAGMENT_INTERLEAVE as a boolean and collapses any nonzero value to InterleaveAssocs (net/sctp/socket.c: sctp_setsockopt_fragment_interleave), so it cannot deliver cross-stream interleaving")
+		return 0, unsupportedField("Config.FragmentInterleave", "Linux stores SCTP_FRAGMENT_INTERLEAVE as a boolean and collapses any nonzero value to InterleaveAssocs (net/sctp/socket.c: sctp_setsockopt_fragment_interleave), so level 2 cannot be selected; negotiated I-DATA can still interleave streams (RFC 8260)")
 	default:
 		return 0, invalidArg("Config.FragmentInterleave is %v, not InterleaveNone, InterleaveAssocs or InterleaveStreams", level)
 	}

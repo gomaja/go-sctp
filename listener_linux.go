@@ -42,7 +42,14 @@ func Listen(network string, laddr *Addr) (*Listener, error) {
 // laddr, or one with no IPs, is the wildcard address: with a port of 0 the
 // kernel chooses one, and with "sctp" the socket is AF_INET6 dual-stack, so
 // that it listens on the host's IPv4 and IPv6 addresses alike. Several IPs
-// make a multi-homed endpoint, bound atomically (RFC 6458 §9.1).
+// make a multi-homed endpoint, bound atomically (RFC 6458 §9.1), up to the
+// Linux limit on a list's length described below.
+// "sctp6" is dual-stack too: it accepts IPv4 peers and its wildcard bind
+// collides with "sctp4" on the same port (EADDRINUSE). For IPv6 only, set
+// IPV6_V6ONLY to 1 inside Config.Control's RawConn.Control callback, which
+// runs after the package clears it.
+//
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
 //
 // The backlog is the kernel's own maximum, net.core.somaxconn, read at
 // each Listen, rather than syscall.SOMAXCONN: the Go constant is 128,
@@ -106,7 +113,7 @@ func setupListener(s *socket, address string, control func(string, string, sysca
 	backlog := syscall.SOMAXCONN
 	if n, err := readSomaxconn(); err == nil && n > backlog {
 		// The kernel clamps a larger value to its own maximum
-		// (net/sctp/socket.c: sctp_inet_listen), so asking for exactly
+		// (net/socket.c: __sys_listen_socket), so asking for exactly
 		// that is safe.
 		backlog = n
 	}
@@ -181,6 +188,9 @@ func (l *Listener) AcceptSCTP() (*Conn, error) {
 	return c, nil
 }
 
+// testHookAccept4 replaces accept4 in tests that exercise transient errors.
+var testHookAccept4 func(fd, flags int) (int, syscall.Sockaddr, error)
+
 func (l *Listener) accept() (*Conn, error) {
 	if l == nil || l.sock.raw == nil {
 		return nil, net.ErrClosed
@@ -189,9 +199,18 @@ func (l *Listener) accept() (*Conn, error) {
 	var aerr error
 	if err := l.sock.raw.Read(func(fd uintptr) bool {
 		for {
-			nfd, _, aerr = syscall.Accept4(int(fd), syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC)
+			accept4 := syscall.Accept4
+			if testHookAccept4 != nil {
+				accept4 = testHookAccept4
+			}
+			nfd, _, aerr = accept4(int(fd), syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC)
 			switch aerr {
-			case syscall.EINTR:
+			case syscall.EINTR, syscall.ECONNABORTED:
+				// internal/poll.FD.Accept retries ECONNABORTED too. Linux
+				// can return it after dequeuing an association when
+				// do_accept (net/socket.c) cannot report its peer address:
+				// inet_getname refuses a zero peer port, which RFC 9260
+				// §3.1 forbids. Keep accept4's address check and retry.
 				continue
 			case syscall.EAGAIN:
 				// A listening socket is readable once an association
@@ -259,6 +278,8 @@ func (l *Listener) SetDeadline(t time.Time) error {
 // afterwards. A zero netip.Addr, an empty list, or an address the socket's
 // family cannot carry is refused with an error matching syscall.EINVAL
 // before any system call.
+//
+// Linux may silently bind only a long list's start; see [Conn.BindAdd].
 func (l *Listener) BindAdd(ips ...netip.Addr) error {
 	return l.bindx(optSockoptBindxAdd, "BindAdd", ips)
 }
