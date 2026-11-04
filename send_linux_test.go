@@ -2280,3 +2280,34 @@ func BenchmarkSendPath(b *testing.B) {
 		})
 	}
 }
+
+func TestSendShortCount(t *testing.T) {
+	for _, count := range []int{0, 1, 3, 4} {
+		for _, write := range []bool{false, true} {
+			t.Run(fmt.Sprintf("count%d/write%v", count, write), func(t *testing.T) {
+				c := fakeConn(&fakeRawConn{}, nil)
+				calls := 0
+				hookSendmsg(t, func(int, *syscall.Msghdr, int) (int, error) { calls++; return count, nil })
+				b := []byte("test")
+				var n int
+				var err error
+				if write {
+					n, err = c.Write(b)
+				} else {
+					n, err = c.SendMsg(b, SendOptions{})
+				}
+				if n != count {
+					t.Fatalf("count = %d, want %d", n, count)
+				}
+				if count < len(b) {
+					wantWriteError(t, err, io.ErrShortWrite)
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if calls != 1 {
+					t.Fatalf("sendmsg calls = %d, want one message", calls)
+				}
+			})
+		}
+	}
+}

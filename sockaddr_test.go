@@ -875,12 +875,16 @@ func TestZoneCacheNumericMissDoesNotRefetch(t *testing.T) {
 	if f.calls != 1 {
 		t.Errorf("the interface table was read %d times for a decimal zone, want 1", f.calls)
 	}
-	// An interface really named with digits is still found by name.
-	f.ifs = append(f.ifs, net.Interface{Index: 30, Name: "12"})
-	f.clock = f.clock.Add(zoneCacheTTL)
-	if idx, ok := z.index("12"); !ok || idx != 30 {
-		t.Errorf("index(12) with an interface named 12 = %d, %v; want 30, true", idx, ok)
+	for _, elapsed := range []time.Duration{zoneCacheTTL - 1, zoneCacheTTL, zoneCacheTTL + 1, 10 * zoneCacheTTL} {
+		f.clock = f.clock.Add(elapsed)
+		if _, ok := z.index("12"); ok {
+			t.Fatal("unexpected numeric interface")
+		}
+		if f.calls != 1 {
+			t.Fatalf("numeric lookup after %v read table %d times, want 1", elapsed, f.calls)
+		}
 	}
+
 }
 
 // TestZoneCacheKeepsTheTableWhenARefreshFails: an interface table that
@@ -957,5 +961,19 @@ func BenchmarkEncodeAddrs(b *testing.B) {
 		if _, err := encodeAddrs(afInet, ips, 9999); err != nil {
 			b.Fatalf("encodeAddrs: %v", err)
 		}
+	}
+}
+
+func TestZoneCacheNumericInterfaceName(t *testing.T) {
+	f := &fakeZoneTable{ifs: []net.Interface{{Index: 30, Name: "12"}}}
+	z := f.cache()
+	for _, elapsed := range []time.Duration{0, zoneCacheTTL - 1, zoneCacheTTL, zoneCacheTTL + 1} {
+		f.clock = f.clock.Add(elapsed)
+		if idx, ok := z.index("12"); !ok || idx != 30 {
+			t.Fatalf("numeric name = %d, %v, want 30, true", idx, ok)
+		}
+	}
+	if f.calls != 1 {
+		t.Fatalf("table read %d times, want 1", f.calls)
 	}
 }
