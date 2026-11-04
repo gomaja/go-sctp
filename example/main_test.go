@@ -389,3 +389,16 @@ func TestClientAcceptsPortBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestHelpSucceeds(t *testing.T) {
+	for _, arg := range []string{"-h", "-help"} {
+		t.Run(arg, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0])
+			cmd.Env = append(os.Environ(), runMainEnv+"=1", runArgsEnv+"="+arg)
+			out, err := cmd.CombinedOutput()
+			if err != nil || !strings.Contains(string(out), "Usage of example:") || strings.Contains(string(out), "flag: help requested") {
+				t.Fatalf("help: error %v, output %s; want usage and a successful exit", err, out)
+			}
+		})
+	}
+}

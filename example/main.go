@@ -24,7 +24,7 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil && !errors.Is(err, context.Canceled) {
+	if err := run(); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, flag.ErrHelp) {
 		log.Print(err)
 		os.Exit(1)
 	}
