@@ -983,7 +983,6 @@ func checkPeelOffState(state AssocState) error {
 // descriptor would be, lowest free number under RLIMIT_NOFILE
 // (fs/file.c: alloc_fd), and closing it is its one close, since nothing
 // else ever knows its number.
-
 func peelOff(fd int, id AssocID) (int, error) {
 	// SCTP_STATUS selects this endpoint's association (RFC 6458 §8.2.1,
 	// Errata 6115); an unknown id keeps the kernel's EINVAL.

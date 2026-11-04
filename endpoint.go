@@ -26,7 +26,7 @@ import (
 // notifications rather than from an Accept (RFC 6458 §3.1.3).
 //
 // Association ids come from one system-wide cyclic pool (idr_alloc_cyclic,
-// net/sctp/associola.c), so an id is reused after its association ends.
+// net/sctp/associola.c), so ids can be reused when allocation wraps.
 // Retire an id when EventAssocChange reports the end, or after a successful
 // quiet cancellation with CloseAssoc during setup. Never treat an id as
 // a lasting peer identity. An Endpoint always delivers EventAssocChange

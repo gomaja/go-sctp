@@ -3755,6 +3755,7 @@ func TestEndpointPeelOffWaitsForNotification(t *testing.T) {
 	awaitCommUp(t, e)
 	_ = peelPeer(t, e)
 	id := awaitCommUp(t, e).AssocID
+	t.Logf("endpoint=%v survivor0=%v survivor1=%v target=%d", e.Addr(), peers[0].LocalAddr(), peers[1].LocalAddr(), id)
 	queuePeelNotification(t, e, id)
 	var efd int
 	rawFd(t, mustEndpointRawConn(t, e), func(fd int) { efd = fd })
@@ -3900,29 +3901,88 @@ func TestEndpointPeelOffNotificationStress(t *testing.T) {
 }
 
 func TestEndpointPeelOffMovesDataRemainder(t *testing.T) {
-	e, p, id, pid := endpointPair(t, nil, nil)
 	payload := []byte("message split across public calls")
-	if _, err := p.SendMsg(pid, payload, SendOptions{}); err != nil {
-		t.Fatal(err)
+	for _, size := range []int{0, 1, 7, len(payload) - 1, len(payload), len(payload) + 1} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			e, p, id, pid := endpointPair(t, nil, nil)
+			if _, err := p.SendMsg(pid, payload, SendOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			b := make([]byte, size)
+			n, info, err := e.RecvMsg(b)
+			want := min(size, len(payload))
+			if err != nil || n != want || info.EOR != (n == len(payload)) || !bytes.Equal(b[:n], payload[:n]) {
+				t.Fatalf("first piece: n=%d %q, %+v, %v", n, b[:n], info, err)
+			}
+			c, err := e.PeelOff(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = c.Abort() })
+			if n < len(payload) {
+				setReadDeadline(t, c, endpointWait)
+				tail := make([]byte, len(payload))
+				m, info, err := c.RecvMsg(tail)
+				if err != nil || !info.EOR || !bytes.Equal(tail[:m], payload[n:]) {
+					t.Fatalf("migrated tail: %q, %+v, %v", tail[:m], info, err)
+				}
+			}
+			if ids, err := e.AssocIDs(); err != nil || len(ids) != 0 {
+				t.Fatalf("endpoint retains %v, %v", ids, err)
+			}
+		})
 	}
-	b := make([]byte, 7)
-	n, info, err := e.RecvMsg(b)
-	if err != nil || n != len(b) || info.EOR || !bytes.Equal(b, payload[:n]) {
-		t.Fatalf("first piece: %q, %+v, %v", b[:n], info, err)
+}
+
+// A waiting reader owns recv.mu across the poller wait. PeelOff needs
+// only recordMu, which the callback releases before waiting.
+func TestEndpointPeelOffDoesNotWaitForIdleReader(t *testing.T) {
+	e, _, id, _ := endpointPair(t, nil, nil)
+	reached := make(chan struct{})
+	var once atomic.Bool
+	testHookRecvmsg = func(fd int, msg *syscall.Msghdr, flags int) (int, error) {
+		n, err := rawRecvmsg(fd, msg, flags)
+		if err == syscall.EAGAIN && once.CompareAndSwap(false, true) {
+			close(reached)
+		}
+		return n, err
 	}
-	c, err := e.PeelOff(id)
-	if err != nil {
-		t.Fatal(err)
+	setEndpointReadDeadline(t, e, endpointWait)
+	read := make(chan error, 1)
+	go func() { _, _, err := e.RecvMsg(make([]byte, 64)); read <- err }()
+	select {
+	case <-reached:
+	case <-time.After(endpointWait):
+		_ = e.Abort()
+		<-read
+		testHookRecvmsg = nil
+		t.Fatal("reader did not reach poller wait")
 	}
-	t.Cleanup(func() { _ = c.Abort() })
-	setReadDeadline(t, c, endpointWait)
-	tail := make([]byte, len(payload))
-	m, info, err := c.RecvMsg(tail)
-	if err != nil || !info.EOR || !bytes.Equal(tail[:m], payload[n:]) {
-		t.Fatalf("migrated tail: %q, %+v, %v", tail[:m], info, err)
+	type result struct {
+		c   *Conn
+		err error
 	}
-	if ids, err := e.AssocIDs(); err != nil || len(ids) != 0 {
-		t.Fatalf("endpoint retains %v, %v", ids, err)
+	done := make(chan result, 1)
+	go func() { c, err := e.PeelOff(id); done <- result{c, err} }()
+	var r result
+	select {
+	case r = <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Error("PeelOff waited behind an idle reader")
+		_ = e.SetReadDeadline(time.Now())
+		r = <-done
+	}
+	_ = e.SetReadDeadline(time.Now())
+	err := <-read
+	testHookRecvmsg = nil
+	if r.c != nil {
+		t.Cleanup(func() { _ = r.c.Abort() })
+	}
+	if r.err != nil {
+		t.Fatalf("PeelOff: %v", r.err)
+	}
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("idle reader: %v", err)
 	}
 }
 
