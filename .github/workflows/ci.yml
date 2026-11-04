@@ -376,6 +376,18 @@ jobs:
         with:
           go-version: stable
           cache: true
+      - name: Restore the emulator image
+        # snapshot.debian.org is slow and rate-limited, so the pinned
+        # emulator image is cached, keyed on its construction inputs. Only
+        # a push to main saves it, below, from this job, whose steps are
+        # all first-party; other runs only restore it. run.sh checks the
+        # image's architecture and the guest's kernel release against the
+        # committed testdata/bigendian/kernel-release.
+        id: emulator-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-sctp-bigendian-cache/*.image.tar.gz
+          key: sctp-bigendian-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('testdata/bigendian/Dockerfile', 'testdata/bigendian/boot.sh') }}
       - name: Run the socket suite against a big-endian kernel
         # qemu-user above remains useful for portable tests and fuzz seeds
         # in seconds, but cannot pass SOL_SCTP options to a native kernel.
@@ -391,6 +403,12 @@ jobs:
         env:
           SCTP_BIGENDIAN_CACHE: ${{ runner.temp }}/go-sctp-bigendian-cache
         run: testdata/bigendian/run.sh
+      - name: Save the emulator image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.emulator-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-sctp-bigendian-cache/*.image.tar.gz
+          key: ${{ steps.emulator-cache.outputs.cache-primary-key }}
       - name: Upload big-endian evidence
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

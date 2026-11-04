@@ -71,12 +71,16 @@ inputs. The source archive includes untracked Go inputs compiled by the suite. F
 inputs and prints the last 200 console lines. The host prints a PASS/FAIL/SKIP
 summary for each package in each state through the native Docker summarizer.
 
-The emulator image is rebuilt on every run from the digest-pinned distribution
-and signed snapshot packages. No saved emulator image is restored from workflow
-caches. The expected kernel release is committed in `kernel-release`; it is
-checked against the guest rather than learned from the image being checked.
-Docker build layers may be reused. Every run rebuilds its tests and boots a
-fresh guest. The script never prunes Docker or deletes another run's resources.
+The emulator image is built from the digest-pinned distribution and signed
+snapshot packages, and its compressed archive is cached under a key derived
+from the Dockerfile and boot script; snapshot.debian.org is slow and
+rate-limited. CI restores the archive in every run but saves it only from a
+push to main, in a job whose steps are all first-party. A restored image must
+still match the Docker server's architecture, and the expected kernel release
+is committed in `kernel-release`, so it is checked against the guest rather
+than learned from the image being checked. Every run rebuilds its tests and
+boots a fresh guest. The script never prunes Docker or deletes another run's
+resources, and removes its own per-run image tag.
 
 This qualifies the socket suite on one s390x distribution kernel. It does
 not qualify other big-endian architectures, kernel versions, race behavior

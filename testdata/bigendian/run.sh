@@ -89,9 +89,26 @@ CGO_ENABLED=0 GOOS=linux GOARCH=s390x "$go" test -c -o "$work/example.test" ./ex
 arch="$(docker version --format '{{.Server.Arch}}')"
 platform="linux/$arch"
 image="gomaja-sctp-bigendian:$nonce"
-# Rebuild from the digest-pinned distribution and signed snapshot packages.
-# Never load an emulator archive produced by another workflow run.
-docker build --platform "$platform" -t "$image" testdata/bigendian
+# The emulator image depends only on the pinned distribution, the snapshot
+# packages and boot.sh, so it is cached under a key derived from those
+# inputs, never with a test binary or the source tree. CI restores the
+# archive only as a main-branch run saved it (.github/workflows/ci.yml); a
+# local cache is the developer's own. Either way the guest's kernel is
+# checked against the committed kernel-release, not one read from the image.
+key="$arch-$("$work/supervise" hash testdata/bigendian/Dockerfile testdata/bigendian/boot.sh | cut -c1-24)"
+archive="$cache/$key.image.tar.gz"
+if [ -f "$archive" ] && gzip -dc "$archive" | docker load; then
+	docker tag "gomaja-sctp-bigendian:$key" "$image"
+else
+	docker build --platform "$platform" -t "$image" -t "gomaja-sctp-bigendian:$key" testdata/bigendian
+	partial="$(mktemp "$cache/$key.image.XXXXXXXX")"
+	docker save "gomaja-sctp-bigendian:$key" | gzip -1 > "$partial"
+	mv "$partial" "$archive"
+fi
+if [ "$(docker image inspect --format '{{.Architecture}}' "$image")" != "$arch" ]; then
+	echo "emulator image is not native to the Docker server" >&2
+	exit 1
+fi
 cp testdata/bigendian/kernel-release "$work/kernel-release"
 "$work/supervise" run "$work" "$image" "sctp-bigendian-$nonce" "$go" "$platform" &
 supervisor_pid=$!
