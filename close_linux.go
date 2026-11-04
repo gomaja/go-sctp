@@ -240,9 +240,10 @@ func (c *Conn) closeError(err error) error {
 // running out of time is an outcome, not an error. An Abort from another
 // goroutine during the wait sends the ABORT at once and makes Close return
 // nil. Close is graceful even with unread data: anything not consumed by
-// concurrent readers is discarded silently, so the peer sees a clean end.
-// Use Abort to signal loss. Another graceful Close, or any close after
-// descriptor release, returns an error matching net.ErrClosed. A
+// concurrent readers is discarded silently. The peer sees a clean end if
+// shutdown completes in time, or an ABORT when the grace period expires.
+// Use Abort to signal loss immediately. Another graceful Close, or any
+// close after descriptor release, returns an error matching net.ErrClosed. A
 // CloseWithTimeout with no grace overtakes a waiting Close as Abort does.
 func (c *Conn) Close() error {
 	if c == nil {

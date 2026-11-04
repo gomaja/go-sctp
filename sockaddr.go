@@ -235,12 +235,13 @@ var zoneIndexes = zoneCache{interfaces: net.Interfaces, now: time.Now}
 // net.InterfaceByName asks the kernel for the whole table every time. The
 // table is read again when it is older than zoneCacheTTL, and when a name is
 // missing from it, so an interface created since the last read is found at
-// once. Once a table exists, decimal zones never refresh it, even after the
-// TTL: existing numeric interface names still win, and encodeZone otherwise
-// uses the number as the index. Sending to an address zoned by index
-// therefore never triggers another interface dump. The table holds one entry
-// per interface the host had at the last read, and nothing else, so its size
-// is bounded by the host's interfaces, not by the names asked for.
+// once. A decimal name absent from an existing table never refreshes it,
+// even after the TTL: encodeZone uses the number as the index instead.
+// A real numeric interface name in the table still honours the TTL, so
+// removing or recreating the interface is observed on the next refresh.
+// The table holds one entry per interface the host had at the last read,
+// and nothing else, so its size is bounded by the host's interfaces, not by
+// the names asked for.
 type zoneCache struct {
 	mu      sync.RWMutex
 	byName  map[string]int
@@ -259,7 +260,7 @@ func (z *zoneCache) index(name string) (int, bool) {
 	fetched := !z.fetched.IsZero()
 	fresh := fetched && now.Sub(z.fetched) < zoneCacheTTL
 	z.mu.RUnlock()
-	if fresh && ok || fetched && isDecimal(name) {
+	if fresh && ok || fetched && !ok && isDecimal(name) {
 		return idx, ok
 	}
 	return z.refresh(now, name)

@@ -220,7 +220,8 @@
 // aborts the association if the peer has not completed it by then.
 // Conn.Close and Endpoint.Close are graceful even with unread data, which
 // is silently discarded unless concurrent readers consume it before release.
-// The peer sees a clean end; use Abort to signal loss.
+// The peer sees a clean end if shutdown completes in time, or an ABORT
+// when the grace period expires. Use Abort to signal loss immediately.
 // [Conn.Abort] sends an ABORT at once, and makes a Close that is still
 // waiting send it too.
 //

@@ -680,7 +680,8 @@ func (e *Endpoint) sendMsg(ctx context.Context, id AssocID, b []byte, opts *Send
 }
 
 // checkEndpointSend validates an Endpoint send without any lock or system
-// call. Every refusal matches syscall.EINVAL.
+// call. Every refusal matches syscall.EINVAL, except an oversized message
+// (syscall.EMSGSIZE).
 func checkEndpointSend(id AssocID, b []byte, opts *SendOptions) error {
 	if err := assocIDArg("SendMsg", id); err != nil {
 		return err
@@ -1124,7 +1125,9 @@ func (e *Endpoint) closeError(err error) error {
 // affected. An Abort from another goroutine during the wait sends the
 // ABORTs at once and makes Close return nil. Close remains graceful with
 // unread data: anything concurrent readers have not consumed is silently
-// discarded at release, so peers see a clean end. Use Abort to signal loss.
+// discarded at release. Peers see a clean end if shutdown completes in
+// time, or an ABORT when the grace period expires. Use Abort to signal
+// loss immediately.
 // A second Close, or any close after Abort, returns an error matching
 // net.ErrClosed. Errors are *net.OpError with Op "close".
 func (e *Endpoint) Close() error {
