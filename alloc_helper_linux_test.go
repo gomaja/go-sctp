@@ -450,8 +450,8 @@ func TestHelperStderrHasNoCopyGoroutine(t *testing.T) {
 	}
 	setReadDeadline(t, c, 10*time.Second)
 	buf := make([]byte, 64)
-	if n, _, err := c.RecvMsg(buf); err != nil || n != len(buf) || binary.BigEndian.Uint32(buf) != 0 {
-		t.Fatalf("helper message = %d bytes, %v, want 64 bytes numbered zero", n, err)
+	if n, info, err := c.RecvMsg(buf); err != nil || n != len(buf) || !info.EOR || binary.BigEndian.Uint32(buf) != 0 {
+		t.Fatalf("helper message = %d bytes, EOR %t, prefix %x, %v; want one complete 64-byte message numbered zero", n, info.EOR, buf[:4], err)
 	}
 }
 
