@@ -24,13 +24,16 @@
 // [ListenEndpoint] and [OpenEndpoint] return an [*Endpoint], whose methods
 // take the association they act on as an [AssocID]. Associations start with
 // [Endpoint.Connect] or at a peer's request, and the Endpoint reports each
-// one's start and end with an [AssocChange] notification.
+// one's setup outcome and established end with an [AssocChange]
+// notification. [Endpoint.CloseAssoc] during setup cancels quietly,
+// without a notification; the caller removes its routing entry itself.
 // [Endpoint.PeelOff] moves one association onto a *Conn of its own (RFC
-// 6458 §9.2). Linux moves the association before it allocates the new
-// descriptor, and loses the association when no descriptor can be
-// allocated; PeelOff checks the process's limit first, but neither a
-// descriptor another goroutine takes meanwhile nor the system-wide limit
-// can be ruled out.
+// 6458 §9.2), once it is up: during setup it fails with an error matching
+// syscall.EINPROGRESS, so wait for AssocCommUp. Linux moves the association
+// before it allocates the new descriptor, and loses the association when no
+// descriptor can be allocated; PeelOff checks the process's limit first, but
+// neither a descriptor another goroutine takes meanwhile nor the system-wide
+// limit can be ruled out.
 //
 // Everything that has to be decided before an association exists is a
 // field of [Config]: the streams and extensions offered in the INIT,
