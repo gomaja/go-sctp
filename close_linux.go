@@ -182,8 +182,8 @@ func rawSendEnd(fd int, flag uint16, assoc AssocID, cause []byte) error {
 // socket without starting a SHUTDOWN (sctp_shutdown acts only on
 // SEND_SHUTDOWN), except on a listening one-to-many socket, where
 // sctp_shutdown does nothing. On other sockets a callback blocked inside
-// recvmsg(2) returns and
-// drops its reference to the file. A blocked callback holds that reference,
+// recvmsg(2) returns and drops its reference to the file. A blocked
+// callback holds that reference,
 // the descriptor's final close(2), the one that sends the ABORT, waits for
 // the last reference (internal/poll: FD.Close), and a descriptor put back
 // in blocking mode through SyscallConn would otherwise keep Close waiting

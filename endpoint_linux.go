@@ -714,8 +714,8 @@ func checkEndpointSend(id AssocID, b []byte, opts *SendOptions) error {
 // until the last; readers that share the endpoint must keep one message's
 // pieces together themselves. PeelOff between those calls moves the
 // unread remainder of that association's data message to the Conn
-// (RFC 6458 §9.2); continue reading it there. A read of data makes no allocation. An empty
-// b returns 0 at once, and consumes nothing.
+// (RFC 6458 §9.2); continue reading it there. A read of data makes no
+// allocation. An empty b returns 0 at once, and consumes nothing.
 //
 // Every message names one real association: data that arrives without
 // SCTP_RCVINFO, which the package enables before any association exists
@@ -925,8 +925,8 @@ func (e *Endpoint) abortInterruptedNotification(cause error) error {
 //
 // A scope selector or a negative id is refused with an error matching
 // syscall.EINVAL before any system call, and an id the endpoint does not
-// hold fails with the kernel's EINVAL (sctp_getsockopt_sctp_status). Errors are
-// *net.OpError with Op "peeloff".
+// hold fails with the kernel's EINVAL (sctp_getsockopt_sctp_status).
+// Errors are *net.OpError with Op "peeloff".
 func (e *Endpoint) PeelOff(id AssocID) (*Conn, error) {
 	if !e.opened() {
 		return nil, e.peelError(net.ErrClosed)
@@ -1191,8 +1191,9 @@ func (e *Endpoint) closeError(err error) error {
 // waits are shut down too, and associations already peeled off are not
 // affected. An Abort from another goroutine during the wait sends the
 // ABORTs at once and makes Close return nil. Whatever arrives during the
-// wait and is not consumed by concurrent readers is discarded with the descriptor. A second Close, or any close
-// after Abort, returns an error matching net.ErrClosed. Errors are
+// wait and is not consumed by concurrent readers is discarded with the
+// descriptor. A second Close, or any close after Abort, returns an error
+// matching net.ErrClosed. Errors are
 // *net.OpError with Op "close".
 func (e *Endpoint) Close() error {
 	if e == nil {

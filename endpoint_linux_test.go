@@ -3954,7 +3954,7 @@ func TestEndpointPeelOffDoesNotWaitForIdleReader(t *testing.T) {
 	case <-reached:
 	case <-time.After(endpointWait):
 		_ = e.Abort()
-		<-read
+		_ = <-read
 		testHookRecvmsg = nil
 		t.Fatal("reader did not reach poller wait")
 	}
