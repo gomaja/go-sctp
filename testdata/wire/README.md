@@ -15,7 +15,11 @@ testdata/wire/run.sh [-race] [-run REGEX] [-only wire|twohost]
 - `-race` builds the test binary with the race detector.
 - `-run REGEX` selects cases (subtests of `TestWire` and `TestTwoHost`) and
   the claims of the same names. The capture sentinel (below) always runs.
-- `-only wire` or `-only twohost` runs one of the two phases.
+- `-only wire` or `-only twohost` runs one of the two phases. When selecting
+  a two-host case, supply `-only twohost` as well, for example
+  `testdata/wire/run.sh -only twohost -run etimedout-dialed`. Without it,
+  the wire phase has no matching claim and fails closed. A selection that
+  matches no case in the requested phase is an error.
 - `WIRE_OUT` names the artifact directory (default: a new temporary one);
   `WIRE_GO_IMAGE` the Go image the harness image is built from (default
   `golang:1.26.5-bookworm`).
@@ -25,7 +29,9 @@ A prepared `WIRE_GO_IMAGE` containing every capture tool avoids package
 downloads during the image build.
 
 It needs only Docker, with privileged containers allowed, on Linux or Docker
-Desktop, runs unattended, and its exit status is the verdict: 0 only when
+Desktop. Its privileged containers execute the checked-out branch as root,
+so run it only on code you trust. It runs unattended, and its exit status is
+the verdict: 0 only when
 every test on both hosts passed, none skipped, and every claim held. It
 removes every container, network and image tag it creates, also when it is
 interrupted (INT or TERM end it after the cleanup).
@@ -105,7 +111,7 @@ own assertions are the verdict.
   frames the server sends from it. The analyzer never matches a port alone,
   and `run.sh` sets `net.ipv4.ip_local_port_range` to 49152-60999 on both
   hosts (the dynamic range of RFC 6335 §6), so that no dialer's own
-  ephemeral port can equal a case port (41001-41109) or the control port;
+  ephemeral port can equal a case port (41001-41110) or the control port;
   the tests refuse to run when a case port lies in the range.
 
 ## Timing
@@ -180,8 +186,10 @@ SACK or FORWARD TSN fields that do not line up with the chunk types, a frame
 from an unknown host or larger than the MTU allows, a missing sentinel, a
 fact recorded twice, facts for a case no claim checks, a claim without facts
 or without a single frame on its port: each is a failure, never a skip. Its
-own tests (`go test ./testdata/wire/analyze`, which `run.sh` runs) pin those
-rules and each claim's pass and fail cases on synthetic captures.
+own tests (`go test ./testdata/wire/analyze`, which `run.sh` runs) exercise
+parser and selection failures and every claim checker's success and failure
+cases with synthetic frames and facts. These fixtures test the analyzer;
+the two-host runs and their captures establish the protocol behaviour.
 
 ## Versions
 

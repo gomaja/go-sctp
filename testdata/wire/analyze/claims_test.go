@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"testing"
+	"time"
 )
 
 func TestCheckPositiveCounts(t *testing.T) {
@@ -30,7 +31,13 @@ func TestCheckPositiveCounts(t *testing.T) {
 					if value != "" {
 						want = tc.key + " must be positive"
 					}
-					wantFail(t, check(t, claimNamed(t, tc.claim), []frame{c2s(1, 0, 41001, chunkINIT)}, facts), want)
+					frames := []frame{c2s(1, 0, 41001, chunkINIT)}
+					if tc.claim == "nowait-refusal" {
+						facts["received_fill"] = "0"
+						facts["refused_ns"] = ns(1)
+						frames = append(frames, withData(c2s(2, 2, 41001), dataChunk{tsn: 1, ppid: ppidLast}))
+					}
+					wantFail(t, check(t, claimNamed(t, tc.claim), frames, facts), want)
 				})
 			}
 		})
@@ -59,7 +66,11 @@ func checkCaptureCases(t *testing.T, name string, good []frame, facts map[string
 			}
 			changed := maps.Clone(facts)
 			frames = tc.change(frames, changed)
-			wantFail(t, check(t, c, frames, changed), tc.want)
+			if tc.want == "" {
+				wantPass(t, check(t, c, frames, changed))
+			} else {
+				wantFail(t, check(t, c, frames, changed), tc.want)
+			}
 		})
 	}
 }
@@ -139,6 +150,9 @@ func TestCheckNoWaitRefusal(t *testing.T) {
 					return append(f, withData(c2s(4, 21, 41002), dataChunk{tsn: 4, ppid: ppidRefused}))
 				}, "refused message"},
 				removeFrame(0, "distinct queued messages"),
+				{"extra-message", func(f []frame, _ map[string]string) []frame {
+					return append(f, withData(c2s(4, 21, 41001), dataChunk{tsn: 99, ppid: ppidFill}))
+				}, "distinct queued messages"},
 				removeFrame(len(good)-1, "after the refusal"),
 				factCase("received_fill", "0", "the server received"),
 			})
@@ -156,6 +170,15 @@ func TestCheckPath(t *testing.T) {
 				good = append(good, path, withData(c2s(2*i+2, float64(2*i+1), 41001), dataChunk{tsn: uint32(2*i + 2), ppid: ppidPrimary}))
 			}
 			cases := []captureCase{removeFrame(0, "messages with PPID"), removeFrame(1, "messages with PPID")}
+			for _, ppid := range []uint32{ppidPath, ppidPrimary} {
+				cases = append(cases, captureCase{fmt.Sprintf("extra-message-%x", ppid), func(f []frame, _ map[string]string) []frame {
+					extra := withData(c2s(9, 9, 41001), dataChunk{tsn: 99, ppid: ppid})
+					if ppid == ppidPath {
+						extra.dst = serverB
+					}
+					return append(f, extra)
+				}, "messages with PPID"})
+			}
 			for i := range good {
 				cases = append(cases, captureCase{fmt.Sprintf("wrong-path-%d", i), func(f []frame, _ map[string]string) []frame {
 					if f[i].dst == serverB {
@@ -182,11 +205,21 @@ func TestCheckCloseAfterBurst(t *testing.T) {
 			facts := map[string]string{"port": "41001", "count": fmt.Sprint(count), "close_ns": ns(10), "received": fmt.Sprint(count), "eof": "1"}
 			checkCaptureCases(t, "close-after-burst", good, facts, []captureCase{
 				removeFrame(0, "distinct messages"),
+				{"extra-message", func(f []frame, _ map[string]string) []frame {
+					return append(f, withData(c2s(9, 19, 41001), dataChunk{tsn: 99, ppid: ppidBurst}))
+				}, "distinct messages"},
 				factCase("close_ns", ns(float64(11+count)), "nothing was queued"),
+				factCase("close_ns", ns(float64(10+count)), "nothing was queued"),
+				factCase("close_ns", fmt.Sprint(good[count-1].at.UnixNano()-1), ""),
+				{"shutdown-at-data", func(f []frame, _ map[string]string) []frame { f[count+1].at = f[count-1].at; return f }, "precedes DATA"},
+				{"sack-at-shutdown", func(f []frame, _ map[string]string) []frame { f[count].at = f[count+1].at; return f }, ""},
 				{"shutdown-before-data", func(f []frame, _ map[string]string) []frame { f[count+1].at = t0; return f }, "precedes DATA"},
 				removeFrame(count, "no SACK"),
 				{"sack-too-small", func(f []frame, _ map[string]string) []frame { f[count].sackCum[0]--; return f }, "no SACK"},
-				{"shutdown-before-sack", func(f []frame, _ map[string]string) []frame { f[count].at = f[count+1].at.Add(1); return f }, "came before the SACK"},
+				{"shutdown-before-sack", func(f []frame, _ map[string]string) []frame {
+					f[count].at = f[count+1].at.Add(time.Nanosecond)
+					return f
+				}, "came before the SACK"},
 				removeFrame(count+1, "shutdown never started"),
 				removeFrame(count+2, "never acknowledged"),
 				removeFrame(count+3, "never completed"),
@@ -216,11 +249,26 @@ func TestCheckCloseWhileFull(t *testing.T) {
 					s2c(i*6+5, 22, port, chunkSHUTDOWNACK),
 					c2s(i*6+6, 23, port, chunkSHUTDOWNCOMPLETE))
 			}
-			cases := []captureCase{factCase("eof", "0", "io.EOF")}
+			cases := []captureCase{
+				factCase("eof", "0", "io.EOF"),
+				factCase("close_ns", ns(20), "before Close was called"),
+				factCase("close_ns", fmt.Sprint(t0.Add(20*time.Millisecond).UnixNano()-1), ""),
+				factCase("drain_ns", ns(21), "before the server started reading"),
+				factCase("drain_ns", fmt.Sprint(t0.Add(21*time.Millisecond).UnixNano()-1), ""),
+				factCase("grace_ns", "11000000", "after the grace period"),
+				factCase("grace_ns", "11000001", ""),
+			}
 			for i := range c.ports {
 				base := i * 6
 				cases = append(cases,
+					captureCase{fmt.Sprintf("data-at-shutdown-%d", i), func(f []frame, _ map[string]string) []frame { f[base+1].at = f[base+3].at; return f }, "precedes queued DATA"},
+					captureCase{fmt.Sprintf("sack-at-shutdown-%d", i), func(f []frame, _ map[string]string) []frame { f[base+2].at = f[base+3].at; return f }, ""},
 					removeFrame(base, "distinct queued messages"),
+					captureCase{fmt.Sprintf("extra-message-%d", i), func(f []frame, _ map[string]string) []frame {
+						f[base+2].sackCum[0] = 99
+						extra := withData(c2s(20, 1, uint16(41001+i)), dataChunk{tsn: 99, ppid: ppidFill})
+						return append(f[:base+1], append([]frame{extra}, f[base+1:]...)...)
+					}, "distinct queued messages"},
 					removeFrame(base+2, "no SACK"),
 					removeFrame(base+3, "shutdown never started"),
 					removeFrame(base+4, "never acknowledged"),
@@ -228,11 +276,17 @@ func TestCheckCloseWhileFull(t *testing.T) {
 					factCase(fmt.Sprintf("received_%d", i), "1", "the server received"),
 					captureCase{fmt.Sprintf("early-sack-%d", i), func(f []frame, _ map[string]string) []frame { f[base+2].at = t0; return f }, "before Close was called"},
 					captureCase{fmt.Sprintf("early-shutdown-%d", i), func(f []frame, _ map[string]string) []frame { f[base+3].at = t0; return f }, "before the server started reading"},
-					captureCase{fmt.Sprintf("late-data-%d", i), func(f []frame, _ map[string]string) []frame { f[base+1].at = f[base+3].at.Add(1); return f }, "precedes queued DATA"},
-					captureCase{fmt.Sprintf("late-sack-%d", i), func(f []frame, _ map[string]string) []frame { f[base+2].at = f[base+3].at.Add(1); return f }, "came before the SACK"},
+					captureCase{fmt.Sprintf("late-data-%d", i), func(f []frame, _ map[string]string) []frame {
+						f[base+1].at = f[base+3].at.Add(time.Nanosecond)
+						return f
+					}, "precedes queued DATA"},
+					captureCase{fmt.Sprintf("late-sack-%d", i), func(f []frame, _ map[string]string) []frame {
+						f[base+2].at = f[base+3].at.Add(time.Nanosecond)
+						return f
+					}, "came before the SACK"},
 					captureCase{fmt.Sprintf("late-shutdown-%d", i), func(f []frame, _ map[string]string) []frame {
 						for j := 3; j < 6; j++ {
-							f[base+j].at = f[base+j].at.Add(201000000)
+							f[base+j].at = f[base+j].at.Add(201 * time.Millisecond)
 						}
 						return f
 					}, "not pending"},
@@ -240,6 +294,21 @@ func TestCheckCloseWhileFull(t *testing.T) {
 						return append(f, c2s(20, 30, uint16(41001+i), chunkABORT))
 					}, "ABORT"},
 				)
+			}
+			for _, gap := range []time.Duration{200*time.Millisecond - time.Nanosecond, 200 * time.Millisecond, 200*time.Millisecond + time.Nanosecond} {
+				want := ""
+				if gap > 200*time.Millisecond {
+					want = "not pending"
+				}
+				cases = append(cases, captureCase{fmt.Sprintf("shutdown-gap-%v", gap), func(f []frame, _ map[string]string) []frame {
+					for i := range c.ports {
+						base := i * 6
+						for j := 3; j < 6; j++ {
+							f[base+j].at = f[base+j].at.Add(gap - time.Millisecond)
+						}
+					}
+					return f
+				}, want})
 			}
 			cases = append(cases, factCase("grace_ns", "10000000", "after the grace period"))
 			checkCaptureCases(t, name, good, facts, cases)
@@ -283,7 +352,7 @@ func TestCheckGracefulClose(t *testing.T) {
 				removeFrame(1, "Close never started"),
 				removeFrame(2, "never acknowledged"),
 				removeFrame(3, "never completed"),
-				{"late-data", func(f []frame, _ map[string]string) []frame { f[0].at = f[1].at.Add(1); return f }, "DATA"},
+				{"late-data", func(f []frame, _ map[string]string) []frame { f[0].at = f[1].at.Add(time.Nanosecond); return f }, "DATA"},
 				{"abort", func(f []frame, _ map[string]string) []frame { return append(f, s2c(5, 13, 41001, chunkABORT)) }, "ABORT"},
 				factCase("eof", "0", "io.EOF"),
 			})
