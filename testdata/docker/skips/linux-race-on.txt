@@ -21,3 +21,5 @@ github.com/gomaja/go-sctp TestTwoHost
 github.com/gomaja/go-sctp TestValidateSendOptionsAllocatesNothingOnSuccess
 github.com/gomaja/go-sctp TestWire
 github.com/gomaja/go-sctp TestZoneCacheHitAllocatesNothing
+# Allocation measurements are not meaningful under the race detector.
+github.com/gomaja/go-sctp TestReadMsgMeasurementBudget

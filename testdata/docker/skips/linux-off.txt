@@ -3,3 +3,6 @@ github.com/gomaja/go-sctp TestTwoHost
 github.com/gomaja/go-sctp TestWire
 # Interleaving cannot be negotiated with net.sctp.intl_enable=0.
 github.com/gomaja/go-sctp TestNegotiatedExtensionsFollowConfig/InterleavingSupported_true
+# I-DATA cannot be negotiated with net.sctp.intl_enable=0.
+github.com/gomaja/go-sctp TestReadMsgInterleavingRefused/true
+github.com/gomaja/go-sctp TestReadMsgEndedInterleaving/true

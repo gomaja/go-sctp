@@ -22,3 +22,8 @@ github.com/gomaja/go-sctp TestTwoHost
 github.com/gomaja/go-sctp TestValidateSendOptionsAllocatesNothingOnSuccess
 github.com/gomaja/go-sctp TestWire
 github.com/gomaja/go-sctp TestZoneCacheHitAllocatesNothing
+# I-DATA cannot be negotiated with net.sctp.intl_enable=0.
+github.com/gomaja/go-sctp TestReadMsgInterleavingRefused/true
+github.com/gomaja/go-sctp TestReadMsgEndedInterleaving/true
+# Allocation measurements are not meaningful under the race detector.
+github.com/gomaja/go-sctp TestReadMsgMeasurementBudget
