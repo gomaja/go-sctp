@@ -138,8 +138,9 @@ func (s *recvState) bind(term *termState, subs *atomic.Uint32) {
 // every socket, fills Rcv. When b is shorter than the message, the rest is
 // returned by the next reads, and EOR is false until the last. With
 // ReceiveNxtInfo on, Nxt describes the next message queued, if there is
-// one (RFC 6458 §5.3.6). A read of data makes no allocation. An empty b
-// returns 0 at once, and consumes nothing.
+// one (RFC 6458 §5.3.6). A read of data into a reused heap buffer makes
+// no allocation; a fresh local array escapes and costs one allocation.
+// An empty b returns 0 at once, and consumes nothing.
 //
 // Notifications share the receive queue with data. With a
 // NotificationHandler, RecvMsg hands each notification the caller receives
@@ -209,7 +210,8 @@ func (c *Conn) RecvMsg(b []byte) (int, MsgInfo, error) {
 // caller receives to the NotificationHandler, when there is one, and
 // skipping it otherwise. A message longer than b is returned over several
 // reads, with nothing to mark where it ends; use RecvMsg or ReadMsg when
-// the message boundary matters. A read of data makes no allocation. Errors
+// the message boundary matters. A read of data into a reused heap buffer makes no allocation; a fresh
+// local array escapes and costs one allocation. Errors
 // are as for RecvMsg, except that Read ignores MSG_CTRUNC, since it returns
 // no ancillary data.
 func (c *Conn) Read(b []byte) (int, error) {

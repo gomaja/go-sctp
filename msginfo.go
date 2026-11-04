@@ -87,10 +87,11 @@ type SendOptions struct {
 	// others) complete a link-local address the same way.
 	Path netip.Addr
 
-	// More says more messages follow at once, so the kernel may hold this
-	// one briefly to bundle it with them (MSG_MORE). The last
-	// message of a burst must leave More false, or it can sit until the next
-	// send.
+	// More lets Linux hold messages for bundling (MSG_MORE). The hold is
+	// per association and has no time limit: only a later successful send
+	// without More or a shutdown releases it. A failed send does not release
+	// it. Linux sets the hold only after a send passes every check
+	// (sctp_sendmsg_to_asoc); there is no timer to release it.
 	More bool
 
 	// NoWait makes a single attempt (MSG_DONTWAIT) instead of waiting for

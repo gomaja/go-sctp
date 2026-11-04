@@ -363,7 +363,7 @@ func TestCloseAfterCompletedHandshakeGivesPeerEOF(t *testing.T) {
 
 // TestGracefulCloseSurvivesSignals: a Close under a storm of signals must
 // still read as a graceful end at the peer, not an ABORT. A signal
-// arriving during the close path's own status-query read makes it return
+// arriving during the close path's own status query can make it return
 // EINTR (v1 TestGracefulCloseSurvivesSignals; see signalStorm).
 func TestGracefulCloseSurvivesSignals(t *testing.T) {
 	stop := signalStorm(t)
@@ -827,7 +827,8 @@ func TestCloseReleasesParkedReaderAndWriter(t *testing.T) {
 }
 
 // TestCloseBoundsParkedSendMsg checks that a send waiting for buffer space
-// cannot delay the close past its grace period.
+// cannot delay the close past its grace period. Local shutdown releases
+// the send with ESHUTDOWN before the descriptor is closed.
 func TestCloseBoundsParkedSendMsg(t *testing.T) {
 	const grace = 300 * time.Millisecond
 	sender, receiver := connPair(t, &Config{WriteBuffer: new(1 << 20)}, &Config{ReadBuffer: new(closingReadBuffer)})
@@ -860,8 +861,8 @@ func TestCloseBoundsParkedSendMsg(t *testing.T) {
 	}
 	select {
 	case err := <-sendDone:
-		if !errors.Is(err, net.ErrClosed) {
-			t.Errorf("parked SendMsg = %v, want net.ErrClosed", err)
+		if !errors.Is(err, syscall.ESHUTDOWN) {
+			t.Errorf("parked SendMsg = %v, want ESHUTDOWN", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("parked SendMsg did not return after Close")
@@ -1364,5 +1365,26 @@ func TestZeroConnCloseNetwork(t *testing.T) {
 	var op *net.OpError
 	if err := c.Close(); !errors.As(err, &op) || op.Net != "sctp" {
 		t.Fatalf("zero Conn Close = %#v, want sctp network", err)
+	}
+}
+
+func TestPeeledShutdownLatchedFailureOnce(t *testing.T) {
+	c := fakeConn(&fakeRawConn{}, nil)
+	c.kind = kindPeeled
+	c.term.mu.Lock()
+	c.term.err = syscall.ECONNRESET
+	c.term.mu.Unlock()
+	calls := 0
+	hookSendmsg(t, func(int, *syscall.Msghdr, int) (int, error) { calls++; return 0, nil })
+	err := c.Shutdown()
+	var call *os.SyscallError
+	if !errors.Is(err, syscall.ECONNRESET) || !errors.As(err, &call) || call.Syscall != "sendmsg" {
+		t.Fatalf("first Shutdown = %v, want sendmsg ECONNRESET", err)
+	}
+	if err := c.Shutdown(); err != nil {
+		t.Fatalf("later Shutdown = %v, want nil", err)
+	}
+	if calls != 0 {
+		t.Fatalf("latched failure made %d sends", calls)
 	}
 }

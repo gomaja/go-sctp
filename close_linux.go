@@ -123,7 +123,7 @@ func (o *sockCloseOps) sendEOF(fd int) error {
 	o.term.mu.Lock()
 	defer o.term.mu.Unlock()
 	if err := o.term.err; err != nil {
-		return err
+		return eofSendError(err)
 	}
 	err := rawSendEOF(fd)
 	if err != nil {
@@ -195,9 +195,8 @@ func rawSendEnd(fd int, flag uint16, assoc AssocID, cause []byte) error {
 // the descriptor's final close(2), the one that sends the ABORT, waits for
 // the last reference (internal/poll: FD.Close), and a descriptor put back
 // in blocking mode through SyscallConn would otherwise keep Close waiting
-// for data that may never come. Its error is ignored: a socket with no
-// association answers ENOTCONN (net/ipv4/af_inet.c: inet_shutdown), which
-// is no reason to skip the release.
+// for data that may never come. Its error is ignored: an error is no
+// reason to skip releasing the descriptor.
 //
 // The release happens whatever the SO_LINGER step reported. Its error is
 // returned, joined with the release's, since without it the close starts a
@@ -238,9 +237,11 @@ func (c *Conn) closeError(err error) error {
 // (RFC 9260 §9.1) if it has not by then. It returns nil in both cases:
 // running out of time is an outcome, not an error. An Abort from another
 // goroutine during the wait sends the ABORT at once and makes Close return
-// nil. Whatever arrives from the peer during the wait is discarded with the
-// descriptor. A second Close, or any close after Abort, returns an error
-// matching net.ErrClosed.
+// nil. Close is graceful even with unread data: anything not consumed by
+// concurrent readers is discarded silently, so the peer sees a clean end.
+// Use Abort to signal loss. Another graceful Close, or any close after
+// descriptor release, returns an error matching net.ErrClosed. A
+// CloseWithTimeout with no grace overtakes a waiting Close as Abort does.
 func (c *Conn) Close() error {
 	if c == nil {
 		return opError("close", "sctp", nil, nil, net.ErrClosed)
@@ -271,8 +272,10 @@ func (c *Conn) Abort() error {
 
 // Shutdown starts the graceful shutdown (RFC 9260 §9.2) and returns at
 // once, without releasing the descriptor. While the shutdown is in
-// progress, sends fail with an error matching syscall.ESHUTDOWN, and once
-// the association is gone with syscall.EPIPE. Reads keep delivering what
+// progress, new sends fail with syscall.ESHUTDOWN, and once
+// the association is gone with syscall.EPIPE. A parked send is woken;
+// its caller deadline and context interruption retain their precedence
+// (Conn.SendMsgContext). Reads keep delivering what
 // the peer still sends, since the peer finishes its outstanding data
 // before it answers, and then return io.EOF when the shutdown completes.
 // Close is still needed afterwards to release the descriptor; it returns
@@ -282,7 +285,9 @@ func (c *Conn) Abort() error {
 //
 // On a one-to-one socket this is shutdown(2) with SHUT_WR; on a
 // connection peeled off an Endpoint, where Linux ignores shutdown(2), it
-// is an empty SCTP_EOF send. A second Shutdown returns nil: Linux ignores
+// is an empty SCTP_EOF send. The first Shutdown reports startShutdown's
+// result, including a peeled connection's latched failure. Every later
+// call returns nil without another attempt: Linux ignores
 // a second SHUTDOWN primitive in every shutdown state
 // (net/sctp/sm_statetable.c: sctp_sf_ignore_primitive).
 //
@@ -292,7 +297,7 @@ func (c *Conn) Abort() error {
 // except on a connection whose association ended before Accept, which
 // Linux handed over closed and answers with ENOTCONN (net/ipv4/af_inet.c:
 // inet_shutdown). On a peeled connection whose failure a read or send has
-// already reported, Shutdown returns that error again, without a send.
+// already reported, the first Shutdown returns that error without a send.
 // Errors are *net.OpError with Op "close".
 func (c *Conn) Shutdown() error {
 	if c == nil {

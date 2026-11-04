@@ -74,8 +74,8 @@ var testHookSendWriteReturn func()
 
 // noContext is the context of an ordinary send, SendMsg's, Write's and
 // Endpoint.SendMsg's: none. Such a send checks no context, waits for the
-// send lock until it gets it, and skips the deadline bookkeeping that only
-// a context's interrupt reads (sendState.send).
+// send lock until it gets it. Deadline bookkeeping is needed only on a
+// buffer wait, where local shutdown can interrupt it (sendState.send).
 var noContext context.Context
 
 // sendState is a Conn's or an Endpoint's send storage, reused by every
@@ -190,11 +190,13 @@ func (s *sendState) bind(term *termState) {
 // (RFC 6458 §§5.3, 9.12), and returns len(b) once the kernel has queued it.
 // Unless opts.NoWait is set, it waits for send-buffer space, in the
 // runtime poller, until the write deadline passes or the connection is
-// closed; with NoWait, a send that finds no space fails at once with an
-// error matching syscall.EAGAIN, and nothing of the message is queued. A
-// successful, uncontended SendMsg makes no allocation with no Path zone or a
-// numeric zone. A zone given by interface name allocates only when the package
-// reads the host's interface table again (at most once a minute, or for a
+// closed. With NoWait, after acquiring the send lock a send that finds no
+// space fails with syscall.EAGAIN, and nothing of the message is queued. A
+// successful, uncontended SendMsg with a reused heap buffer makes no
+// allocation with no Path zone or a numeric zone. A fresh local array
+// escapes through iov.Base and costs one allocation. A zone given by
+// interface name allocates only when the package reads the host's interface
+// table again (at most once a minute, or for a
 // name it has not seen). SendMsg keeps nothing of b or opts after it
 // returns. On contention, the lock lazily creates its queue and uses pooled
 // waiters; first use, higher peak contention or a pool refill can allocate.
@@ -214,11 +216,18 @@ func (s *sendState) bind(term *termState) {
 // that ended before Accept, there is no peer to choose, and a send with
 // Path fails as any other send does.
 //
+// A message longer than Linux's MAX_RW_COUNT (MaxInt32 rounded down to a
+// page boundary) is refused with syscall.EMSGSIZE before any system call.
+// An unexpected short send returns its count with io.ErrShortWrite; the
+// tail is never retried, since that would be a second SCTP message.
+//
 // Every error is a *net.OpError with Op "write". Once the association has
-// failed, every send returns the error Linux reported for it; once a
-// shutdown has started, sends fail with an error matching
-// syscall.ESHUTDOWN, and once a gracefully ended association is gone, with
-// syscall.EPIPE, never with a signal.
+// failed, every send returns the error Linux reported for it. New sends
+// fail with syscall.ESHUTDOWN while shutdown is in progress and syscall.EPIPE
+// once a gracefully ended association is gone. Local Shutdown also wakes
+// a send already waiting for buffer space. A peer's SHUTDOWN does not wake
+// that wait on Linux: it ends when SACKs free space, the association ends,
+// or a deadline, context interruption or local close releases it.
 //
 // [Conn.SendMsgContext] is SendMsg with a context, which can end its wait
 // for the send lock and for buffer space.
@@ -231,9 +240,9 @@ func (c *Conn) SendMsg(b []byte, opts SendOptions) (int, error) {
 // write deadline and Close also end the buffer wait. A nil ctx is refused
 // with an error matching syscall.EINVAL. A ctx done on entry means
 // nothing is validated or sent; ctx is checked again after taking the
-// lock. Success is (len(b), nil), and any error means nothing of the
-// message was queued: RFC 6458 §3.1.4 makes sendmsg atomic unless explicit
-// EOR is enabled, and Linux has no explicit EOR (see SndInfo). No attempt
+// lock. Success is (len(b), nil). Except for io.ErrShortWrite, an error means
+// nothing of the message was queued: RFC 6458 §3.1.4 makes sendmsg atomic
+// unless explicit EOR is enabled, and Linux has no explicit EOR (see SndInfo). No attempt
 // outlives the call, and known kernel acceptance wins over cancellation.
 // Cancellation preserves the caller's latest write deadline, including
 // one set during the call, and never touches the read deadline. Errors
@@ -299,7 +308,7 @@ func (c *Conn) writeError(err error) error {
 // checkSend validates a send without taking any lock, and encodes
 // opts.Path, when it is set and the connection has an association, into
 // name, returning the encoded length (0 without Path). Every refusal
-// matches syscall.EINVAL.
+// matches syscall.EINVAL, except an oversized message (syscall.EMSGSIZE).
 func (c *Conn) checkSend(b []byte, opts *SendOptions, name *[sizeSockaddrIn6]byte) (int, error) {
 	if err := checkSendSize(len(b)); err != nil {
 		return 0, err
@@ -331,9 +340,11 @@ func (c *Conn) checkSend(b []byte, opts *SendOptions, name *[sizeSockaddrIn6]byt
 	return n, nil
 }
 
-// checkSendSize checks a message length without accessing its bytes.
+// Linux sendmsg limits one call to MAX_RW_COUNT, INT_MAX rounded down
+// to a page boundary. Compute it once so validation is only a comparison.
 var maxSendSize = math.MaxInt32 &^ (os.Getpagesize() - 1)
 
+// checkSendSize checks a message length without accessing its bytes.
 func checkSendSize(n int) error {
 	if n <= 0 {
 		return invalidArg("a send needs a message of at least one byte")
@@ -364,10 +375,9 @@ func (s *sendState) send(ctx context.Context, sock *socket, b []byte, opts *Send
 			s.mu.Unlock()
 			return 0, err
 		}
-		// Only context sends consult callerCrossed/callerFirst: interrupt
-		// reads callerCrossed and sets callerFirst, which restore reads.
-		// Each such send resets callerCrossed here and joins its interrupt
-		// before releasing mu; ordinary sends need no deadline bookkeeping.
+		// Context sends reset deadline precedence before registering an
+		// interrupt. An ordinary Conn send resets it only on EAGAIN, when
+		// it first marks itself parked for a possible shutdown wake.
 		s.deadlineMu.Lock()
 		s.callerCrossed = false
 		s.deadlineMu.Unlock()
@@ -485,10 +495,10 @@ func (s *sendState) encode(opts *SendOptions, assoc AssocID) int {
 func (s *sendState) attempt(fd uintptr) bool {
 	for {
 		n, err := s.sendOnce(int(fd))
-		switch {
-		case err == syscall.EINTR:
+		switch err {
+		case syscall.EINTR:
 			continue
-		case err == syscall.EAGAIN:
+		case syscall.EAGAIN:
 			if s.term != nil {
 				if s.wait {
 					s.deadlineMu.Lock()

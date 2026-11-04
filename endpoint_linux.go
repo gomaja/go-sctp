@@ -599,8 +599,9 @@ func (e *Endpoint) bindx(opt int, name string, ips []netip.Addr) error {
 // can release the wait (RFC 6458 §3.2). With NoWait, a send that finds no
 // space fails at once with an error matching syscall.EAGAIN, and nothing
 // of the message is queued. An uncontended successful SendMsg makes no
-// allocation. On contention, the shared send lock lazily creates its queue
-// and uses pooled waiters; first use, higher peak contention or a pool refill
+// allocation with a reused heap buffer; a fresh local array escapes and
+// costs one allocation. On contention, the shared send lock lazily creates
+// its queue and uses pooled waiters; first use, higher peak contention or a pool refill
 // can allocate. SendMsg keeps nothing of b or opts after it returns.
 //
 // Every send carries SCTP_SNDINFO, since that is where the association id
@@ -617,7 +618,10 @@ func (e *Endpoint) bindx(opt int, name string, ips []netip.Addr) error {
 // way, because the kernel would look the association up by the address
 // instead of by id, and flags SendFlags does not name, SCTP_EOF and
 // SCTP_ABORT among them, are refused too: CloseAssoc and AbortAssoc do
-// what those flags do. Every error is a *net.OpError with Op "write".
+// what those flags do. Messages exceeding Linux's MAX_RW_COUNT are refused
+// with syscall.EMSGSIZE. An unexpected short send returns its count with
+// io.ErrShortWrite without retrying the tail as another message.
+// Every error is a *net.OpError with Op "write".
 //
 // [Endpoint.SendMsgContext] is SendMsg with a context, which can end its
 // wait for the send lock and for buffer space.
@@ -630,9 +634,9 @@ func (e *Endpoint) SendMsg(id AssocID, b []byte, opts SendOptions) (int, error) 
 // space; the write deadline and Close also end the buffer wait. A nil ctx is
 // refused with an error matching syscall.EINVAL. A ctx done on entry
 // means nothing is validated or sent; ctx is checked again after taking
-// the lock. Success is (len(b), nil), and any error means nothing of the
-// message was queued: RFC 6458 §3.1.4 makes sendmsg atomic unless explicit
-// EOR is enabled, and Linux has no explicit EOR (see SndInfo). No attempt
+// the lock. Success is (len(b), nil). Except for io.ErrShortWrite, an error
+// means nothing of the message was queued: RFC 6458 §3.1.4 makes sendmsg
+// atomic unless explicit EOR is enabled, and Linux has no explicit EOR (see SndInfo). No attempt
 // outlives the call, and known kernel acceptance wins over cancellation.
 // Cancellation preserves the caller's latest write deadline, including
 // one set during the call, and never touches the read deadline. Errors
@@ -1118,10 +1122,11 @@ func (e *Endpoint) closeError(err error) error {
 // of time is an outcome, not an error. Associations that appear while it
 // waits are shut down too, and associations already peeled off are not
 // affected. An Abort from another goroutine during the wait sends the
-// ABORTs at once and makes Close return nil. Whatever arrives during the
-// wait is discarded with the descriptor. A second Close, or any close
-// after Abort, returns an error matching net.ErrClosed. Errors are
-// *net.OpError with Op "close".
+// ABORTs at once and makes Close return nil. Close remains graceful with
+// unread data: anything concurrent readers have not consumed is silently
+// discarded at release, so peers see a clean end. Use Abort to signal loss.
+// A second Close, or any close after Abort, returns an error matching
+// net.ErrClosed. Errors are *net.OpError with Op "close".
 func (e *Endpoint) Close() error {
 	if e == nil {
 		return opError("close", "sctp", nil, nil, net.ErrClosed)

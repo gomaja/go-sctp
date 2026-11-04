@@ -235,10 +235,10 @@ var zoneIndexes = zoneCache{interfaces: net.Interfaces, now: time.Now}
 // net.InterfaceByName asks the kernel for the whole table every time. The
 // table is read again when it is older than zoneCacheTTL, and when a name
 // is missing from it, so an interface created since the last read is
-// found at once; a missing name that is a decimal number is the one
-// exception, answered from the table as it is, since encodeZone then
-// takes the number as the index and a send to an address zoned by index
-// would otherwise read the table on every call. The table holds one entry
+// found at once. Once a table exists, decimal zones never refresh it, even
+// after the TTL: existing numeric interface names still win, and encodeZone
+// otherwise uses the number as the index. Sending to an address zoned by
+// index therefore never triggers another interface dump. The table holds one entry
 // per interface the host had at the last read, and nothing else, so its
 // size is bounded by the host's interfaces, not by the names asked for.
 type zoneCache struct {
