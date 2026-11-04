@@ -9,8 +9,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -164,7 +166,7 @@ func TestDuplicateLocalAddresses(t *testing.T) {
 				_, err := bindxAddrs(afInet6, name, ips)
 				check(name, err)
 			}
-			resolved, err := ResolveAddr("sctp6", ips[0].String()+"/"+ips[0].String()+":80")
+			resolved, err := ResolveAddr("sctp6", (&Addr{IPs: []netip.Addr{ips[0], ips[0]}, Port: 80}).String())
 			if err != nil || len(resolved.IPs) != 2 {
 				t.Fatalf("ResolveAddr must retain duplicates: %v, %v", resolved, err)
 			}
@@ -191,7 +193,7 @@ func TestNewConnAdoptedFailurePreservesSocket(t *testing.T) {
 		at   int
 	}{{"subscriptions", 1}, {"setEvent", 2}, {"status", 3}} {
 		for _, linger := range []syscall.Linger{{}, {Onoff: 1, Linger: 7}} {
-			t.Run(stage.name+"/"+time.Duration(linger.Linger).String(), func(t *testing.T) {
+			t.Run(stage.name+"/linger="+strconv.Itoa(int(linger.Linger)), func(t *testing.T) {
 				client, server := connPair(t, nil, nil)
 				f := connFile(t, client)
 				fd := fdOf(t, f)
@@ -213,8 +215,8 @@ func TestNewConnAdoptedFailurePreservesSocket(t *testing.T) {
 				if c != nil {
 					_ = c.Abort()
 				}
-				if !errors.Is(err, syscall.EIO) {
-					t.Fatalf("newConn = %v, want injected EIO", err)
+				if !errors.Is(err, net.ErrClosed) {
+					t.Fatalf("newConn = %v, want the injected control failure", err)
 				}
 				if after := openFds(t); after != before-1 {
 					t.Errorf("descriptors = %d, want %d", after, before-1)
@@ -301,3 +303,108 @@ func TestRemotePortZeroRefusedBeforeSetup(t *testing.T) {
 	}
 }
 func endpointAddrPort(e *Endpoint) uint16 { return e.Addr().(*Addr).Port }
+
+func TestLocalAddressValidationBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ips  []netip.Addr
+		want bool
+	}{
+		{"unset", nil, false},
+		{"empty", []netip.Addr{}, false},
+		{"one", []netip.Addr{netip.MustParseAddr("127.0.0.1")}, false},
+		{"distinct", []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2")}, false},
+		{"different zones", []netip.Addr{netip.MustParseAddr("fe80::1%a"), netip.MustParseAddr("fe80::1%b")}, false},
+		{"third repeats first", []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2"), netip.MustParseAddr("::ffff:127.0.0.1")}, true},
+		{"third repeats second", []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2"), netip.MustParseAddr("127.0.0.2")}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateLocalIPs(tc.ips)
+			if errors.Is(err, syscall.EINVAL) != tc.want {
+				t.Fatalf("validateLocalIPs = %v, duplicate = %v", err, tc.want)
+			}
+			if tc.want {
+				previous := "address 0"
+				if tc.name == "third repeats second" {
+					previous = "address 1"
+				}
+				if !strings.Contains(err.Error(), "address 2") || !strings.Contains(err.Error(), previous) {
+					t.Errorf("duplicate indexes missing: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestDuplicateBindAddressesRefused(t *testing.T) {
+	client, _ := connPair(t, nil, nil)
+	l := mustListen(t, nil, "sctp4", loopback4(0))
+	e := openEndpoint(t, nil, "sctp4", loopback4(0))
+	ips := []netip.Addr{netip.MustParseAddr("127.0.0.2"), netip.MustParseAddr("::ffff:127.0.0.2")}
+	for name, fn := range map[string]func(...netip.Addr) error{
+		"Conn.BindAdd": client.BindAdd, "Conn.BindRemove": client.BindRemove,
+		"Listener.BindAdd": l.BindAdd, "Listener.BindRemove": l.BindRemove,
+		"Endpoint.BindAdd": e.BindAdd, "Endpoint.BindRemove": e.BindRemove,
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := fn(ips...)
+			if !errors.Is(err, syscall.EINVAL) || !strings.Contains(err.Error(), "address 1") || !strings.Contains(err.Error(), "address 0") {
+				t.Fatalf("%s = %v, want duplicate indexes", name, err)
+			}
+		})
+	}
+}
+
+func TestRemotePortBoundariesReachSetup(t *testing.T) {
+	reached := errors.New("socket setup reached")
+	for _, port := range []uint16{1, 65534, 65535} {
+		t.Run(strconv.Itoa(int(port)), func(t *testing.T) {
+			calls := 0
+			cfg := &Config{Control: func(string, string, syscall.RawConn) error { calls++; return reached }}
+			c, err := cfg.Dial(context.Background(), "sctp4", nil, loopback4(port))
+			if c != nil || !errors.Is(err, reached) || calls != 1 {
+				t.Fatalf("Dial port %d = %v, %v, Control calls %d", port, c, err, calls)
+			}
+			e := openEndpoint(t, nil, "sctp4", nil)
+			injected := &failConnControl{RawConn: e.sock.raw, at: 1}
+			e.sock.raw = injected
+			id, err := e.Connect(loopback4(port))
+			if id != 0 || !errors.Is(err, net.ErrClosed) || injected.calls != 1 {
+				t.Fatalf("Connect port %d = %d, %v, Control calls %d", port, id, err, injected.calls)
+			}
+		})
+	}
+}
+
+func TestNewConnOwnedFailureAbortsSocket(t *testing.T) {
+	for _, kind := range []connKind{kindDialed, kindAccepted, kindPeeled} {
+		t.Run(strconv.Itoa(int(kind)), func(t *testing.T) {
+			client, _ := connPair(t, nil, nil)
+			f := connFile(t, client)
+			s, err := adoptFile(f, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, err := (*Config)(nil).prepare(styleDial)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.raw = &failConnControl{RawConn: s.raw, at: 1}
+			c, err := newConn(s, kind, p)
+			if c != nil {
+				_ = c.Abort()
+			}
+			if !errors.Is(err, net.ErrClosed) {
+				t.Fatalf("newConn = %v", err)
+			}
+			var got syscall.Linger
+			l := uint32(unsafe.Sizeof(got))
+			if err := rawGetsockopt(fdOf(t, f), syscall.SOL_SOCKET, syscall.SO_LINGER, unsafe.Pointer(&got), &l); err != nil {
+				t.Fatal(err)
+			}
+			if got.Onoff != 1 || got.Linger != 0 {
+				t.Errorf("owned socket linger = %v, want {1 0}", got)
+			}
+		})
+	}
+}

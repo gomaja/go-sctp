@@ -157,6 +157,9 @@ func ResolveAddr(network, address string) (*Addr, error) {
 // ctx must not be nil. To bound resolution and association setup together,
 // pass the same ctx to ResolveAddrContext and [Dial] or [Config.Dial].
 func ResolveAddrContext(ctx context.Context, network, address string) (*Addr, error) {
+	if ctx == nil {
+		return nil, invalidArg("ResolveAddrContext needs a non-nil context")
+	}
 	if _, err := canonicalNetwork(network, nil); err != nil {
 		return nil, err
 	}
@@ -191,6 +194,11 @@ func ResolveAddrContext(ctx context.Context, network, address string) (*Addr, er
 		}
 		ip, err := resolveHost(ctx, network, host)
 		if err != nil {
+			return nil, err
+		}
+		// Refuse this element before looking up a later host, so a DNS
+		// error cannot hide an earlier address-family error.
+		if _, err := canonicalNetwork(network, []netip.Addr{ip}); err != nil {
 			return nil, err
 		}
 		ips = append(ips, ip)
@@ -237,6 +245,12 @@ func resolveHost(ctx context.Context, network, host string) (netip.Addr, error) 
 		return normalizeResolvedAddr(ip)
 	}
 
+	// Colons and percent signs belong to literal addresses, not host
+	// names. A malformed literal or an embedded port is an argument
+	// error, rather than a DNS lookup that cannot succeed.
+	if strings.ContainsAny(host, ":%") {
+		return netip.Addr{}, invalidArg("invalid host %q", host)
+	}
 	if err := ctx.Err(); err != nil {
 		return netip.Addr{}, err
 	}
@@ -281,6 +295,9 @@ func resolveHost(ctx context.Context, network, host string) (netip.Addr, error) 
 // enforces the same rule at the kernel boundary), and Unmap would otherwise
 // silently discard that zone rather than reject it.
 func normalizeResolvedAddr(ip netip.Addr) (netip.Addr, error) {
+	if ip.Zone() != "" && !ip.IsLinkLocalUnicast() {
+		return netip.Addr{}, invalidArg("address %s has a zone but is not link-local", ip)
+	}
 	if ip.Is4In6() {
 		if ip.Zone() != "" {
 			return netip.Addr{}, invalidArg("address %s has a zone but is IPv4", ip)
@@ -310,4 +327,19 @@ func netAddr(a *Addr) net.Addr {
 		return nil
 	}
 	return &Addr{IPs: slices.Clone(a.IPs), Port: a.Port}
+}
+
+// validateLocalIPs refuses repeated local addresses before sctp_bindx sees
+// them. A mapped IPv4 address and its plain form name the same address;
+// zones on IPv6 addresses still distinguish interfaces.
+func validateLocalIPs(ips []netip.Addr) error {
+	seen := make(map[netip.Addr]int, len(ips))
+	for i, ip := range ips {
+		ip = ip.Unmap()
+		if j, ok := seen[ip]; ok {
+			return invalidArg("local address %d (%s) duplicates address %d", i, ip, j)
+		}
+		seen[ip] = i
+	}
+	return nil
 }

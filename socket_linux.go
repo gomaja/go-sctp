@@ -39,12 +39,14 @@ package sctp
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -87,13 +89,18 @@ func socketError(err error) error {
 // thing that closes it. fd must already be non-blocking: os.NewFile
 // registers a non-blocking descriptor with the runtime poller (os/
 // file_unix.go: newFile), which is what lets every wait on it be a poller
-// wait that a deadline or Close can end. A descriptor that os.NewFile
-// refuses is closed here, raw, since nothing else owns it yet.
+// wait that a deadline or Close can end. os.NewFile can return a file even
+// when poller registration failed (os/file_unix.go: newFile), so a cleared
+// deadline checks that registration before the file is handed over.
 func wrapSocketFile(fd, family int, network string) (socket, error) {
 	f := os.NewFile(uintptr(fd), "sctp")
 	if f == nil {
 		// Only a negative fd is refused, and there is nothing to close.
 		return socket{}, os.NewSyscallError("socket", syscall.EBADF)
+	}
+	if err := f.SetDeadline(time.Time{}); err != nil {
+		_ = f.Close()
+		return socket{}, fmt.Errorf("sctp: registering socket with the runtime poller: %w", err)
 	}
 	raw, err := f.SyscallConn()
 	if err != nil {
@@ -156,7 +163,7 @@ var storageLayoutCache atomic.Uint32
 
 // storageLayout returns the shape the running kernel gives the option
 // structs that embed a sockaddr_storage (sockaddrStorageLayout, options.go),
-// for both getting and setting them, on a Conn or an Endpoint alike. A
+// for both getting and setting Conn options. A
 // 64-bit build runs only on a 64-bit kernel, which uses the build's own
 // layout, and so asks nothing: wordSize is a constant, and the rest of the
 // function is compiled away. A 32-bit build asks once per process, on s,
@@ -350,6 +357,9 @@ func socketFamily(network string, laddr, raddr *Addr) (int, error) {
 // the port it names is kept.
 func localBindAddrs(family int, laddr *Addr) ([]byte, error) {
 	if len(laddr.IPs) != 0 {
+		if err := validateLocalIPs(laddr.IPs); err != nil {
+			return nil, err
+		}
 		return encodeAddrs(family, laddr.IPs, laddr.Port)
 	}
 	wild := netip.IPv4Unspecified()

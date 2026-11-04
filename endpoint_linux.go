@@ -294,6 +294,10 @@ func (e *Endpoint) Connect(raddr *Addr) (AssocID, error) {
 	if raddr == nil || len(raddr.IPs) == 0 {
 		return 0, e.dialError(raddr, invalidArg("Connect needs a remote address with at least one IP"))
 	}
+	// RFC 9260 §3.1 forbids destination port 0, even though Linux sends it.
+	if raddr.Port == 0 {
+		return 0, e.dialError(raddr, invalidArg("Connect needs a non-zero remote port (RFC 9260 §3.1)"))
+	}
 	peer, err := encodeAddrs(e.sock.family, raddr.IPs, raddr.Port)
 	if err != nil {
 		return 0, e.dialError(raddr, err)
