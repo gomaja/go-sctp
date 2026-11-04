@@ -228,7 +228,13 @@ func peeledPair(t testing.TB, cfg *Config) (peeled, peer *Conn) {
 		t.Fatalf("Dial: %v", err)
 	}
 	t.Cleanup(func() { _ = peer.Abort() })
-	peeled, err = e.PeelOff(awaitCommUp(t, e).AssocID)
+	// Observe establishment directly; a handler would consume CommUp
+	// and keep RecvMsg waiting for the next message.
+	handler := e.handler
+	e.handler = nil
+	id := awaitCommUp(t, e).AssocID
+	e.handler = handler
+	peeled, err = e.PeelOff(id)
 	if err != nil {
 		t.Fatalf("PeelOff: %v", err)
 	}
