@@ -381,7 +381,7 @@ last updated 2026-08-13 when read, agrees with the values the package uses.
 - The temporary chunk type 65 and parameter type 32774 (0x8006), registered
   on 2026-02-20 and expiring on 2027-02-20, still cite
   `draft-ietf-tsvwg-sctp-dtls-chunk-01`, while the working group's current
-  revision is -05. Neither is used by the package.
+  revision is -06. Neither is used by the package.
 - Parameter type 32773 (0x8005), Padding, has no reference in the registry;
   RFC 4820 §4 defines it.
 

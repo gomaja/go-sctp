@@ -63,7 +63,8 @@ func OpenEndpoint(network string, laddr *Addr) (*Endpoint, error) {
 // is the wildcard address: with a port of 0 the kernel chooses one, and
 // with "sctp" the socket is AF_INET6 dual-stack, so that it listens on the
 // host's IPv4 and IPv6 addresses alike. Several IPs make a multi-homed
-// endpoint, bound atomically (RFC 6458 §9.1). "sctp6" is dual-stack too,
+// endpoint, bound atomically (RFC 6458 §9.1), up to the Linux limit on a
+// list's length described below. "sctp6" is dual-stack too,
 // accepting IPv4 peers and colliding with a wildcard "sctp4" bind on the
 // same port (EADDRINUSE). For IPv6 only, set IPV6_V6ONLY to 1 inside
 // Config.Control's RawConn.Control callback, after the package clears it.

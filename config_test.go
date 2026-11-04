@@ -921,7 +921,7 @@ func TestDefaultSndInfoOpPPIDMatchesWireBytes(t *testing.T) {
 // prPolicy/prValue are the same resolution resolvePrInfo (options.go)
 // documents and appendSendCmsgs's per-message PRINFO cmsg already relies
 // on: pr_value is the TTL in milliseconds for PRTTL, Value for
-// PRRtx/PRPrio, and 0 for PRNone regardless of what TTL or Value holds.
+// PRRtx/PRPrio, and 0 for PRNone, whose other fields validation keeps zero.
 func TestDefaultPrInfoOpResolvesKernelUnits(t *testing.T) {
 	tests := []struct {
 		name       string
