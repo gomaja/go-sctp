@@ -53,7 +53,9 @@
 // them with msecs_to_jiffies, which rounds up, and reports them with
 // jiffies_to_msecs (net/sctp/socket.c). Reading one back gives the value set
 // rounded up to the tick, exact at HZ=1000 and a multiple of 10 ms at
-// HZ=100; the documentation of each such value says so.
+// HZ=100; the documentation of each such value says so. Very large
+// durations (2^31 milliseconds and above) can saturate during conversion,
+// so readback need not equal the requested value rounded up to a tick.
 //
 // [FileConn] and [FileListener] adopt a descriptor inherited from another
 // process.
@@ -151,6 +153,9 @@
 // methods of the value SyscallConn returns. On platforms without SCTP
 // every constructor fails, so no Conn, Listener or Endpoint can be
 // obtained there; the method stubs return ErrUnsupported unwrapped.
+// Those constructors validate Config only: other arguments, such as a bad
+// network or nil context, can reach ErrUnsupported instead of the argument
+// error Linux would return.
 // ResolveAddr, ResolveAddrContext, ParseNotification, InstallAuthKey and
 // ActivateAuthKey return their causes as they are. Test a cause with errors.Is:
 //

@@ -67,8 +67,8 @@ func (s socketStyle) String() string {
 }
 
 // Config holds the usual settings needed before a socket is bound or
-// connected; Control can set options without a typed field. The zero Config uses kernel defaults throughout. A Config may be
-// reused; it must not be modified while a call that uses it is running.
+// connected; Control can set options without a typed field. The zero
+// Config uses kernel defaults throughout. A Config may be reused; it must not be modified while a call that uses it is running.
 //
 // Every constructor checks the Config before it creates a socket. A field
 // that is out of range, that conflicts with another field, or that the
