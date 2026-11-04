@@ -1061,8 +1061,8 @@ func (e *Endpoint) setDeadline(t time.Time, mode byte) error {
 //
 // Keep the descriptor non-blocking. A callback deliberately blocked in
 // recvmsg on a listening one-to-many socket is not released by shutdown
-// (sctp_shutdown ignores listening sockets), and can hold Close or Abort
-// until it returns.
+// (net/ipv4/af_inet.c: inet_shutdown; net/sctp/socket.c: sctp_disconnect),
+// and can hold Close or Abort until it returns.
 func (e *Endpoint) SyscallConn() (syscall.RawConn, error) {
 	if !e.opened() {
 		return nil, opError("syscallconn", e.network(), nil, e.Addr(), net.ErrClosed)

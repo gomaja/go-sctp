@@ -181,9 +181,10 @@ func rawSendEnd(fd int, flag uint16, assoc AssocID, cause []byte) error {
 // prepareSctpAbort: it sets RCV_SHUTDOWN and wakes anything waiting on the
 // socket without starting a SHUTDOWN (sctp_shutdown acts only on
 // SEND_SHUTDOWN), except on a listening one-to-many socket, where
-// sctp_shutdown does nothing. On other sockets a callback blocked inside
+// inet_shutdown calls sctp_disconnect, which answers EOPNOTSUPP without
+// setting RCV_SHUTDOWN. On other sockets a callback blocked inside
 // recvmsg(2) returns and drops its reference to the file. A blocked
-// callback holds that reference,
+// callback holds that reference, and
 // the descriptor's final close(2), the one that sends the ABORT, waits for
 // the last reference (internal/poll: FD.Close), and a descriptor put back
 // in blocking mode through SyscallConn would otherwise keep Close waiting
