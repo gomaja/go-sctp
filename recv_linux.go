@@ -148,7 +148,11 @@ func (s *recvState) bind(term *termState, subs *atomic.Uint32) {
 // returns 0 at once, and consumes nothing. Concurrent readers can receive
 // different pieces of one message. With I-DATA, pieces of different streams
 // may interleave: demultiplex by Rcv.Stream and accumulate each stream until
-// EOR. Only the first piece carries its PPID; see RcvInfo.
+// EOR. Only the first piece carries its PPID; see RcvInfo. A caller
+// reassembling I-DATA by stream must subscribe to EventPartialDelivery:
+// PartialDelivery.Stream and SeqNum identify the cut delivery (see
+// PartialDelivery for Linux's MID reporting). No ErrMessageInterrupted is
+// synthesized under I-DATA, whose pieces have no connection-wide boundary.
 //
 // Notifications share the receive queue with data. With a
 // NotificationHandler, RecvMsg hands each notification the caller receives
@@ -160,8 +164,9 @@ func (s *recvState) bind(term *termState, subs *atomic.Uint32) {
 // switch on. The package keeps EventAssocChange and EventPartialDelivery
 // subscribed in the kernel on every socket, to notice association ends and
 // abandoned partial messages, and consumes them unseen unless the caller
-// subscribed to them. If the last data piece lacked EOR and an internal
-// partial-delivery abort record is consumed unseen, RecvMsg returns zero
+// subscribed to them. Under classic DATA, if the last data piece lacked
+// EOR and an internal partial-delivery abort record is consumed unseen,
+// RecvMsg returns zero
 // bytes with ErrMessageInterrupted once; later messages remain readable.
 // A caller who receives the record, raw or through a handler, gets no
 // additional interruption error. A type switched on outside the package,
@@ -225,9 +230,12 @@ func (c *Conn) RecvMsg(b []byte) (int, MsgInfo, error) {
 // reads, with nothing to mark where it ends; use RecvMsg or ReadMsg when
 // the message boundary matters. A read of data makes no allocation. Errors
 // are as for RecvMsg, except that Read ignores MSG_CTRUNC, since it returns
-// no ancillary data. After an abandoned partial message, Read returns zero
-// bytes with ErrMessageInterrupted once, even when its handler receives the
-// partial-delivery record. The association remains usable.
+// no ancillary data. After an abandoned partial message under classic
+// DATA, Read returns zero bytes with ErrMessageInterrupted once, even when
+// its handler receives the
+// partial-delivery record. The association remains usable. Under I-DATA,
+// no interruption is synthesized; use RecvMsg with EventPartialDelivery to
+// identify cut messages.
 func (c *Conn) Read(b []byte) (int, error) {
 	if !c.opened() {
 		return 0, c.readError(net.ErrClosed)
@@ -320,7 +328,7 @@ func (c *Conn) recvNext(b []byte, raw bool) (int, MsgInfo, Notification, error) 
 		case err != nil:
 			return 0, MsgInfo{}, nil, c.readEnded(err)
 		case record:
-			interrupted := s.typed && s.typ == EventPartialDelivery && s.partial
+			interrupted := !s.interleaved && s.typed && s.typ == EventPartialDelivery && s.partial
 			if s.typed && s.typ == EventPartialDelivery {
 				s.partial = false
 			}
@@ -609,8 +617,9 @@ func (c *Conn) abortInterrupted(err error) error {
 // Use Read or RecvMsg for deadline-driven reading across partial messages.
 // With negotiated I-DATA (RFC 8260), ReadMsg returns ErrUnsupported, naming
 // RecvMsg, before consuming anything: pieces of different streams may
-// interleave. A max of zero or
-// less is refused with an error matching syscall.EINVAL. Errors are as for
+// interleave, including after the association ends when the socket default
+// reports I-DATA. A max of zero or less is refused with an error matching
+// syscall.EINVAL. Errors are as for
 // RecvMsg.
 //
 // Memory follows the size of the message, never max: ReadMsg starts with a

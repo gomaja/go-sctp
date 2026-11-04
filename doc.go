@@ -102,7 +102,8 @@
 // kernel on every socket (see
 // "The end of an association" below), and delivers those records to a Conn's
 // caller only when the caller subscribed to them; an Endpoint always
-// delivers them.
+// delivers [EventAssocChange], and delivers [EventPartialDelivery] only when
+// subscribed.
 //
 // # Writing
 //

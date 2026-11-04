@@ -99,6 +99,7 @@ func (c *Conn) init(p *prepared) error {
 	}
 
 	assoc, state, err := c.sock.status()
+	ended := false
 	switch {
 	case err == nil && state != StateClosed:
 		c.assoc = assoc
@@ -106,33 +107,28 @@ func (c *Conn) init(p *prepared) error {
 		// The association has already ended; see newConn.
 		c.laddr.Store(&Addr{})
 		c.raddr.Store(&Addr{})
-		c.send.init(c)
-		return nil
+		ended = true
 	default:
 		return os.NewSyscallError("getsockopt", err)
 	}
 
 	// Linux fixes the negotiated capability when the association is created,
 	// and a restart keeps it (net/sctp/associola.c: sctp_assoc_update does not
-	// copy intl_capable); RFC 8260 §4.3.1 defines the query. An ended
-	// association above needs no reassembly guard. Recheck status after the
-	// option read: the association may have ended, and the getter then reports
-	// the socket's default.
+	// copy intl_capable); RFC 8260 §4.3.1 defines the query. After the
+	// association ends, the getter reports the socket's intl_enable instead
+	// (sctp_getsockopt_interleaving_supported). Keep that conservative guard:
+	// queued I-DATA pieces may still interleave. A failed query must not
+	// discard the data of an association that has already ended.
 	interleaved, err := c.InterleavingSupported()
-	if err != nil {
+	if err != nil && !ended {
 		return err
 	}
-	_, state, err = c.sock.status()
-	switch {
-	case err == nil:
-		c.recv.interleaved = state != StateClosed && interleaved
-	case errors.Is(err, syscall.EINVAL):
-	default:
-		return os.NewSyscallError("getsockopt", err)
-	}
-	c.refreshSnapshots()
-	if ra := c.raddr.Load(); ra != nil {
-		c.peerPort = ra.Port
+	c.recv.interleaved = interleaved
+	if !ended {
+		c.refreshSnapshots()
+		if ra := c.raddr.Load(); ra != nil {
+			c.peerPort = ra.Port
+		}
 	}
 	c.send.init(c)
 	return nil

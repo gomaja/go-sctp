@@ -70,6 +70,11 @@ func TestPartialDeliveryBoundaryClaim(t *testing.T) {
 func TestPartialDeliveryForwardTSNValue(t *testing.T) {
 	c := claimNamed(t, "partial-delivery-boundary")
 	facts := map[string]string{"port": "41030", "prefix_bytes": "4096", "interrupted": "1", "following": "1", "dropped": "2", "teardown_ns": ns(1500)}
+	missing := c2s(2, 500, 41030, chunkFORWARDTSN)
+	prefix := withData(c2s(1, 1, 41030), dataChunk{tsn: 10, ppid: 0x57490017})
+	following := withData(c2s(3, 1000, 41030), dataChunk{tsn: 12, ppid: 0x57490018})
+	wantFail(t, check(t, c, []frame{prefix, missing, following}, facts), "cumulative TSN")
+
 	for _, start := range []uint32{0, 10, 0xffffffff} {
 		for _, delta := range []int32{-1, 0, 1} {
 			t.Run(fmt.Sprintf("start=%d/delta=%d", start, delta), func(t *testing.T) {

@@ -122,10 +122,50 @@ func TestReadMsgEndedInterleaving(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = c.Abort() })
+			accepted := c
+			t.Cleanup(func() { _ = accepted.Abort() })
 			if c.AssocID() != 0 {
 				t.Fatalf("association still live: %d", c.AssocID())
 			}
+			got, queryErr := c.InterleavingSupported()
+			t.Logf("ended accepted socket: requested=%t getter=%t err=%v", enabled, got, queryErr)
+			// An ended accepted socket need not retain the listener's default.
+			// Set the socket default explicitly before another Conn is built.
+			var fd int
+			rawFd(t, mustSyscallConn(t, c), func(src int) {
+				var e error
+				fd, e = syscall.Dup(src)
+				if e != nil {
+					t.Fatal(e)
+				}
+			})
+			sock, e := wrapSocketFile(fd, afInet, "sctp4")
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e := sock.control(func(fd int) error {
+				level := InterleaveNone
+				if enabled {
+					level = InterleaveAssocs
+				}
+				// InterleaveNone disables I-DATA without its privileged
+				// capability setter, which requires intl_enable even for 0.
+				if e := setIntOpt(fd, ipprotoSCTP, optFragmentInterleave, int32(level)); e != nil {
+					return e
+				}
+				if enabled {
+					return setAssocValue(fd, optInterleavingSupported, 1)
+				}
+				return nil
+			}); e != nil {
+				_ = sock.file.Close()
+				t.Fatal(e)
+			}
+			c, e = newConn(sock, kindDialed, &prepared{})
+			if e != nil {
+				t.Fatal(e)
+			}
+			t.Cleanup(func() { _ = c.Abort() })
 			setReadDeadline(t, c, time.Second)
 			b, _, err := c.ReadMsg(64)
 			if !enabled {

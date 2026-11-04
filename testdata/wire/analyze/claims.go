@@ -880,6 +880,18 @@ func checkPartialDeliveryBoundary(r *claimRun) {
 	if len(prefix) == 0 || !prefix[0].f.at.Before(fwd.at) {
 		r.failf("missing partial DATA before FORWARD TSN")
 	}
+	// A FORWARD TSN below the first partial DATA cannot have abandoned it
+	// (RFC 3758 §3.6; RFC 9260 §1.6 serial-number arithmetic).
+	reaches := false
+	for _, cumulative := range fwd.fwdTSN {
+		if tsnAtLeast(cumulative, prefix[0].d.tsn) {
+			reaches = true
+			break
+		}
+	}
+	if !reaches {
+		r.failf("FORWARD TSN cumulative TSN does not reach partial DATA TSN %d", prefix[0].d.tsn)
+	}
 	teardown := r.time("teardown_ns")
 	if teardown.Before(following[0].f.at) {
 		r.failf("teardown precedes following DATA")
