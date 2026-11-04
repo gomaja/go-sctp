@@ -81,16 +81,18 @@ func main() {
 	go func() {
 		for {
 			conn, err := ln.Accept()
-   if err != nil {
-    if errors.Is(err, net.ErrClosed) { return }
-    if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
-     errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) {
-     time.Sleep(100 * time.Millisecond)
-     continue
-    }
-    log.Printf("accept: %v", err)
-    return
-   }
+			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+				if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+					errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) {
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+				log.Printf("accept: %v", err)
+				return
+			}
 			go func() {
 				defer conn.Close()
 				buf := make([]byte, 64<<10)

@@ -156,7 +156,7 @@ func answerRequests(c *Conn) error {
 // helperPeer is a running helper process.
 type helperPeer struct {
 	cmd    *exec.Cmd
-	stderr bytes.Buffer
+	stderr *os.File
 	done   chan struct{} // closed once its standard output reached EOF
 }
 
@@ -202,7 +202,19 @@ func startHelper(t testing.TB, network, address string, auth bool, conns int) *A
 	if conns > 0 {
 		p.cmd.Env = append(p.cmd.Env, helperPeerModeEnv+"=send", helperPeerConnsEnv+"="+strconv.Itoa(conns))
 	}
-	p.cmd.Stderr = &p.stderr
+	// Cmd.Stderr connects an *os.File directly. An io.Writer would add a
+	// copy goroutine whose buffer growth can enter sendAllocs' process-wide
+	// allocation window.
+	p.stderr, err = os.CreateTemp(t.TempDir(), "helper-stderr-*")
+	if err != nil {
+		t.Fatalf("helper peer stderr: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := p.stderr.Close(); err != nil {
+			t.Errorf("closing helper peer stderr: %v", err)
+		}
+	})
+	p.cmd.Stderr = p.stderr
 	stdout, err := p.cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("helper peer stdout: %v", err)
@@ -238,7 +250,11 @@ func startHelper(t testing.TB, network, address string, auth bool, conns int) *A
 		return &Addr{IPs: laddr.IPs, Port: n}
 	case <-p.done:
 		_ = p.cmd.Wait()
-		t.Fatalf("the helper peer exited before listening: %s", strings.TrimSpace(p.stderr.String()))
+		stderr, err := os.ReadFile(p.stderr.Name())
+		if err != nil {
+			t.Fatalf("the helper peer exited before listening; reading stderr: %v", err)
+		}
+		t.Fatalf("the helper peer exited before listening: %s", strings.TrimSpace(string(stderr)))
 	case <-time.After(10 * time.Second):
 		t.Fatal("the helper peer did not report a port within 10 s")
 	}
@@ -407,5 +423,64 @@ func TestSendMsgZeroAllocs(t *testing.T) {
 				t.Errorf("%.1f bytes allocated per send on average, want fewer than %v", bytes, bytesMargin)
 			}
 		})
+	}
+}
+
+// TestHelperStderrHasNoCopyGoroutine keeps os/exec's stderr forwarding out
+// of the allocation windows while exercising the helper's sending mode.
+func TestHelperStderrHasNoCopyGoroutine(t *testing.T) {
+	peer := startHelperSender(t, "sctp4", "127.0.0.1:0", 1)
+	c, err := Dial(testContext(t, 10*time.Second), "sctp4", nil, peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Abort() })
+
+	stack := make([]byte, 1<<20)
+	until := time.Now().Add(50 * time.Millisecond)
+	for time.Now().Before(until) {
+		n := runtime.Stack(stack, true)
+		if bytes.Contains(stack[:n], []byte("os/exec.(*Cmd).writerDescriptor.func1")) {
+			t.Fatal("helper stderr has an os/exec copy goroutine inside allocation measurements")
+		}
+		runtime.Gosched()
+	}
+	if _, err := fmt.Fprintf(c, "1 64"); err != nil {
+		t.Fatal(err)
+	}
+	setReadDeadline(t, c, 10*time.Second)
+	buf := make([]byte, 64)
+	if n, _, err := c.RecvMsg(buf); err != nil || n != len(buf) || binary.BigEndian.Uint32(buf) != 0 {
+		t.Fatalf("helper message = %d bytes, %v, want 64 bytes numbered zero", n, err)
+	}
+}
+
+// helperFailureTB captures the fatal diagnostic without marking its parent
+// failed, while retaining the parent's cleanup of the helper process.
+type helperFailureTB struct {
+	testing.TB
+	failure string
+}
+
+func (t *helperFailureTB) Fatalf(format string, args ...any) {
+	t.failure = fmt.Sprintf(format, args...)
+	panic(t)
+}
+
+func TestHelperStderrPreservesStartupDiagnostic(t *testing.T) {
+	tb := &helperFailureTB{TB: t}
+	func() {
+		defer func() {
+			if r := recover(); r != tb {
+				t.Fatalf("helper failure = %v, want its startup diagnostic", r)
+			}
+		}()
+		// A TEST-NET address not bound to this namespace cannot listen.
+		startHelperPeer(tb, "sctp4", "192.0.2.123:0", false)
+	}()
+	if !strings.Contains(tb.failure, "the helper peer exited before listening:") ||
+		!strings.Contains(tb.failure, "helper peer: Listen sctp4") ||
+		!strings.Contains(tb.failure, "cannot assign requested address") {
+		t.Fatalf("startup diagnostic lost: %q", tb.failure)
 	}
 }
