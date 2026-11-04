@@ -283,16 +283,20 @@ func (e *Endpoint) Addr() net.Addr {
 // A peer the endpoint already has an association with is refused by the
 // kernel: with EISCONN once the association is established, and with
 // EALREADY while it is being set up (net/sctp/socket.c: __sctp_connect);
-// no id is returned then. A nil raddr, one with no IPs, and an address the
-// socket's family cannot carry are refused with an error matching
-// syscall.EINVAL before any system call. Errors are *net.OpError with Op
-// "dial".
+// no id is returned then. A nil raddr, one with no IPs, one with port 0
+// (RFC 9260 §3.1), or an address the socket's family cannot carry is refused
+// with an error matching syscall.EINVAL before any system call. Errors
+// are *net.OpError with Op "dial".
 func (e *Endpoint) Connect(raddr *Addr) (AssocID, error) {
 	if !e.opened() {
 		return 0, e.dialError(raddr, net.ErrClosed)
 	}
 	if raddr == nil || len(raddr.IPs) == 0 {
 		return 0, e.dialError(raddr, invalidArg("Connect needs a remote address with at least one IP"))
+	}
+	// RFC 9260 §3.1 forbids destination port 0, even though Linux sends it.
+	if raddr.Port == 0 {
+		return 0, e.dialError(raddr, invalidArg("Connect needs a non-zero remote port (RFC 9260 §3.1)"))
 	}
 	peer, err := encodeAddrs(e.sock.family, raddr.IPs, raddr.Port)
 	if err != nil {
