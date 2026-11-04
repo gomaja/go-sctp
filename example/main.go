@@ -56,15 +56,6 @@ func run() error {
 	if !*server && *port == 0 {
 		return invalid("the client requires -port within 1-65535")
 	}
-	if *count < 0 {
-		return invalid("-count must be nonnegative")
-	}
-	if *interval < 0 {
-		return invalid("-interval must be nonnegative")
-	}
-	if *sndbuf < 0 || *rcvbuf < 0 {
-		return invalid("buffer sizes must be nonnegative")
-	}
 	if *bufsize <= 0 {
 		return invalid("-bufsize must be positive")
 	}

@@ -180,6 +180,9 @@ func TestServerAndClientProcesses(t *testing.T) {
 				}
 			}
 		}
+		if err := sc.Err(); err != nil {
+			t.Logf("reading server logs: %v", err)
+		}
 	}()
 	var addr *sctp.Addr
 	select {
@@ -212,6 +215,17 @@ func TestServerAndClientProcesses(t *testing.T) {
 	}
 	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
 		t.Errorf("client output:\n%s\nwant:\n%s", out, strings.Join(want, "\n"))
+	}
+	if err := server.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-serverDone:
+		if serverErr != nil {
+			t.Fatalf("server SIGTERM: %v", serverErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not stop after SIGTERM")
 	}
 }
 
@@ -357,5 +371,21 @@ func TestRetryAccept(t *testing.T) {
 		if got := retryAccept(tc.err); got != tc.want {
 			t.Errorf("retryAccept(%v) = %v, want %v", tc.err, got, tc.want)
 		}
+	}
+}
+
+func TestClientAcceptsPortBoundaries(t *testing.T) {
+	requireSCTP(t)
+	for _, port := range []string{"1", "65535"} {
+		t.Run(port, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0])
+			cmd.Env = append(os.Environ(), runMainEnv+"=1", runArgsEnv+"=-ip\n127.0.0.1\n-port\n"+port+"\n-count\n1")
+			out, err := cmd.CombinedOutput()
+			if ctx.Err() != nil || err == nil || strings.Contains(string(out), "Usage of") || !strings.Contains(string(out), "dial sctp") {
+				t.Fatalf("port %s: error %v, output %s; want a dial attempt", port, err, out)
+			}
+		})
 	}
 }
