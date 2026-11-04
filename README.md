@@ -58,8 +58,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net"
+	"syscall"
 	"time"
 
 	"github.com/gomaja/go-sctp"
@@ -78,9 +81,16 @@ func main() {
 	go func() {
 		for {
 			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
+   if err != nil {
+    if errors.Is(err, net.ErrClosed) { return }
+    if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+     errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) {
+     time.Sleep(100 * time.Millisecond)
+     continue
+    }
+    log.Printf("accept: %v", err)
+    return
+   }
 			go func() {
 				defer conn.Close()
 				buf := make([]byte, 64<<10)
@@ -256,8 +266,11 @@ go test ./...
 
 On a machine without SCTP, such as macOS, this runs only the tests that
 need no socket: the socket-backed ones, in the `*_linux_test.go` files, are
-not built there, and a green run proves nothing about them. They run
-against a Linux kernel in Docker:
+not built there, and a green run proves nothing about them. On Linux, the
+root test package first probes for SCTP and fails immediately when the kernel
+lacks it. Try `modprobe sctp`; on RHEL-family systems, install the matching
+`kernel-modules-extra` package and check the SCTP module blacklist. Run the
+socket suite against a Linux kernel in Docker:
 
 ```
 testdata/docker/linux-suite.sh [-race] [-sysctl on|off] [-run REGEX]

@@ -162,7 +162,7 @@ func TestDialContextCancelsSilentPeer(t *testing.T) {
 	if !silentPeerAvailable(t) {
 		t.Skip("SCTP to 192.0.2.1 is answered rather than dropped here, so no setup stays in COOKIE-WAIT; the Linux suite routes it to a dummy link")
 	}
-	baseline := countAssocs(t)
+	baseline := countAssocs(t, unreachableAddr().Port)
 	fds := openFds(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -180,7 +180,7 @@ func TestDialContextCancelsSilentPeer(t *testing.T) {
 	if elapsed > time.Second+200*time.Millisecond {
 		t.Errorf("Dial returned %v after it started, more than a second after the cancel", elapsed)
 	}
-	if got := waitAssocsAtMost(t, baseline); got > baseline {
+	if got := waitAssocsAtMost(t, unreachableAddr().Port, baseline); got > baseline {
 		t.Errorf("%d associations remain against a baseline of %d; the abandoned setup is still in the kernel", got, baseline)
 	}
 	if after := openFds(t); after > fds {
@@ -227,7 +227,7 @@ func abandonCase(t *testing.T, policy AbandonPolicy, ctx context.Context, want e
 	if !silentPeerAvailable(t) {
 		t.Skip("needs a silent peer at 192.0.2.1; the Linux suite routes it to a dummy link")
 	}
-	baseline := countAssocs(t)
+	baseline := countAssocs(t, unreachableAddr().Port)
 	fds := openFds(t)
 	start := time.Now()
 	c, err := (&Config{AbandonPolicy: policy}).Dial(ctx, "sctp4", nil, unreachableAddr())
@@ -240,7 +240,7 @@ func abandonCase(t *testing.T, policy AbandonPolicy, ctx context.Context, want e
 	if elapsed < earliest || elapsed > latest {
 		t.Errorf("Dial returned after %v, want between %v and %v", elapsed, earliest, latest)
 	}
-	if got := waitAssocsAtMost(t, baseline); got > baseline {
+	if got := waitAssocsAtMost(t, unreachableAddr().Port, baseline); got > baseline {
 		t.Errorf("%d associations remain against a baseline of %d; the setup was not released", got, baseline)
 	}
 	if after := openFds(t); after > fds {
@@ -322,7 +322,7 @@ func TestDialContextAbandonedAttemptsLeakNothing(t *testing.T) {
 	if testing.Short() {
 		attempts = 10
 	}
-	baseline := countAssocs(t)
+	baseline := countAssocs(t, unreachableAddr().Port)
 	before := openFds(t)
 	for i := range attempts {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
@@ -335,7 +335,7 @@ func TestDialContextAbandonedAttemptsLeakNothing(t *testing.T) {
 	if after := openFds(t); after > before+2 {
 		t.Errorf("descriptor count went %d -> %d over %d abandoned attempts", before, after, attempts)
 	}
-	if got := waitAssocsAtMost(t, baseline); got > baseline {
+	if got := waitAssocsAtMost(t, unreachableAddr().Port, baseline); got > baseline {
 		t.Errorf("%d associations remain against a baseline of %d after %d abandoned attempts", got, baseline, attempts)
 	}
 }
@@ -757,7 +757,7 @@ func bindTo(addr *Addr, attempts *int, which func(attempt int) bool) func(*socke
 // refusal would have ended the dial after the first.
 func TestDialRefusesSelfConnect(t *testing.T) {
 	dead := deadPort(t)
-	baseline := countAssocs(t)
+	baseline := countAssocs(t, dead.Port)
 	fds := openFds(t)
 	attempts := 0
 	testHookDialConnecting = bindTo(dead, &attempts, func(int) bool { return true })
@@ -773,7 +773,7 @@ func TestDialRefusesSelfConnect(t *testing.T) {
 	if attempts != 1+maxSelfConnectRetries {
 		t.Errorf("%d attempts, want %d: each self-connection must be retried, and only those", attempts, 1+maxSelfConnectRetries)
 	}
-	if got := waitAssocsAtMost(t, baseline); got > baseline {
+	if got := waitAssocsAtMost(t, dead.Port, baseline); got > baseline {
 		t.Errorf("%d associations remain against a baseline of %d", got, baseline)
 	}
 	if after := openFds(t); after != fds {
@@ -918,7 +918,7 @@ func TestDialRefusesSelfConnectWithLinkLocalAddresses(t *testing.T) {
 		network := tc.network
 		t.Run(network+" via "+tc.loopback, func(t *testing.T) {
 			dead := deadPortOn(t, tc.deadNet, addrOf(0, tc.loopback))
-			baseline := countAssocs(t)
+			baseline := countAssocs(t, dead.Port)
 			fds := openFds(t)
 
 			c, err := Dial(testContext(t, 10*time.Second), network, &Addr{Port: dead.Port}, dead)
@@ -935,7 +935,7 @@ func TestDialRefusesSelfConnectWithLinkLocalAddresses(t *testing.T) {
 			if !self {
 				t.Errorf("local %v, peer %v: selfConnected = false, want true (%v is %v without its zone)", local, peer, bare, zoned)
 			}
-			if got := waitAssocsAtMost(t, baseline); got > baseline {
+			if got := waitAssocsAtMost(t, dead.Port, baseline); got > baseline {
 				t.Fatalf("%d associations remain after the abort, against a baseline of %d", got, baseline)
 			}
 
@@ -952,7 +952,7 @@ func TestDialRefusesSelfConnectWithLinkLocalAddresses(t *testing.T) {
 			if attempts != 1+maxSelfConnectRetries {
 				t.Errorf("%d attempts, want %d: each self-connection must be retried, and only those", attempts, 1+maxSelfConnectRetries)
 			}
-			if got := waitAssocsAtMost(t, baseline); got > baseline {
+			if got := waitAssocsAtMost(t, dead.Port, baseline); got > baseline {
 				t.Errorf("%d associations remain against a baseline of %d", got, baseline)
 			}
 			if after := openFds(t); after != fds {

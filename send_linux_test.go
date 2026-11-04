@@ -959,14 +959,14 @@ func TestSendPathAfterTheAssociationEndedBeforeAccept(t *testing.T) {
 	if server.AssocID() != 0 {
 		t.Fatalf("AssocID = %d, want 0 for an association that ended before Accept", server.AssocID())
 	}
-	baseline := countAssocs(t)
+	baseline := countAssocs(t, laddr.Port)
 
 	_, err = server.SendMsg([]byte("x"), SendOptions{Path: netip.MustParseAddr("127.0.0.1")})
 	wantWriteError(t, err, syscall.EPIPE)
 	_, err = server.Write([]byte("x"))
 	wantWriteError(t, err, syscall.EPIPE)
 	time.Sleep(100 * time.Millisecond)
-	if got := countAssocs(t); got > baseline {
+	if got := countAssocs(t, laddr.Port); got > baseline {
 		t.Errorf("%d associations after the sends, %d before: a send started a new association", got, baseline)
 	}
 }
