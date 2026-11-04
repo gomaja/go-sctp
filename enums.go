@@ -149,7 +149,7 @@ type FragmentInterleave int32
 const (
 	InterleaveNone    FragmentInterleave = iota
 	InterleaveAssocs                     // across associations
-	InterleaveStreams                    // across streams: Linux cannot, returns ErrUnsupported
+	InterleaveStreams                    // level 2 is refused on Linux; negotiated I-DATA can still interleave streams
 )
 
 var fragmentInterleaveNames = map[FragmentInterleave]string{

@@ -74,7 +74,7 @@ func OpenEndpoint(network string, laddr *Addr) (*Endpoint, error) {
 // Before any association can exist, and after Config.Control, whatever
 // Control did, the package enables SCTP_RECVRCVINFO and the
 // SCTP_ASSOC_CHANGE subscription, which the Endpoint needs to name every
-// message's association and to report every association's start and end;
+// message's association and to report association changes;
 // neither can be switched off. The fragment interleave level is
 // InterleaveAssocs unless Config.FragmentInterleave says otherwise, as RFC
 // 6458 §8.1.20 recommends for one-to-many sockets. Config.ReusePort, which
@@ -195,6 +195,7 @@ func newEndpoint(s socket, p *prepared, own eventSet) *Endpoint {
 	e.subs.Store(uint32(p.subscribed))
 	e.life.init()
 	e.recv.bind(nil, &e.subs)
+	e.recv.fn = e.recvAttempt
 	e.send.bind(nil)
 	e.send.writeDeadline = e.sock.file.SetWriteDeadline
 	e.send.explicit = true
@@ -294,17 +295,23 @@ func (e *Endpoint) Addr() net.Addr {
 //
 // A peer the endpoint already has an association with is refused by the
 // kernel: with EISCONN once the association is established, and with
-// EALREADY while it is being set up (net/sctp/socket.c: __sctp_connect);
-// no id is returned then. A nil raddr, one with no IPs, and an address the
-// socket's family cannot carry are refused with an error matching
-// syscall.EINVAL before any system call. Errors are *net.OpError with Op
-// "dial".
+// EALREADY while it is being set up (net/sctp/socket.c: __sctp_connect).
+// A peer whose association was peeled off is refused with EADDRNOTAVAIL
+// (sctp_connect), and autobind without a free port fails with EAGAIN
+// (sctp_autobind). No id is returned on those errors. A nil raddr, one with
+// no IPs, one with port 0 (RFC 9260 §3.1), or an address the socket's family
+// cannot carry is refused with an error matching syscall.EINVAL before any
+// system call. Errors are *net.OpError with Op "dial".
 func (e *Endpoint) Connect(raddr *Addr) (AssocID, error) {
 	if !e.opened() {
 		return 0, e.dialError(raddr, net.ErrClosed)
 	}
 	if raddr == nil || len(raddr.IPs) == 0 {
 		return 0, e.dialError(raddr, invalidArg("Connect needs a remote address with at least one IP"))
+	}
+	// RFC 9260 §3.1 forbids destination port 0, even though Linux sends it.
+	if raddr.Port == 0 {
+		return 0, e.dialError(raddr, invalidArg("Connect needs a non-zero remote port (RFC 9260 §3.1)"))
 	}
 	peer, err := encodeAddrs(e.sock.family, raddr.IPs, raddr.Port)
 	if err != nil {
@@ -336,8 +343,15 @@ func (e *Endpoint) dialError(raddr *Addr, err error) error {
 // association (RFC 6458 §§3.1.5, 5.3.4), which never waits for buffer
 // space (net/sctp/socket.c: sctp_sendmsg_check_sflags acts on the flag
 // before sctp_sendmsg_to_asoc, the only path that waits). An
-// AssocShutdownComplete record for id reports the end (RFC 6458 §3.2).
+// AssocShutdownComplete record for id reports a completed shutdown (RFC
+// 6458 §3.2); a shutdown that times out reports AssocCommLost.
 // A second CloseAssoc during the shutdown does nothing more.
+//
+// During setup (COOKIE-WAIT or COOKIE-ECHOED), Linux quietly deletes the
+// association without a notification or a shutdown packet
+// (sctp_sf_cookie_wait_prm_shutdown, sctp_sf_cookie_echoed_prm_shutdown).
+// On a successful quiet cancellation, the caller must remove its routing
+// entry itself rather than waiting for an AssocChange record.
 //
 // A scope selector or a negative id is refused with an error matching
 // syscall.EINVAL before any system call; an id the endpoint does not hold,
@@ -353,8 +367,11 @@ func (e *Endpoint) CloseAssoc(id AssocID) error {
 // SCTP_ABORT send for that association (RFC 6458 §§3.1.5, 5.3.4), whose
 // ABORT carries a User-Initiated Abort error cause with cause as its Upper
 // Layer Abort Reason (RFC 9260 §3.3.10.12). cause may be empty. An
-// AssocCommLost record for id reports the end, and the peer receives the
-// cause in its own AssocCommLost's Info.
+// AssocCommLost record for id reports the end of an established
+// association, and the peer receives the cause in its own AssocCommLost's
+// Info. During setup Linux reports AssocCantStart instead
+// (sctp_sf_cookie_wait_prm_abort, sctp_cmd_init_failed). In COOKIE-WAIT
+// the peer has no association to receive the cause (RFC 9260 §5.1).
 //
 // A cause longer than 65524 bytes, the most one ABORT chunk carries on
 // Linux (net/sctp/sm_make_chunk.c: _sctp_make_chunk caps a chunk at
@@ -607,14 +624,15 @@ func (e *Endpoint) bindx(opt int, name string, ips []netip.Addr) error {
 // syscall.EPIPE (net/sctp/socket.c: sctp_sendmsg).
 //
 // Unless opts.NoWait is set, SendMsg waits for send-buffer space in the
-// runtime poller, until the write deadline passes or the endpoint is
-// closed; the buffer is the endpoint's, so another association's progress
-// can release the wait (RFC 6458 §3.2). With NoWait, a send that finds no
-// space fails at once with an error matching syscall.EAGAIN, and nothing
-// of the message is queued. An uncontended successful SendMsg makes no
-// allocation. On contention, the shared send lock lazily creates its queue
-// and uses pooled waiters; first use, higher peak contention or a pool refill
-// can allocate. SendMsg keeps nothing of b or opts after it returns.
+// runtime poller, until the write deadline passes or the endpoint is closed;
+// the buffer is the endpoint's, so another association's progress can release
+// the wait (RFC 6458 §3.2). With NoWait, a send that finds no space fails at
+// once with an error matching syscall.EAGAIN, and nothing of the message is
+// queued. An uncontended successful SendMsg makes no allocation with a reused
+// heap buffer; a fresh local array escapes and costs one allocation. On
+// contention, the shared send lock lazily creates its queue and uses pooled
+// waiters; first use, higher peak contention or a pool refill can allocate.
+// SendMsg keeps nothing of b or opts after it returns.
 //
 // Every send carries SCTP_SNDINFO, since that is where the association id
 // travels (RFC 6458 §5.3.4). A nil opts.Info or opts.PR means the
@@ -630,7 +648,10 @@ func (e *Endpoint) bindx(opt int, name string, ips []netip.Addr) error {
 // way, because the kernel would look the association up by the address
 // instead of by id, and flags SendFlags does not name, SCTP_EOF and
 // SCTP_ABORT among them, are refused too: CloseAssoc and AbortAssoc do
-// what those flags do. Every error is a *net.OpError with Op "write".
+// what those flags do. Messages exceeding Linux's MAX_RW_COUNT are refused
+// with syscall.EMSGSIZE. An unexpected short send returns its count with
+// io.ErrShortWrite without retrying the tail as another message.
+// Every error is a *net.OpError with Op "write".
 //
 // [Endpoint.SendMsgContext] is SendMsg with a context, which can end its
 // wait for the send lock and for buffer space.
@@ -638,24 +659,24 @@ func (e *Endpoint) SendMsg(id AssocID, b []byte, opts SendOptions) (int, error) 
 	return e.sendMsg(noContext, id, b, &opts)
 }
 
-// SendMsgContext is SendMsg with a context that can end its wait for the
-// send lock and, unless opts.NoWait is set, for endpoint-wide buffer
-// space; the write deadline and Close also end the buffer wait. A nil ctx is
-// refused with an error matching syscall.EINVAL. A ctx done on entry
-// means nothing is validated or sent; ctx is checked again after taking
-// the lock. Success is (len(b), nil), and any error means nothing of the
+// SendMsgContext is SendMsg with a context that can end its wait for the send
+// lock and, unless opts.NoWait is set, for endpoint-wide buffer space; the
+// write deadline and Close also end the buffer wait. A nil ctx is refused
+// with an error matching syscall.EINVAL. A ctx done on entry means nothing is
+// validated or sent; ctx is checked again after taking the lock. Success is
+// (len(b), nil). Except for io.ErrShortWrite, an error means nothing of the
 // message was queued: RFC 6458 §3.1.4 makes sendmsg atomic unless explicit
 // EOR is enabled, and Linux has no explicit EOR (see SndInfo). No attempt
 // outlives the call, and known kernel acceptance wins over cancellation.
-// Cancellation preserves the caller's latest write deadline, including
-// one set during the call, and never touches the read deadline. Errors
-// are *net.OpError with Op "write"; a context interruption matches
-// ctx.Err(), context.Canceled or context.DeadlineExceeded, and never
-// os.ErrDeadlineExceeded. A wait the write deadline ended matches the
-// latter and not a context error, even if ctx is done by the time the call
-// returns; when both end the wait, the error names the one that came first.
-// The context's interrupt can run shortly after ctx is done; a write
-// deadline crossed in that gap comes first.
+// Cancellation preserves the caller's latest write deadline, including one
+// set during the call, and never touches the read deadline. Errors are
+// *net.OpError with Op "write"; a context interruption matches ctx.Err(),
+// context.Canceled or context.DeadlineExceeded, and never
+// os.ErrDeadlineExceeded. A wait the write deadline ended matches the latter
+// and not a context error, even if ctx is done by the time the call returns;
+// when both end the wait, the error names the one that came first. The
+// context's interrupt can run shortly after ctx is done; a write deadline
+// crossed in that gap comes first.
 //
 // SendMsgContext allocates nothing SendMsg would not, except that waiting
 // for buffer space with a context that can be done registers a
@@ -683,20 +704,20 @@ func (e *Endpoint) sendMsg(ctx context.Context, id AssocID, b []byte, opts *Send
 	}
 	n, err := e.send.send(ctx, &e.sock, b, opts, nil, id)
 	if err != nil {
-		return 0, e.ioError("write", err)
+		return n, e.ioError("write", err)
 	}
 	return n, nil
 }
 
 // checkEndpointSend validates an Endpoint send without any lock or system
-// call. Every refusal matches syscall.EINVAL.
+// call. Every refusal matches syscall.EINVAL, except an oversized message
+// (syscall.EMSGSIZE).
 func checkEndpointSend(id AssocID, b []byte, opts *SendOptions) error {
 	if err := assocIDArg("SendMsg", id); err != nil {
 		return err
 	}
-	if len(b) == 0 {
-		// RFC 9260 §6.2; net/sctp/socket.c: sctp_sendmsg_parse.
-		return invalidArg("SendMsg needs a message of at least one byte")
+	if err := checkSendSize(len(b)); err != nil {
+		return err
 	}
 	if err := validateSendOptions(opts); err != nil {
 		return err
@@ -714,8 +735,15 @@ func checkEndpointSend(id AssocID, b []byte, opts *SendOptions) error {
 // whose AssocID names the association it came on. When b is shorter than
 // the message, the rest is returned by the next reads, and EOR is false
 // until the last; readers that share the endpoint must keep one message's
-// pieces together themselves. A read of data makes no allocation. An empty
-// b returns 0 at once, and consumes nothing.
+// pieces together themselves. PeelOff between those calls moves the
+// unread remainder of that association's data message to the Conn
+// (RFC 6458 §9.2); continue reading it there. A read of data makes no
+// allocation. An empty b returns 0 at once, and consumes nothing. With
+// I-DATA, pieces of different streams may interleave: demultiplex by
+// Rcv.AssocID and Rcv.Stream, accumulating each until EOR and keeping its
+// first PPID. There is no per-association partial-message tracking: callers
+// reassembling by EOR must subscribe to EventPartialDelivery and discard
+// abandoned prefixes (RFC 6458 §6.1.7).
 //
 // Every message names one real association: data that arrives without
 // SCTP_RCVINFO, which the package enables before any association exists
@@ -728,8 +756,9 @@ func checkEndpointSend(id AssocID, b []byte, opts *SendOptions) error {
 // whole.
 //
 // Notifications share the queue with data. An Endpoint always delivers
-// EventAssocChange records, since they report every association's start,
-// its id included, and end, and Config.Notifications chooses the rest.
+// EventAssocChange records, which name association ids and report setup
+// outcomes and established associations' ends. CloseAssoc during setup
+// cancels quietly, with no record. Config.Notifications chooses the rest.
 // With a NotificationHandler, RecvMsg hands each to the handler, parsed,
 // and goes on reading; an error the handler returns is returned by
 // RecvMsg. Without one, RecvMsg returns the notification's bytes with
@@ -766,6 +795,16 @@ func (e *Endpoint) RecvMsg(b []byte) (int, MsgInfo, error) {
 		}
 		return n, info, nil
 	}
+}
+
+// recvAttempt holds recordMu for one non-blocking receive callback.
+// Linux queues a notification's tail at the head before recvmsg returns
+// (sctp_recvmsg), and PeelOff must not migrate it between the callback's
+// system calls. raw.Read waits only after this releases the lock.
+func (e *Endpoint) recvAttempt(fd uintptr) bool {
+	e.recordMu.Lock()
+	defer e.recordMu.Unlock()
+	return e.recv.attempt(fd)
 }
 
 // recvNext is one read of RecvMsg under the receive lock, as
@@ -840,7 +879,8 @@ func (e *Endpoint) readEnded(err error) error {
 // cut short, as on a Conn: its tail could otherwise be read as a record of
 // its own, so the endpoint is aborted rather than left to misread its
 // receive queue, and so misroute what follows. Linux puts a record's rest
-// back at the head of the queue at once, so this is a defensive path.
+// back at the head of the queue at once, and recordMu excludes PeelOff
+// until the callback consumes it, so this is a defensive path.
 // e.recv.mu must be held.
 func (e *Endpoint) abortInterruptedNotification(cause error) error {
 	err := errors.Join(e.recv.notes.interrupted(), closedCause(cause))
@@ -857,6 +897,17 @@ func (e *Endpoint) abortInterruptedNotification(cause error) error {
 // notifications arrive on the Conn, and the endpoint no longer knows its
 // id, so a SendMsg to it fails with EPIPE. Closing the endpoint leaves
 // the Conn alone.
+//
+// PeelOff waits for an Endpoint receive callback to finish consuming its
+// notification, but does not wait behind an idle reader. Data read across
+// several public RecvMsg calls is different: peeling off between calls
+// moves the unread remainder to the Conn, where the caller must continue
+// reading the message (RFC 6458 §9.2).
+//
+// An association still in COOKIE-WAIT or COOKIE-ECHOED is refused with an
+// error matching syscall.EINPROGRESS and stays on the endpoint. Wait for
+// its AssocCommUp notification before peeling it off. SCTP_STATUS checks
+// this before the move (RFC 6458 §8.2.1, Errata 6115).
 //
 // The Conn is a third kind of socket: Linux clones it from the endpoint's,
 // in a style of its own (SCTP_SOCKET_UDP_HIGH_BANDWIDTH, sctp_do_peeloff),
@@ -894,10 +945,16 @@ func (e *Endpoint) abortInterruptedNotification(cause error) error {
 // alloc_empty_file). The descriptor check cannot see that limit coming,
 // since a duplicate descriptor shares its file.
 //
+// A failed state or descriptor pre-check leaves the association on the
+// endpoint. A failure after Linux has moved it, including failure to
+// initialise the Conn, loses it. A getsockopt error alone does not tell
+// which occurred: use AssocIDs to check whether the endpoint still holds
+// the id; that query is a snapshot and the association may also end.
+//
 // A scope selector or a negative id is refused with an error matching
 // syscall.EINVAL before any system call, and an id the endpoint does not
-// hold fails with the kernel's EINVAL (sctp_do_peeloff). Errors are
-// *net.OpError with Op "peeloff".
+// hold fails with the kernel's EINVAL (sctp_getsockopt_sctp_status).
+// Errors are *net.OpError with Op "peeloff".
 func (e *Endpoint) PeelOff(id AssocID) (*Conn, error) {
 	if !e.opened() {
 		return nil, e.peelError(net.ErrClosed)
@@ -906,11 +963,14 @@ func (e *Endpoint) PeelOff(id AssocID) (*Conn, error) {
 		return nil, e.peelError(err)
 	}
 	fd := -1
-	if err := e.sock.control(func(efd int) error {
+	e.recordMu.Lock()
+	err := e.sock.control(func(efd int) error {
 		var err error
 		fd, err = peelOff(efd, id)
 		return err
-	}); err != nil {
+	})
+	e.recordMu.Unlock()
+	if err != nil {
 		return nil, e.peelError(err)
 	}
 	s, err := wrapSocketFile(fd, e.sock.family, e.sock.network)
@@ -930,6 +990,15 @@ func (e *Endpoint) peelError(err error) error {
 	return opError("peeloff", e.network(), nil, e.Addr(), err)
 }
 
+// checkPeelOffState refuses only the setup states: states move forward,
+// so a successful check cannot race a return to setup (RFC 9260 §4).
+func checkPeelOffState(state AssocState) error {
+	if state == StateCookieWait || state == StateCookieEchoed {
+		return fmt.Errorf("sctp: PeelOff: wait for AssocCommUp before peeling off an association in %v: %w", state, syscall.EINPROGRESS)
+	}
+	return nil
+}
+
 // peelOff branches association id off the one-to-many socket fd with
 // SCTP_SOCKOPT_PEELOFF_FLAGS (RFC 6458 §9.2's sctp_peeloff) and returns the
 // new descriptor, close-on-exec and non-blocking (net/sctp/socket.c:
@@ -943,6 +1012,18 @@ func (e *Endpoint) peelError(err error) error {
 // (fs/file.c: alloc_fd), and closing it is its one close, since nothing
 // else ever knows its number.
 func peelOff(fd int, id AssocID) (int, error) {
+	// SCTP_STATUS selects this endpoint's association (RFC 6458 §8.2.1,
+	// Errata 6115); an unknown id keeps the kernel's EINVAL.
+	var status [sizeStatus]byte
+	binary.NativeEndian.PutUint32(status[statusAssocIDOff:], uint32(id))
+	length := uint32(len(status))
+	if err := rawGetsockopt(fd, ipprotoSCTP, optStatus, unsafe.Pointer(&status[0]), &length); err != nil {
+		return -1, os.NewSyscallError("getsockopt", err)
+	}
+	state := AssocState(int32(binary.NativeEndian.Uint32(status[statusStateOff:])))
+	if err := checkPeelOffState(state); err != nil {
+		return -1, err
+	}
 	spare, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_DUPFD_CLOEXEC, 0)
 	if errno != 0 {
 		return -1, fmt.Errorf("sctp: no descriptor to spare for the peeled-off association: %w", os.NewSyscallError("fcntl", errno))
@@ -1002,6 +1083,11 @@ func (e *Endpoint) setDeadline(t time.Time, mode byte) error {
 // Write also takes the send lock, so it cannot observe a SendMsgContext
 // interruption's temporary deadline. A SendMsgContext waiting behind a
 // raw Write can cancel its lock wait.
+//
+// Keep the descriptor non-blocking. A callback deliberately blocked in
+// recvmsg on a listening one-to-many socket is not released by shutdown
+// (net/ipv4/af_inet.c: inet_shutdown; net/sctp/socket.c: sctp_disconnect),
+// and can hold Close or Abort until it returns.
 func (e *Endpoint) SyscallConn() (syscall.RawConn, error) {
 	if !e.opened() {
 		return nil, opError("syscallconn", e.network(), nil, e.Addr(), net.ErrClosed)
@@ -1132,10 +1218,12 @@ func (e *Endpoint) closeError(err error) error {
 // of time is an outcome, not an error. Associations that appear while it
 // waits are shut down too, and associations already peeled off are not
 // affected. An Abort from another goroutine during the wait sends the
-// ABORTs at once and makes Close return nil. Whatever arrives during the
-// wait is discarded with the descriptor. A second Close, or any close
-// after Abort, returns an error matching net.ErrClosed. Errors are
-// *net.OpError with Op "close".
+// ABORTs at once and makes Close return nil. Close remains graceful with
+// unread data: anything concurrent readers have not consumed is silently
+// discarded at release. Peers see a clean end if shutdown completes in
+// time, or an ABORT when the grace period expires. Use Abort to signal
+// loss immediately. A second Close, or any close after Abort, returns an
+// error matching net.ErrClosed. Errors are *net.OpError with Op "close".
 func (e *Endpoint) Close() error {
 	if e == nil {
 		return opError("close", "sctp", nil, nil, net.ErrClosed)

@@ -1239,3 +1239,34 @@ func FuzzLifecycleClose(f *testing.F) {
 		}
 	})
 }
+
+func TestLifecycleNonPositiveCloseOvertakesWait(t *testing.T) {
+	for _, grace := range []time.Duration{0, -1, -time.Second} {
+		t.Run(grace.String(), func(t *testing.T) {
+			ops := &fakeOps{fakeClock: newManualClock()}
+			l := newLifecycleForTest()
+			first := make(chan error, 1)
+			go func() { first <- l.close(ops, time.Hour) }()
+			<-ops.waiting
+			second := make(chan error, 1)
+			go func() { second <- l.close(ops, grace) }()
+			select {
+			case err := <-second:
+				if err != nil {
+					_ = l.abortNow(ops)
+					t.Fatalf("close(%v) during graceful wait = %v, want nil", grace, err)
+				}
+			case <-time.After(time.Second):
+				_ = l.abortNow(ops)
+				t.Fatal("abortive close did not overtake graceful wait")
+			}
+			if err := <-first; err != nil {
+				t.Fatal(err)
+			}
+			if calls := ops.counts(); calls.abortive != 1 || calls.release != 0 {
+				t.Fatalf("close calls = %+v, want one abortive close", calls)
+			}
+			wantReleased(t, l)
+		})
+	}
+}

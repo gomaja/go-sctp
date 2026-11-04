@@ -113,7 +113,7 @@ func setupListener(s *socket, address string, control func(string, string, sysca
 	backlog := syscall.SOMAXCONN
 	if n, err := readSomaxconn(); err == nil && n > backlog {
 		// The kernel clamps a larger value to its own maximum
-		// (net/sctp/socket.c: sctp_inet_listen), so asking for exactly
+		// (net/socket.c: __sys_listen_socket), so asking for exactly
 		// that is safe.
 		backlog = n
 	}
@@ -188,6 +188,9 @@ func (l *Listener) AcceptSCTP() (*Conn, error) {
 	return c, nil
 }
 
+// testHookAccept4 replaces accept4 in tests that exercise transient errors.
+var testHookAccept4 func(fd, flags int) (int, syscall.Sockaddr, error)
+
 func (l *Listener) accept() (*Conn, error) {
 	if l == nil || l.sock.raw == nil {
 		return nil, net.ErrClosed
@@ -196,9 +199,18 @@ func (l *Listener) accept() (*Conn, error) {
 	var aerr error
 	if err := l.sock.raw.Read(func(fd uintptr) bool {
 		for {
-			nfd, _, aerr = syscall.Accept4(int(fd), syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC)
+			accept4 := syscall.Accept4
+			if testHookAccept4 != nil {
+				accept4 = testHookAccept4
+			}
+			nfd, _, aerr = accept4(int(fd), syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC)
 			switch aerr {
-			case syscall.EINTR:
+			case syscall.EINTR, syscall.ECONNABORTED:
+				// internal/poll.FD.Accept retries ECONNABORTED too. Linux
+				// can return it after dequeuing an association when
+				// do_accept (net/socket.c) cannot report its peer address:
+				// inet_getname refuses a zero peer port, which RFC 9260
+				// §3.1 forbids. Keep accept4's address check and retry.
 				continue
 			case syscall.EAGAIN:
 				// A listening socket is readable once an association

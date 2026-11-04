@@ -984,7 +984,7 @@ func (c *Conn) SetFragmentInterleave(level FragmentInterleave) error {
 	switch level {
 	case InterleaveNone, InterleaveAssocs:
 	case InterleaveStreams:
-		return c.argError("set", unsupportedField("SetFragmentInterleave", "Linux stores SCTP_FRAGMENT_INTERLEAVE as a boolean and collapses any nonzero value to InterleaveAssocs (net/sctp/socket.c: sctp_setsockopt_fragment_interleave), so it cannot deliver cross-stream interleaving"))
+		return c.argError("set", unsupportedField("SetFragmentInterleave", "Linux stores SCTP_FRAGMENT_INTERLEAVE as a boolean and collapses any nonzero value to InterleaveAssocs (net/sctp/socket.c: sctp_setsockopt_fragment_interleave), so level 2 cannot be selected; negotiated I-DATA can still interleave streams (RFC 8260)"))
 	default:
 		return c.argError("set", invalidArg("SetFragmentInterleave: %v is not InterleaveNone, InterleaveAssocs or InterleaveStreams", level))
 	}
@@ -1030,7 +1030,10 @@ func (c *Conn) ReceiveNxtInfo() (bool, error) {
 
 // SetReceiveNxtInfo chooses whether RecvMsg describes the next message
 // queued, in MsgInfo.Nxt, as Config.ReceiveNxtInfo does (SCTP_RECVNXTINFO,
-// RFC 6458 §8.1.30).
+// RFC 6458 §8.1.30). On an empty queue Linux's peek clears the pending
+// socket error, so reads after the last record may report ENOTCONN instead
+// of the failure's errno. AssocCommLost and its cause still arrive.
+// https://github.com/sctp/lksctp-tools/issues/75
 func (c *Conn) SetReceiveNxtInfo(on bool) error {
 	return c.setBoolOption(optRecvNxtInfo, on)
 }

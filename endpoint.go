@@ -26,9 +26,10 @@ import (
 // notifications rather than from an Accept (RFC 6458 §3.1.3).
 //
 // Association ids come from one system-wide cyclic pool (idr_alloc_cyclic,
-// net/sctp/associola.c), so an id is reused after its association ends.
-// Retire an id when EventAssocChange reports the end, and never treat it
-// as a lasting peer identity. An Endpoint always delivers EventAssocChange
+// net/sctp/associola.c), so ids can be reused when allocation wraps.
+// Retire an id when EventAssocChange reports the end, or after a successful
+// quiet cancellation with CloseAssoc during setup. Never treat an id as
+// a lasting peer identity. An Endpoint always delivers EventAssocChange
 // records, whatever Config.Notifications says, since its callers route by
 // association id (RFC 6458 §3.1.3).
 //
@@ -53,7 +54,7 @@ import (
 // Conn; a reader that reassembles a message across several RecvMsg calls
 // must keep other readers away until the message ends (MsgInfo.EOR).
 //
-//lint:ignore U1000 staticcheck flags peel, addr, bindMu, handler, closeWait, subs, life, send and recv as unused (U1000) on GOOS=darwin and GOOS=windows without this (sock is not flagged: Network reads e.sock.network in a file with no build tag): only endpoint_linux.go's methods open, read or write the rest
+//lint:ignore U1000 staticcheck flags peel, addr, bindMu, recordMu, handler, closeWait, subs, life, send and recv as unused (U1000) on GOOS=darwin and GOOS=windows without this (sock is not flagged: Network reads e.sock.network in a file with no build tag): only endpoint_linux.go's methods open, read or write the rest
 type Endpoint struct {
 	sock socket
 
@@ -71,6 +72,11 @@ type Endpoint struct {
 	// bindMu serialises BindAdd and BindRemove, each with the snapshot
 	// refresh that follows it.
 	bindMu sync.Mutex
+
+	// recordMu excludes PeelOff while a receive callback consumes a
+	// notification, whose tail otherwise migrates with the association.
+	// Unlike recv.mu, it is never held across a poller wait.
+	recordMu sync.Mutex
 
 	handler   NotificationHandler
 	closeWait time.Duration // Config.CloseTimeout, resolved: the grace period of Close

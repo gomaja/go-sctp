@@ -581,7 +581,7 @@ func TestInterleaveStreamsMessageDoesNotStutter(t *testing.T) {
 	if err == nil {
 		t.Fatal("prepare unexpectedly succeeded")
 	}
-	const want = "sctp: Config.FragmentInterleave: Linux stores SCTP_FRAGMENT_INTERLEAVE as a boolean and collapses any nonzero value to InterleaveAssocs (net/sctp/socket.c: sctp_setsockopt_fragment_interleave), so it cannot deliver cross-stream interleaving"
+	const want = "sctp: Config.FragmentInterleave: Linux stores SCTP_FRAGMENT_INTERLEAVE as a boolean and collapses any nonzero value to InterleaveAssocs (net/sctp/socket.c: sctp_setsockopt_fragment_interleave), so level 2 cannot be selected; negotiated I-DATA can still interleave streams (RFC 8260)"
 	if err.Error() != want {
 		t.Fatalf("err = %q, want exactly %q", err.Error(), want)
 	}

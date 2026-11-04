@@ -32,7 +32,7 @@ func (op *configOp) field() string {
 	case opRecvRcvInfo:
 		return "SCTP_RECVRCVINFO, which the package always enables"
 	case opAssocChange:
-		return "the SCTP_ASSOC_CHANGE subscription the package always keeps"
+		return "the SCTP_ASSOC_CHANGE and SCTP_PARTIAL_DELIVERY_EVENT subscriptions the package always keeps"
 	case opReadBuffer:
 		return "Config.ReadBuffer"
 	case opWriteBuffer:
@@ -108,7 +108,10 @@ func applyOp(fd int, op *configOp) error {
 		// RFC 6458 §8.1.29.
 		return setIntOpt(fd, ipprotoSCTP, optRecvRcvInfo, 1)
 	case opAssocChange:
-		return setEvent(fd, EventAssocChange, true)
+		if err := setEvent(fd, EventAssocChange, true); err != nil {
+			return err
+		}
+		return setEvent(fd, EventPartialDelivery, true)
 	case opReadBuffer:
 		return setIntOpt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, op.bytes)
 	case opWriteBuffer:
@@ -251,15 +254,15 @@ func getEvent(fd int, t EventType) (bool, error) {
 
 // kernelSubscriptions reads which notification types the kernel delivers
 // on s, for a descriptor the package adopted rather than set up: every
-// type EventType names but EventAssocChange, whose delivery the package
-// decides itself while keeping it subscribed in the kernel. A type the
+// type EventType names except EventAssocChange and EventPartialDelivery,
+// whose delivery the package decides while keeping them subscribed. A type the
 // kernel does not know (net/sctp/socket.c: sctp_getsockopt_event refuses
 // one above SCTP_SN_TYPE_MAX with EINVAL) counts as not subscribed.
 func kernelSubscriptions(s *socket) (eventSet, error) {
 	var set eventSet
 	err := s.control(func(fd int) error {
 		for t := range eventTypeNames {
-			if t == EventAssocChange {
+			if t == EventAssocChange || t == EventPartialDelivery {
 				continue
 			}
 			if on, err := getEvent(fd, t); err == nil && on {

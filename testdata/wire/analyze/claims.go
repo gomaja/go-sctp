@@ -37,6 +37,7 @@ var claims = []claim{
 	{"ppid-byte-order", 1, checkPPIDByteOrder},
 	{"close-after-burst", 1, checkCloseAfterBurst},
 	{"simultaneous-close", 1, checkSimultaneousClose},
+	{"partial-delivery-boundary", 1, checkPartialDeliveryBoundary},
 	{"pr-rtx-limit", 1, checkPRRtxLimit},
 	{"graceful-close", 1, checkGracefulClose},
 	{"graceful-peeled-close", 1, checkGracefulClose},
@@ -863,4 +864,54 @@ func (r *claimRun) dropped(key string) {
 	if r.int(key) == 0 {
 		r.failf("the INPUT drop (%s) matched nothing", key)
 	}
+}
+
+// checkPartialDeliveryBoundary requires abandonment on the wire and a live
+// association until the following message arrives (RFC 3758 §3.6).
+func checkPartialDeliveryBoundary(r *claimRun) {
+	port := r.ports[0]
+	out := r.out(port)
+	fwd := r.first(out, chunkFORWARDTSN, "no FORWARD TSN abandons partial delivery")
+	following := dataWith(out, 0x57490018)
+	if len(following) == 0 || following[0].f.at.Before(fwd.at) {
+		r.failf("missing following DATA after FORWARD TSN")
+	}
+	prefix := dataWith(out, 0x57490017)
+	if len(prefix) == 0 || !prefix[0].f.at.Before(fwd.at) {
+		r.failf("missing partial DATA before FORWARD TSN")
+	}
+	// A FORWARD TSN below the first partial DATA cannot have abandoned it
+	// (RFC 3758 §3.6; RFC 9260 §1.6 serial-number arithmetic).
+	reaches := false
+	for _, cumulative := range fwd.fwdTSN {
+		if tsnAtLeast(cumulative, prefix[0].d.tsn) {
+			reaches = true
+			break
+		}
+	}
+	if !reaches {
+		r.failf("FORWARD TSN cumulative TSN does not reach partial DATA TSN %d", prefix[0].d.tsn)
+	}
+	teardown := r.time("teardown_ns")
+	if teardown.Before(following[0].f.at) {
+		r.failf("teardown precedes following DATA")
+	}
+	r.covered(teardown, "following message delivered")
+	for _, f := range r.all(port) {
+		if !f.at.After(teardown) && f.has(chunkABORT) {
+			r.failf("ABORT before teardown in frame %d", f.number)
+		}
+	}
+	if n := r.int("prefix_bytes"); n <= 0 || n >= 100<<10 {
+		r.failf("prefix_bytes=%d: want a nonempty incomplete message", n)
+	}
+	for _, key := range []string{"interrupted", "following"} {
+		if r.int(key) != 1 {
+			r.failf("%s must be 1", key)
+		}
+	}
+	if r.int("dropped") <= 0 {
+		r.failf("dropped must be positive")
+	}
+	r.note("FORWARD TSN frame %d, following DATA frame %d; no ABORT before delivery", fwd.number, following[0].f.number)
 }

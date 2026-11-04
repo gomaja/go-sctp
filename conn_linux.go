@@ -38,7 +38,9 @@ import (
 // newConn builds a Conn around s, a connected socket this package owns,
 // with the handler, grace period and subscriptions of p. It takes s over
 // on every path: when it fails, it releases s with an abortive close,
-// since the association may be live.
+// since the association may be live, except for an adopted socket. Its
+// caller still owns the socket through another descriptor, so only the
+// duplicate is closed, without changing SO_LINGER or shutting down reads.
 //
 // The association id is read once, here, from SCTP_STATUS (RFC 6458
 // §8.2.1) and fixed for the life of the Conn. On an accepted socket whose
@@ -57,7 +59,11 @@ func newConn(s socket, kind connKind, p *prepared) (*Conn, error) {
 	c := &Conn{sock: s, kind: kind, handler: p.handler, closeWait: p.closeTimeout}
 	c.life.init()
 	if err := c.init(p); err != nil {
-		_ = c.newCloseOps().abortive()
+		if kind == kindAdopted {
+			_ = s.file.Close()
+		} else {
+			_ = c.newCloseOps().abortive()
+		}
 		return nil, err
 	}
 	return c, nil
@@ -79,21 +85,27 @@ func (c *Conn) init(p *prepared) error {
 	c.subs.Store(uint32(subs))
 
 	if c.kind == kindAccepted || c.kind == kindAdopted || c.kind == kindPeeled {
-		// The package keeps SCTP_ASSOC_CHANGE subscribed on every socket
-		// it uses (Config.Notifications). An association takes its own
-		// copy of the endpoint's subscriptions when it is created
-		// (net/sctp/associola.c: sctp_association_init), so one queued on
-		// a listener before the package owned it, set up on a descriptor
+		// The package keeps SCTP_ASSOC_CHANGE and SCTP_PARTIAL_DELIVERY_EVENT
+		// subscribed on every socket it uses (Config.Notifications). An
+		// association takes its own copy of the endpoint's subscriptions when
+		// it is created (net/sctp/associola.c: sctp_association_init), so one
+		// queued on a listener before the package owned it, set up on a descriptor
 		// elsewhere, or switched off for one association of an Endpoint
 		// through its SyscallConn, may lack it; on an established
 		// one-to-one or peeled socket SCTP_EVENT reaches that copy
 		// (net/sctp/socket.c: sctp_setsockopt_event, sctp_id2assoc).
-		if err := c.sock.control(func(fd int) error { return setEvent(fd, EventAssocChange, true) }); err != nil {
+		if err := c.sock.control(func(fd int) error {
+			if err := setEvent(fd, EventAssocChange, true); err != nil {
+				return err
+			}
+			return setEvent(fd, EventPartialDelivery, true)
+		}); err != nil {
 			return os.NewSyscallError("setsockopt", err)
 		}
 	}
 
 	assoc, state, err := c.sock.status()
+	ended := false
 	switch {
 	case err == nil && state != StateClosed:
 		c.assoc = assoc
@@ -101,15 +113,28 @@ func (c *Conn) init(p *prepared) error {
 		// The association has already ended; see newConn.
 		c.laddr.Store(&Addr{})
 		c.raddr.Store(&Addr{})
-		c.send.init(c)
-		return nil
+		ended = true
 	default:
 		return os.NewSyscallError("getsockopt", err)
 	}
 
-	c.refreshSnapshots()
-	if ra := c.raddr.Load(); ra != nil {
-		c.peerPort = ra.Port
+	// Linux fixes the negotiated capability when the association is created,
+	// and a restart keeps it (net/sctp/associola.c: sctp_assoc_update does not
+	// copy intl_capable); RFC 8260 §4.3.1 defines the query. After the
+	// association ends, the getter reports the socket's intl_enable instead
+	// (sctp_getsockopt_interleaving_supported). Keep that conservative guard:
+	// queued I-DATA pieces may still interleave. A failed query must not
+	// discard the data of an association that has already ended.
+	interleaved, err := c.InterleavingSupported()
+	if err != nil && !ended {
+		return err
+	}
+	c.recv.interleaved = interleaved
+	if !ended {
+		c.refreshSnapshots()
+		if ra := c.raddr.Load(); ra != nil {
+			c.peerPort = ra.Port
+		}
 	}
 	c.send.init(c)
 	return nil
@@ -338,6 +363,9 @@ func bindxAddrs(family int, name string, ips []netip.Addr) ([]byte, error) {
 	if len(ips) == 0 {
 		return nil, invalidArg("%s needs at least one address", name)
 	}
+	if err := validateLocalIPs(family, ips); err != nil {
+		return nil, err
+	}
 	buf, err := encodeAddrs(family, ips, 0)
 	if err != nil {
 		return nil, err
@@ -376,12 +404,16 @@ func removesEveryAddress(bound, remove []netip.Addr) bool {
 
 // SetDeadline sets the read and write deadlines, as net.Conn documents: a
 // call waiting when the deadline passes returns an error wrapping
-// os.ErrDeadlineExceeded, and a zero t means no deadline.
+// os.ErrDeadlineExceeded, and a zero t means no deadline. A deadline that
+// expires while ReadMsg waits for the rest of a message aborts the
+// association; use Read or RecvMsg for deadline-driven partial reads.
 func (c *Conn) SetDeadline(t time.Time) error {
 	return c.setDeadline(t, 'b')
 }
 
 // SetReadDeadline sets the deadline for reads, as net.Conn documents.
+// If it passes while ReadMsg waits for the rest of a message, ReadMsg
+// aborts the association. Use Read or RecvMsg for deadline-driven reading.
 func (c *Conn) SetReadDeadline(t time.Time) error {
 	return c.setDeadline(t, 'r')
 }
@@ -489,17 +521,19 @@ func FileConn(f *os.File) (*Conn, error) {
 // Before adopting it, FileConn checks the descriptor: SO_PROTOCOL must be
 // IPPROTO_SCTP, SO_TYPE must be SOCK_STREAM (one-to-one; a one-to-many
 // socket or one peeled off it is SOCK_SEQPACKET), and SCTP_STATUS must find
-// an established association. Anything else is refused with an error
-// matching syscall.EINVAL, and a descriptor that is not a socket at all
-// fails with the kernel's syscall.ENOTSOCK. Every error is a *net.OpError
-// with Op "file", as net.FileConn's are.
+// an established or shutting-down association. Anything else is refused
+// with an error matching syscall.EINVAL, and a descriptor that is not a
+// socket at all fails with the kernel's syscall.ENOTSOCK. Every error is a
+// *net.OpError with Op "file", as net.FileConn's are.
 //
 // The socket is already set up, so only the package-side fields of the
 // Config apply: NotificationHandler and CloseTimeout. A Config that sets any
 // other field is refused with an error matching syscall.EINVAL. The package
 // does enable SCTP_RECVRCVINFO and its own SCTP_ASSOC_CHANGE subscription,
 // which its reads depend on, and takes the other notification types the
-// descriptor already subscribes to as the caller's.
+// descriptor already subscribes to as the caller's. Settings applied by
+// applyConfig affect the shared socket and cannot be rolled back if adoption
+// fails; the duplicate is closed without shutting down the caller's socket.
 func (c *Config) FileConn(f *os.File) (*Conn, error) {
 	conn, err := c.fileConn(f)
 	if err != nil {

@@ -306,7 +306,9 @@ claiming the RFC's behaviour:
   refuses `InterleaveStreams`, in `Config.FragmentInterleave` and in
   `SetFragmentInterleave`, with an error matching `ErrUnsupported`, before
   any system call. RFC 8260's I-DATA (`Config.MessageInterleaving`) is a
-  separate facility and does not provide level 2 either. An `Endpoint`
+  separate facility: when negotiated it can interleave pieces from different
+  streams even at level 1. `ReadMsg` refuses such an association; use
+  `RecvMsg` and reassemble by stream and EOR. An `Endpoint`
   defaults to level 1 (`InterleaveAssocs`), as §8.1.20 recommends for
   one-to-many sockets.
 - **Path thresholds.** RFC 7829 §7.2 specifies one three-threshold

@@ -87,10 +87,11 @@ type SendOptions struct {
 	// others) complete a link-local address the same way.
 	Path netip.Addr
 
-	// More says more messages follow at once, so the kernel may hold this
-	// one briefly to bundle it with them (MSG_MORE). The last
-	// message of a burst must leave More false, or it can sit until the next
-	// send.
+	// More lets Linux hold messages for bundling (MSG_MORE). The hold is
+	// per association and has no time limit: only a later successful send
+	// without More or a shutdown releases it. A failed send does not
+	// release it. Linux sets the hold only after a send passes every
+	// check (sctp_sendmsg_to_asoc); there is no timer to release it.
 	More bool
 
 	// NoWait makes a single attempt (MSG_DONTWAIT) instead of waiting for
@@ -191,11 +192,14 @@ type RcvInfo struct {
 	Stream    uint16
 	SSN       uint16
 	Unordered bool
-	PPID      uint32
-	TSN       uint32
-	CumTSN    uint32
-	Context   uint32
-	AssocID   AssocID
+	// PPID is the payload protocol identifier of the first piece. With
+	// I-DATA, Linux reports the fragment sequence number in later pieces
+	// (RFC 8260 §2.1); retain the first piece's PPID when reassembling.
+	PPID    uint32
+	TSN     uint32
+	CumTSN  uint32
+	Context uint32
+	AssocID AssocID
 }
 
 // NxtInfo is struct sctp_nxtinfo (RFC 6458 §5.3.6): what the kernel
@@ -207,7 +211,7 @@ type NxtInfo struct {
 	Unordered    bool
 	Notification bool
 	PPID         uint32
-	Length       uint32 // size of the whole next message
+	Length       uint32 // length of the next queued item: one piece during partial delivery (RFC 6458 §5.3.6)
 	AssocID      AssocID
 }
 

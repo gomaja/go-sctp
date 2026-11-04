@@ -26,6 +26,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"os"
 	"runtime"
@@ -52,6 +53,9 @@ func Dial(ctx context.Context, network string, laddr, raddr *Addr) (*Conn, error
 // Config.Control's RawConn.Control callback, after the package clears it.
 //
 // Linux may silently bind only a long list's start; see [Conn.BindAdd].
+//
+// A nil raddr, one with no IPs, or one with port 0 (RFC 9260 §3.1) is
+// refused with an error matching syscall.EINVAL before any socket is opened.
 //
 // ctx interrupts the wait for association setup; it does not interrupt
 // Config.Control, which runs synchronously. When ctx interrupts the wait,
@@ -103,6 +107,10 @@ func (c *Config) dial(ctx context.Context, network string, laddr, raddr *Addr) (
 	}
 	if raddr == nil || len(raddr.IPs) == 0 {
 		return nil, invalidArg("Dial needs a remote address with at least one IP")
+	}
+	// RFC 9260 §3.1 forbids destination port 0; Linux does not refuse it.
+	if raddr.Port == 0 {
+		return nil, invalidArg("Dial needs a non-zero remote port (RFC 9260 §3.1)")
 	}
 	family, err := socketFamily(network, laddr, raddr)
 	if err != nil {
@@ -372,9 +380,13 @@ func (s *socket) connectx(addrs []byte) error {
 // how a one-to-many socket learns the id at once (erlang/otp PR #1592).
 // On any other error the id is 0.
 func (s *socket) connectxID(addrs []byte) (AssocID, error) {
-	arg := connectx3Arg{addrNum: int32(len(addrs)), addrs: unsafe.Pointer(&addrs[0])}
+	n, err := connectxLength(len(addrs))
+	if err != nil {
+		return 0, err
+	}
+	arg := connectx3Arg{addrNum: n, addrs: unsafe.Pointer(&addrs[0])}
 	l := uint32(unsafe.Sizeof(arg))
-	err := s.getsockopt(optSockoptConnectx3, unsafe.Pointer(&arg), &l)
+	err = s.getsockopt(optSockoptConnectx3, unsafe.Pointer(&arg), &l)
 	// The kernel reads addrs through the pointer in arg, which the compiler
 	// cannot see as a use of addrs.
 	runtime.KeepAlive(addrs)
@@ -413,11 +425,15 @@ var aLongTimeAgo = time.Unix(1, 0)
 // Each wake checks SO_ERROR first, then asks SCTP_STATUS, which answers
 // only while the socket is ESTABLISHED or CLOSING and still holds its
 // association (sctp_id2assoc). When it does not answer, a notification
-// queued on the socket (read with MSG_PEEK, so that it stays for the
-// connection's own reads) shows that the association was established and
-// has already ended; the dial has succeeded all the same, as a TCP
-// connect does when the peer's FIN arrives first, and the connection's
-// reads then report the end.
+// queued on the socket is inspected with a 12-byte MSG_PEEK, leaving it
+// for the connection's own reads. SCTP_CANT_STR_ASSOC means setup failed
+// (RFC 6458 §6.1.1): Linux sets sk_err before queuing it, but a refusal
+// arriving after the first SO_ERROR read would otherwise look established.
+// Read SO_ERROR again for that record, failing closed if the query fails,
+// and use ECONNREFUSED if another observer has already consumed the error.
+// Every other head record still counts as established, including COMM_UP
+// queued before the association ended; the connection's reads report its
+// end as a TCP connection's do when the peer's FIN arrives first.
 //
 // A read-wait error also checks the socket once, through Control: a
 // refused setup can report EPOLLERR alone (net/sctp/socket.c: sctp_poll),
@@ -453,9 +469,13 @@ func awaitEstablished(ctx context.Context, s *socket) error {
 			failed = os.NewSyscallError("getsockopt", err)
 			return true
 		}
-		var b [1]byte
+		var b [12]byte
 		n, _, flags, _, err := syscall.Recvmsg(fd, b[:], nil, syscall.MSG_PEEK|syscall.MSG_DONTWAIT)
 		if err == nil && (n > 0 || flags&msgNotification != 0) {
+			if setupFailedNotification(b[:n], flags) {
+				failed = failedSetupError(fd)
+				return true
+			}
 			established = true
 			return true
 		}
@@ -497,4 +517,34 @@ func awaitEstablished(ctx context.Context, s *socket) error {
 		return failed
 	}
 	return s.file.SetReadDeadline(time.Time{})
+}
+
+// setupFailedNotification recognizes SCTP_CANT_STR_ASSOC (RFC 6458
+// §6.1.1) in the head record. Twelve bytes cover the header, state and
+// error; a shorter peek cannot classify the record as a failed setup.
+func setupFailedNotification(b []byte, flags int) bool {
+	return len(b) >= 12 && flags&msgNotification != 0 &&
+		EventType(binary.NativeEndian.Uint16(b[assocChangeTypeOff:])) == EventAssocChange &&
+		AssocChangeState(binary.NativeEndian.Uint16(b[assocChangeStateOff:])) == AssocCantStart
+}
+
+// failedSetupError reads the errno for a queued SCTP_CANT_STR_ASSOC. A
+// cleared SO_ERROR must not turn the failed setup into a successful dial.
+func failedSetupError(fd int) error {
+	soerr, err := syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_ERROR)
+	if err != nil {
+		return os.NewSyscallError("getsockopt", err)
+	}
+	if soerr == 0 {
+		soerr = int(syscall.ECONNREFUSED)
+	}
+	return os.NewSyscallError("sctp_connectx", syscall.Errno(soerr))
+}
+
+// connectxLength converts a packed address length for CONNECTX3.
+func connectxLength(n int) (int32, error) {
+	if n <= 0 || n > math.MaxInt32 {
+		return 0, invalidArg("packed connectx address length %d is outside 1-%d", n, math.MaxInt32)
+	}
+	return int32(n), nil
 }
