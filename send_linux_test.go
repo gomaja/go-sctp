@@ -2461,7 +2461,8 @@ func TestSendShutdownDeadlineRestoration(t *testing.T) {
 			if err := c.SetDeadline(deadline); err != nil {
 				t.Fatal(err)
 			}
-			// SetDeadline must keep the private wake active until restore.
+			// SetDeadline must keep the private wake active until
+			// restore.
 			if err := c.sock.raw.Write(func(uintptr) bool { return true }); !errors.Is(err, os.ErrDeadlineExceeded) {
 				t.Errorf("during wake = %v, want deadline exceeded", err)
 			}
@@ -2473,7 +2474,8 @@ func TestSendShutdownDeadlineRestoration(t *testing.T) {
 				t.Error("send left wake state or lost caller deadline")
 			}
 			c.send.deadlineMu.Unlock()
-			// Observe the actual poller deadline, not just the cached value.
+			// Observe the actual poller deadline, not just the
+			// cached value.
 			if latest == "unset" {
 				if err := c.sock.raw.Write(func(uintptr) bool { return true }); err != nil {
 					t.Fatalf("cleared deadline = %v", err)

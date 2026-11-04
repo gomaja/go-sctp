@@ -139,9 +139,9 @@ func (l *lifecycle) init() {
 // close shuts the association down gracefully and releases the descriptor,
 // falling back to an ABORT if the shutdown has not completed within grace
 // (RFC 9260 §9.2). A grace of zero or less aborts at once, exactly as
-// abortNow does. Only the first graceful close proceeds: another graceful close returns
-// net.ErrClosed. An abortNow or a close with no grace overtakes a waiting
-// graceful close.
+// abortNow does. Only the first graceful close proceeds: another graceful
+// close returns net.ErrClosed. An abortNow or a close with no grace overtakes
+// a waiting graceful close.
 //
 // It returns nil when the association ended during the wait, and also when
 // the grace period ran out or an Abort overtook the wait: those are
@@ -153,8 +153,8 @@ func (l *lifecycle) close(ops closeOps, grace time.Duration) error {
 		return net.ErrClosed
 	}
 	if grace <= 0 {
-		// Straight to the abortive close, without passing through
-		// lifeClosing: there is no wait for an Abort to overtake.
+		// This close needs no wait of its own and overtakes a
+		// graceful close that is already waiting.
 		return l.abortNow(ops)
 	}
 	if !l.state.CompareAndSwap(int32(lifeOpen), int32(lifeClosing)) {

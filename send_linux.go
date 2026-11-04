@@ -123,9 +123,9 @@ type sendState struct {
 	callerDeadline time.Time
 	callerCrossed  bool // a caller write deadline passed during this send
 	callerFirst    bool // a caller deadline crossed before interrupt, under deadlineMu
-	parked         bool // a Conn send can be waiting in raw.Write, under deadlineMu
+	parked         bool // Conn buffer wait, under deadlineMu
 	shutdownWake   bool // local shutdown owns the past write deadline
-	slow           bool // set only by the send owner on EAGAIN; gates its cleanup
+	slow           bool // EAGAIN cleanup flag, set only by the send owner
 	interrupted    bool
 	writeDeadline  func(time.Time) error // os.File.SetWriteDeadline, bound once
 	interruptFn    func()                // interrupt, bound once
@@ -235,24 +235,24 @@ func (c *Conn) SendMsg(b []byte, opts SendOptions) (int, error) {
 	return c.sendMsg(noContext, b, &opts)
 }
 
-// SendMsgContext is SendMsg with a context that can end its wait for the
-// send lock and, unless opts.NoWait is set, for send-buffer space; the
-// write deadline and Close also end the buffer wait. A nil ctx is refused
-// with an error matching syscall.EINVAL. A ctx done on entry means
-// nothing is validated or sent; ctx is checked again after taking the
-// lock. Success is (len(b), nil). Except for io.ErrShortWrite, an error means
-// nothing of the message was queued: RFC 6458 §3.1.4 makes sendmsg atomic
-// unless explicit EOR is enabled, and Linux has no explicit EOR (see SndInfo). No attempt
+// SendMsgContext is SendMsg with a context that can end its wait for the send
+// lock and, unless opts.NoWait is set, for send-buffer space; the write
+// deadline and Close also end the buffer wait. A nil ctx is refused with an
+// error matching syscall.EINVAL. A ctx done on entry means nothing is
+// validated or sent; ctx is checked again after taking the lock. Success is
+// (len(b), nil). Except for io.ErrShortWrite, an error means nothing of the
+// message was queued: RFC 6458 §3.1.4 makes sendmsg atomic unless explicit
+// EOR is enabled, and Linux has no explicit EOR (see SndInfo). No attempt
 // outlives the call, and known kernel acceptance wins over cancellation.
-// Cancellation preserves the caller's latest write deadline, including
-// one set during the call, and never touches the read deadline. Errors
-// are *net.OpError with Op "write"; a context interruption matches
-// ctx.Err(), context.Canceled or context.DeadlineExceeded, and never
-// os.ErrDeadlineExceeded. A wait the write deadline ended matches the
-// latter and not a context error, even if ctx is done by the time the call
-// returns; when both end the wait, the error names the one that came first.
-// The context's interrupt can run shortly after ctx is done; a write
-// deadline crossed in that gap comes first.
+// Cancellation preserves the caller's latest write deadline, including one
+// set during the call, and never touches the read deadline. Errors are
+// *net.OpError with Op "write"; a context interruption matches ctx.Err(),
+// context.Canceled or context.DeadlineExceeded, and never
+// os.ErrDeadlineExceeded. A wait the write deadline ended matches the latter
+// and not a context error, even if ctx is done by the time the call returns;
+// when both end the wait, the error names the one that came first. The
+// context's interrupt can run shortly after ctx is done; a write deadline
+// crossed in that gap comes first.
 //
 // SendMsgContext allocates nothing an ordinary send would not, except that
 // waiting for buffer space with a context that can be done registers a
@@ -350,7 +350,8 @@ func checkSendSize(n int) error {
 		return invalidArg("a send needs a message of at least one byte")
 	}
 	// Linux sendmsg truncates the iovec to MAX_RW_COUNT. Refuse it here:
-	// retrying the tail would create a second SCTP message (RFC 6458 §3.1.4).
+	// retrying the tail would create another SCTP message
+	// (RFC 6458 §3.1.4).
 	if n > maxSendSize {
 		return syscall.EMSGSIZE
 	}
@@ -375,9 +376,10 @@ func (s *sendState) send(ctx context.Context, sock *socket, b []byte, opts *Send
 			s.mu.Unlock()
 			return 0, err
 		}
-		// Context sends reset deadline precedence before registering an
-		// interrupt. An ordinary Conn send resets it only on EAGAIN, when
-		// it first marks itself parked for a possible shutdown wake.
+		// Context sends reset deadline precedence before registering
+		// an interrupt. An ordinary Conn send resets it only on
+		// EAGAIN, when it first marks itself parked for a possible
+		// shutdown wake.
 		s.deadlineMu.Lock()
 		s.callerCrossed = false
 		s.deadlineMu.Unlock()
@@ -508,8 +510,10 @@ func (s *sendState) attempt(fd uintptr) bool {
 						}
 						s.slow = true
 					}
-					// Mark before querying: startShutdown moves the association
-					// before it looks for a parked writer (RFC 9260 §9.2).
+					// Mark before querying so shutdown
+					// either observes the mark or has
+					// already moved the association
+					// (startShutdown; RFC 9260 §9.2).
 					s.parked = true
 					ended := assocShuttingDown(int(fd))
 					s.deadlineMu.Unlock()

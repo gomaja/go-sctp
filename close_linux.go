@@ -45,7 +45,8 @@ import (
 type sockCloseOps struct {
 	sock *socket
 	kind connKind
-	send *sendState // wakes a Conn writer after the association moves to shutdown
+	// Wakes a Conn writer after the association moves to shutdown.
+	send *sendState
 	term *termState // the connection's association-error latch; nil for a socket that has none
 	closeClock
 }
@@ -91,8 +92,9 @@ func (o *sockCloseOps) assocGone() (bool, error) {
 func (o *sockCloseOps) startShutdown() (err error) {
 	if o.send != nil {
 		defer func() {
-			// A failed primitive need not have moved the association.
-			// The send latch handles association failures separately.
+			// A failed primitive need not have moved the
+			// association. The send latch handles association
+			// failures separately.
 			if err == nil {
 				o.send.wakeShutdown()
 			}

@@ -107,21 +107,21 @@
 // A send waits for send-buffer space in the runtime poller, until the write
 // deadline passes or the socket is closed; [Conn.SendMsgContext] and
 // [Endpoint.SendMsgContext] let a context end the lock and buffer waits too.
-// A successful send queues the whole message, a failed one none of it
-// except an unexpected short count reported with io.ErrShortWrite; its tail
-// is never retried (RFC 6458 §3.1.4; Linux does not implement explicit EOR).
-// With NoWait a send makes one attempt instead. More tells the
-// kernel that more messages follow, so that it may bundle them (MSG_MORE).
-// The per-association hold has no time limit. A failed send does not release
-// it; only a later successful send without More or a shutdown does.
-// Successful uncontended sends using a reused heap buffer with no Path
-// zone or a numeric zone make no allocation. A fresh local array escapes
-// through the iovec and costs one allocation. Waiting can allocate the send
-// lock's lazy queue or pooled waiters on first use, higher peak contention
-// or pool refill, and SendMsgContext's cancellation state while waiting. A zone given by
+// A successful send queues the whole message, a failed one none of it except
+// an unexpected short count reported with io.ErrShortWrite; its tail is never
+// retried (RFC 6458 §3.1.4; Linux does not implement explicit EOR). With
+// NoWait a send makes one attempt instead. More tells the kernel that more
+// messages follow, so that it may bundle them (MSG_MORE). The per-association
+// hold has no time limit. A failed send does not release it; only a later
+// successful send without More or a shutdown does. Successful uncontended
+// sends using a reused heap buffer with no Path zone or a numeric zone make
+// no allocation. A fresh local array escapes through the iovec and costs one
+// allocation. Waiting can allocate the send lock's lazy queue or pooled
+// waiters on first use, higher peak contention or pool refill, and
+// SendMsgContext's cancellation state while waiting. A zone given by
 // interface name allocates only when the package reads the host's interface
-// table again (at most once a minute, or for a name it has not seen).
-// SendMsg keeps nothing of its arguments.
+// table again (at most once a minute, or for a name it has not seen). SendMsg
+// keeps nothing of its arguments.
 //
 // # Concurrency
 //

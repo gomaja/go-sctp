@@ -594,15 +594,15 @@ func (e *Endpoint) bindx(opt int, name string, ips []netip.Addr) error {
 // syscall.EPIPE (net/sctp/socket.c: sctp_sendmsg).
 //
 // Unless opts.NoWait is set, SendMsg waits for send-buffer space in the
-// runtime poller, until the write deadline passes or the endpoint is
-// closed; the buffer is the endpoint's, so another association's progress
-// can release the wait (RFC 6458 §3.2). With NoWait, a send that finds no
-// space fails at once with an error matching syscall.EAGAIN, and nothing
-// of the message is queued. An uncontended successful SendMsg makes no
-// allocation with a reused heap buffer; a fresh local array escapes and
-// costs one allocation. On contention, the shared send lock lazily creates
-// its queue and uses pooled waiters; first use, higher peak contention or a pool refill
-// can allocate. SendMsg keeps nothing of b or opts after it returns.
+// runtime poller, until the write deadline passes or the endpoint is closed;
+// the buffer is the endpoint's, so another association's progress can release
+// the wait (RFC 6458 §3.2). With NoWait, a send that finds no space fails at
+// once with an error matching syscall.EAGAIN, and nothing of the message is
+// queued. An uncontended successful SendMsg makes no allocation with a reused
+// heap buffer; a fresh local array escapes and costs one allocation. On
+// contention, the shared send lock lazily creates its queue and uses pooled
+// waiters; first use, higher peak contention or a pool refill can allocate.
+// SendMsg keeps nothing of b or opts after it returns.
 //
 // Every send carries SCTP_SNDINFO, since that is where the association id
 // travels (RFC 6458 §5.3.4). A nil opts.Info or opts.PR means the
@@ -629,24 +629,24 @@ func (e *Endpoint) SendMsg(id AssocID, b []byte, opts SendOptions) (int, error) 
 	return e.sendMsg(noContext, id, b, &opts)
 }
 
-// SendMsgContext is SendMsg with a context that can end its wait for the
-// send lock and, unless opts.NoWait is set, for endpoint-wide buffer
-// space; the write deadline and Close also end the buffer wait. A nil ctx is
-// refused with an error matching syscall.EINVAL. A ctx done on entry
-// means nothing is validated or sent; ctx is checked again after taking
-// the lock. Success is (len(b), nil). Except for io.ErrShortWrite, an error
-// means nothing of the message was queued: RFC 6458 §3.1.4 makes sendmsg
-// atomic unless explicit EOR is enabled, and Linux has no explicit EOR (see SndInfo). No attempt
+// SendMsgContext is SendMsg with a context that can end its wait for the send
+// lock and, unless opts.NoWait is set, for endpoint-wide buffer space; the
+// write deadline and Close also end the buffer wait. A nil ctx is refused
+// with an error matching syscall.EINVAL. A ctx done on entry means nothing is
+// validated or sent; ctx is checked again after taking the lock. Success is
+// (len(b), nil). Except for io.ErrShortWrite, an error means nothing of the
+// message was queued: RFC 6458 §3.1.4 makes sendmsg atomic unless explicit
+// EOR is enabled, and Linux has no explicit EOR (see SndInfo). No attempt
 // outlives the call, and known kernel acceptance wins over cancellation.
-// Cancellation preserves the caller's latest write deadline, including
-// one set during the call, and never touches the read deadline. Errors
-// are *net.OpError with Op "write"; a context interruption matches
-// ctx.Err(), context.Canceled or context.DeadlineExceeded, and never
-// os.ErrDeadlineExceeded. A wait the write deadline ended matches the
-// latter and not a context error, even if ctx is done by the time the call
-// returns; when both end the wait, the error names the one that came first.
-// The context's interrupt can run shortly after ctx is done; a write
-// deadline crossed in that gap comes first.
+// Cancellation preserves the caller's latest write deadline, including one
+// set during the call, and never touches the read deadline. Errors are
+// *net.OpError with Op "write"; a context interruption matches ctx.Err(),
+// context.Canceled or context.DeadlineExceeded, and never
+// os.ErrDeadlineExceeded. A wait the write deadline ended matches the latter
+// and not a context error, even if ctx is done by the time the call returns;
+// when both end the wait, the error names the one that came first. The
+// context's interrupt can run shortly after ctx is done; a write deadline
+// crossed in that gap comes first.
 //
 // SendMsgContext allocates nothing SendMsg would not, except that waiting
 // for buffer space with a context that can be done registers a

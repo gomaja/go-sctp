@@ -205,13 +205,13 @@ func (c *Conn) RecvMsg(b []byte) (int, MsgInfo, error) {
 	}
 }
 
-// Read reads message bytes into b, as RecvMsg does without the metadata:
-// it never returns a notification's bytes, handing each notification the
-// caller receives to the NotificationHandler, when there is one, and
-// skipping it otherwise. A message longer than b is returned over several
-// reads, with nothing to mark where it ends; use RecvMsg or ReadMsg when
-// the message boundary matters. A read of data into a reused heap buffer makes no allocation; a fresh
-// local array escapes and costs one allocation. Errors
+// Read reads message bytes into b, as RecvMsg does without the metadata: it
+// never returns a notification's bytes, handing each notification the caller
+// receives to the NotificationHandler, when there is one, and skipping it
+// otherwise. A message longer than b is returned over several reads, with
+// nothing to mark where it ends; use RecvMsg or ReadMsg when the message
+// boundary matters. A read of data into a reused heap buffer makes no
+// allocation; a fresh local array escapes and costs one allocation. Errors
 // are as for RecvMsg, except that Read ignores MSG_CTRUNC, since it returns
 // no ancillary data.
 func (c *Conn) Read(b []byte) (int, error) {
