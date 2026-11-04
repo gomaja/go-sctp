@@ -357,7 +357,7 @@ func socketFamily(network string, laddr, raddr *Addr) (int, error) {
 // the port it names is kept.
 func localBindAddrs(family int, laddr *Addr) ([]byte, error) {
 	if len(laddr.IPs) != 0 {
-		if err := validateLocalIPs(laddr.IPs); err != nil {
+		if err := validateLocalIPs(family, laddr.IPs); err != nil {
 			return nil, err
 		}
 		return encodeAddrs(family, laddr.IPs, laddr.Port)

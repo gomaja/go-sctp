@@ -49,6 +49,9 @@ func Dial(ctx context.Context, network string, laddr, raddr *Addr) (*Conn, error
 // for the setup (sctp_connectx, RFC 6458 §9.9), and several in laddr make
 // a multi-homed local endpoint.
 //
+// A nil raddr, one with no IPs, or one with port 0 (RFC 9260 §3.1) is
+// refused with an error matching syscall.EINVAL before any socket is opened.
+//
 // ctx interrupts the wait for association setup; it does not interrupt
 // Config.Control, which runs synchronously. When ctx interrupts the wait,
 // Dial releases the attempt the way c.AbandonPolicy says (AbandonAbort by

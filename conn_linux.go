@@ -336,7 +336,7 @@ func bindxAddrs(family int, name string, ips []netip.Addr) ([]byte, error) {
 	if len(ips) == 0 {
 		return nil, invalidArg("%s needs at least one address", name)
 	}
-	if err := validateLocalIPs(ips); err != nil {
+	if err := validateLocalIPs(family, ips); err != nil {
 		return nil, err
 	}
 	buf, err := encodeAddrs(family, ips, 0)

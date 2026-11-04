@@ -329,12 +329,16 @@ func netAddr(a *Addr) net.Addr {
 }
 
 // validateLocalIPs refuses repeated local addresses before sctp_bindx sees
-// them. A mapped IPv4 address and its plain form name the same address;
-// zones on IPv6 addresses still distinguish interfaces.
-func validateLocalIPs(ips []netip.Addr) error {
+// them, comparing the addresses encodeAddr binds for family. Mapped IPv4
+// addresses compare in plain form; on AF_INET6 the IPv4 wildcard is also
+// encoded as ::. Zones on IPv6 addresses still distinguish interfaces.
+func validateLocalIPs(family int, ips []netip.Addr) error {
 	seen := make(map[netip.Addr]int, len(ips))
 	for i, ip := range ips {
 		ip = ip.Unmap()
+		if family == afInet6 && ip.Is4() && ip.IsUnspecified() {
+			ip = netip.IPv6Unspecified()
+		}
 		if j, ok := seen[ip]; ok {
 			return invalidArg("local address %d (%s) duplicates address %d", i, ip, j)
 		}

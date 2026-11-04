@@ -190,6 +190,7 @@ func TestDuplicateLocalAddresses(t *testing.T) {
 		{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.1")},
 		{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("::ffff:127.0.0.1")},
 		{netip.MustParseAddr("::1"), netip.MustParseAddr("::1")},
+		{netip.IPv4Unspecified(), netip.IPv6Unspecified()},
 	} {
 		t.Run(ips[1].String(), func(t *testing.T) {
 			var controls atomic.Int32
@@ -385,7 +386,7 @@ func TestLocalAddressValidationBoundaries(t *testing.T) {
 		{"third repeats second", []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2"), netip.MustParseAddr("127.0.0.2")}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateLocalIPs(tc.ips)
+			err := validateLocalIPs(afInet6, tc.ips)
 			if errors.Is(err, syscall.EINVAL) != tc.want {
 				t.Fatalf("validateLocalIPs = %v, duplicate = %v", err, tc.want)
 			}
@@ -470,6 +471,48 @@ func TestNewConnOwnedFailureAbortsSocket(t *testing.T) {
 			}
 			if got.Onoff != 1 || got.Linger != 0 {
 				t.Errorf("owned socket linger = %v, want {1 0}", got)
+			}
+		})
+	}
+}
+
+func TestLocalAddressValidationSocketFamily(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		family    int
+		ips       []string
+		duplicate bool
+	}{
+		{"IPv6 wildcards", afInet6, []string{"0.0.0.0", "::"}, true},
+		{"IPv6 wildcards reversed", afInet6, []string{"::", "0.0.0.0"}, true},
+		{"IPv6 mapped wildcard", afInet6, []string{"::ffff:0.0.0.0", "::"}, true},
+		{"IPv6 mapped wildcard reversed", afInet6, []string{"::", "::ffff:0.0.0.0"}, true},
+		{"IPv6 plain and mapped IPv4 wildcard", afInet6, []string{"0.0.0.0", "::ffff:0.0.0.0"}, true},
+		{"IPv6 wildcard and specific IPv4", afInet6, []string{"::", "127.0.0.1"}, false},
+		{"IPv6 wildcard and specific IPv6", afInet6, []string{"0.0.0.0", "::1"}, false},
+		{"IPv6 specific mapped IPv4", afInet6, []string{"127.0.0.1", "::ffff:127.0.0.1"}, true},
+		{"IPv6 one IPv4 wildcard", afInet6, []string{"0.0.0.0"}, false},
+		{"IPv6 one IPv6 wildcard", afInet6, []string{"::"}, false},
+		{"IPv4 wildcards remain distinct", afInet, []string{"0.0.0.0", "::"}, false},
+		{"IPv4 wildcards reversed remain distinct", afInet, []string{"::", "0.0.0.0"}, false},
+		{"IPv4 mapped wildcard and IPv6 wildcard remain distinct", afInet, []string{"::ffff:0.0.0.0", "::"}, false},
+		{"IPv4 repeated wildcard", afInet, []string{"0.0.0.0", "0.0.0.0"}, true},
+		{"IPv4 plain and mapped wildcard", afInet, []string{"0.0.0.0", "::ffff:0.0.0.0"}, true},
+		{"IPv4 wildcard and specific address", afInet, []string{"0.0.0.0", "127.0.0.1"}, false},
+		{"IPv4 specific mapped address", afInet, []string{"127.0.0.1", "::ffff:127.0.0.1"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ips := make([]netip.Addr, len(tc.ips))
+			for i, text := range tc.ips {
+				ips[i] = netip.MustParseAddr(text)
+			}
+			err := validateLocalIPs(tc.family, ips)
+			if tc.duplicate {
+				if !errors.Is(err, syscall.EINVAL) || !strings.Contains(err.Error(), "address 1") || !strings.Contains(err.Error(), "address 0") {
+					t.Fatalf("validateLocalIPs = %v, want duplicate indexes 1 and 0", err)
+				}
+			} else if err != nil {
+				t.Fatalf("validateLocalIPs = %v, want no duplicate", err)
 			}
 		})
 	}
