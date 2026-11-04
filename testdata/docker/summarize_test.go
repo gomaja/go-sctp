@@ -44,6 +44,8 @@ func TestSummarizer(t *testing.T) {
 	run := event{Action: "run", Package: pkg, Test: "TestOne"}
 	pass := event{Action: "pass", Package: pkg, Test: "TestOne"}
 	end := event{Action: "pass", Package: pkg}
+	benchRun := event{Action: "run", Package: pkg, Test: "BenchmarkOne"}
+	bench := event{Action: "bench", Package: pkg, Test: "BenchmarkOne"}
 	good := stream(start, run, pass, end)
 	skipped := stream(start, run, event{Action: "output", Package: pkg, Test: "TestOne", Output: "    x_test.go:3: feature disabled\n"}, event{Action: "skip", Package: pkg, Test: "TestOne"}, end)
 	tests := []struct {
@@ -52,6 +54,13 @@ func TestSummarizer(t *testing.T) {
 		want               string
 		fail               bool
 	}{
+		{name: "benchmark", input: stream(start, benchRun, bench, end), args: []string{"-require", pkg + " BenchmarkOne"}, want: "SUMMARY: PASS=1 FAIL=0 SKIP=0"},
+		{name: "benchmark repeated", input: stream(start, benchRun, bench, benchRun, bench, end), args: []string{"-min-tests", "2"}, want: "PASS=2"},
+		{name: "benchmark mixed", input: stream(start, run, pass, benchRun, bench, end), want: "PASS=2"},
+		{name: "benchmark without run", input: stream(start, bench, end), want: "without run", fail: true},
+		{name: "benchmark duplicate", input: stream(start, benchRun, bench, bench, end), want: "without run", fail: true},
+		{name: "benchmark missing name", input: stream(start, event{Action: "bench", Package: pkg}, run, pass, end), want: "benchmark result missing test", fail: true},
+		{name: "benchmark minimum", input: stream(start, benchRun, bench, end), args: []string{"-min-tests", "2"}, want: "selected 1 tests", fail: true},
 		{name: "pass", input: good, want: "SUMMARY: PASS=1 FAIL=0 SKIP=0"},
 		{name: "minimum exact", input: good, args: []string{"-min-tests", "1"}, want: "PASS=1"},
 		{name: "minimum above", input: good, args: []string{"-min-tests", "2"}, want: "selected 1 tests", fail: true},

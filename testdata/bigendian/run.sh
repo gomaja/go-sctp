@@ -29,11 +29,16 @@ cache="$(cd "$cache" && pwd)"
 work="$(mktemp -d "$cache/run.XXXXXXXX")"
 echo "evidence directory: $work"
 supervisor_pid=""
+image=""
 # Keep failed inputs for diagnosis; a successful run needs only its small
 # evidence. Forward cancellation to the supervisor so it can remove Docker.
 # shellcheck disable=SC2329
 finish() {
 	status=$?
+	if [ -n "$image" ]; then
+		# Remove only this run's tag; other tags and shared layers remain.
+		docker image rm "$image" >/dev/null 2>&1 || true
+	fi
 	if [ "$status" -eq 0 ]; then
 		rm -f "$work/sctp.test" "$work/example.test" "$work/supervise"
 		echo "evidence kept in $work; successful run's binaries removed"

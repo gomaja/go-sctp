@@ -166,7 +166,11 @@ func summarize(input io.Reader, output io.Writer, allowed map[key]bool, required
 				problems = append(problems, "invalid test "+e.Action+": "+e.Package+" "+e.Test)
 			}
 			paused[k] = e.Action == "pause"
-		case "pass", "fail", "skip":
+		case "pass", "fail", "skip", "bench":
+			if e.Action == "bench" && e.Test == "" {
+				problems = append(problems, "benchmark result missing test: "+e.Package)
+				continue
+			}
 			if e.Test == "" {
 				for test := range active {
 					if test.pkg == e.Package {
@@ -192,7 +196,8 @@ func summarize(input io.Reader, output io.Writer, allowed map[key]bool, required
 			delete(active, k)
 			delete(paused, k)
 			switch e.Action {
-			case "pass":
+			case "pass", "bench":
+				// Successful benchmark log events terminate like passing tests (cmd/test2json).
 				passN++
 				passed[k]++
 			case "fail":

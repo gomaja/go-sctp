@@ -1397,7 +1397,7 @@ func TestStorageLayoutOnThisKernel(t *testing.T) {
 		}
 		return
 	}
-	// A 32-bit build on CI's 64-bit kernel must use the compat layout.
+	// A 32-bit build must select the layout of the running kernel.
 	l, err := client.sock.storageLayout()
 	if err != nil {
 		t.Fatalf("storageLayout: %v", err)
@@ -1407,8 +1407,12 @@ func TestStorageLayoutOnThisKernel(t *testing.T) {
 		t.Fatalf("uname -m: %v", err)
 	}
 	machine := strings.TrimSpace(string(machineBytes))
-	if (strings.Contains(machine, "64") || machine == "s390x") && l != &kernel64StorageLayout {
-		t.Errorf("32-bit process on %s selected %p, want the 64-bit kernel layout", machine, l)
+	want := &nativeStorageLayout
+	if strings.Contains(machine, "64") || machine == "s390x" {
+		want = &kernel64StorageLayout
+	}
+	if l != want {
+		t.Errorf("32-bit process on %s selected %p, want %p", machine, l, want)
 	}
 }
 

@@ -144,11 +144,11 @@ func TestLoopbackConnectRestart(t *testing.T) {
 				done <- nil
 				return restart
 			})
-			_, peerErr := syscall.Getpeername(client)
-			connectedErr := <-done
 			if err != nil {
 				t.Fatalf("connect after restart %v: %v", restart, err)
 			}
+			_, peerErr := syscall.Getpeername(client)
+			connectedErr := <-done
 			if peerErr != nil {
 				t.Fatalf("returned before establishment: %v", peerErr)
 			}
