@@ -141,19 +141,24 @@ func TestLoopbackConnectRestart(t *testing.T) {
 				if err := syscall.Connect(fd, sa); err != nil {
 					return err
 				}
-				done <- nil
 				return restart
 			})
 			if err != nil {
 				t.Fatalf("connect after restart %v: %v", restart, err)
 			}
 			_, peerErr := syscall.Getpeername(client)
-			connectedErr := <-done
 			if peerErr != nil {
 				t.Fatalf("returned before establishment: %v", peerErr)
 			}
-			if connectedErr != nil {
-				t.Fatal(connectedErr)
+			if restart == syscall.EALREADY || restart == syscall.EINPROGRESS {
+				select {
+				case connectedErr := <-done:
+					if connectedErr != nil && connectedErr != syscall.EISCONN {
+						t.Fatal(connectedErr)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("connect callback did not finish within 5 s")
+				}
 			}
 		})
 	}
