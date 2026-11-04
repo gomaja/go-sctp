@@ -247,7 +247,12 @@ wait:
 			if err := os.WriteFile(filepath.Join(s.work, pkg.logName+"-"+state+".json"), events, 0600); err != nil {
 				return err
 			}
-			summary, err := s.execute(deadline, string(events), "run", "testdata/docker/summarize.go")
+			stateName := "off"
+			if state == "1" {
+				stateName = "on"
+			}
+			summary, err := s.execute(deadline, string(events), "run", "testdata/docker/summarize.go",
+				"-allow-skips", "testdata/docker/skips/s390x-"+stateName+".txt")
 			if _, writeErr := s.out.Write(summary); writeErr != nil {
 				return writeErr
 			}

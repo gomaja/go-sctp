@@ -21,7 +21,7 @@
 #
 # WIRE_OUT names the artifact directory (default: a new temporary one);
 # WIRE_GO_IMAGE the Go image the harness image is built from (default
-# golang:1.26.5-bookworm).
+# golang:1.26.10-bookworm).
 set -euo pipefail
 
 RUN=""
@@ -56,7 +56,7 @@ case "$ONLY" in
 esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-GO_IMAGE="${WIRE_GO_IMAGE:-golang:1.26.5-bookworm}"
+GO_IMAGE="${WIRE_GO_IMAGE:-golang:1.26.10-bookworm}"
 RUN_ID="${HARNESS_RUN_ID:-sctpwire-$$-$RANDOM}"
 IMAGE="go-sctp-wire:$RUN_ID"
 NET_A="$RUN_ID-a"
@@ -68,6 +68,8 @@ OUT="${WIRE_OUT:-$(mktemp -d "${TMPDIR:-/tmp}/go-sctp-wire.XXXXXX")}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 BUILD="$OUT/build"
+# A reused output directory must not retain a verdict from another selection.
+rm -rf "$OUT/expected"
 mkdir -p "$BUILD" "$OUT/expected"
 
 IMAGE_BUILT=0
@@ -251,11 +253,13 @@ run_roles() {
 		local status=0
 		wait "${pids[$i]}" || status=$?
 		i=$((i + 1))
-		docker exec -i "$CLIENT" /wire/summarize <"$OUT/$phase.$role.json" >"$OUT/$phase.$role.log"
+        local summary_status=0
+		docker exec -i "$CLIENT" /wire/summarize -min-tests 2 -require "$PKG $test" \
+            <"$OUT/$phase.$role.json" >"$OUT/$phase.$role.log" || summary_status=$?
 		local summary
 		summary="$(grep '^SUMMARY:' "$OUT/$phase.$role.log" || true)"
 		echo "$phase $role: $summary EXIT=$status"
-		if [ "$status" -ne 0 ] || ! echo "$summary" | grep -Eq '^SUMMARY: PASS=[1-9][0-9]* FAIL=0 SKIP=0$'; then
+		if [ "$status" -ne 0 ] || [ "$summary_status" -ne 0 ]; then
 			failed=1
 			grep -E '^[[:space:]]*--- FAIL|^[[:space:]]+[a-z_]+_test\.go:[0-9]+:' "$OUT/$phase.$role.log" | head -40 | sed "s/^/  $role: /" >&2 || true
 		fi
@@ -323,8 +327,7 @@ if [ "$ONLY" != wire ]; then
 	run_roles twohost TestTwoHost "$RUN" || VERDICT=1
 	{
 		for role in client server; do
-			# A -run filter can match no two-host subtest; that is not a
-			# failure (run_roles already judged the phase).
+			# run_roles has already required a passing parent and case.
 			{ grep -E '^[[:space:]]*--- (PASS|FAIL|SKIP): TestTwoHost/' "$OUT/twohost.$role.log" || true; } |
 				sed -E "s/^[[:space:]]*/$role: /; s/ \([0-9.]+s\)$//"
 		done

@@ -4,7 +4,7 @@ SCTP does not exist on macOS: `sctp.Listen` and the other constructors
 return an error matching `sctp.ErrUnsupported` there, and the socket-backed
 tests, in the `*_linux_test.go` files, are not even built, so they have to
 run against a real Linux SCTP stack. `linux-suite.sh` runs the package's
-tests inside a `--privileged` `golang:1.26.5-bookworm` container (falling
+tests inside a `--privileged` `golang:1.26.10-bookworm` container (falling
 back to the newest `golang:1.26.*-bookworm` tag it can find if that exact
 one is unavailable, and printing whichever image it used), with the
 network and sysctl setup the suite requires.
@@ -27,7 +27,11 @@ testdata/docker/linux-suite.sh [-race] [-sysctl on|off] [-run REGEX]
 - `-run REGEX` is passed straight through to `go test -run`. Defaults to
   `.*` (everything).
 
-`HARNESS_RUN_ID` supplies the container's `harness` label. `LINUX_SUITE_IMAGE`
+`HARNESS_RUN_ID` supplies a unique prefix for the container and module-cache
+volume. `HARNESS_LABEL` sets their shared `harness` label (by default the run
+ID). Both are removed on exit and on INT or TERM. `LINUX_SUITE_OUT` selects
+the evidence directory; its default is a new temporary directory printed at
+startup. The directory survives container removal. `LINUX_SUITE_IMAGE`
 selects a prepared Go image, for a run whose network policy prevents the
 setup script from installing `iproute2`; the script prints the image and
 Go version actually used.
@@ -137,23 +141,28 @@ test and subtest individually, so the summary is:
 SUMMARY: PASS=<n> FAIL=<n> SKIP=<n>
 ```
 
-followed by, when applicable:
+followed by every skipped test and its message, and any validation errors.
 
-- `SKIP list:` — every skipped test (including subtests) with its skip
-  message, one per line.
-- `BUILD FAILURES:` — any package that failed to build, so a build
-  failure is never mistaken for zero failures.
-- `FAIL lines:` — any `FAIL\t<package>` summary line `go test` printed.
-- `PANIC lines:` — any `panic:` line, since a panic can end the run before
-  the failing test's own result is ever recorded.
+The summarizer exits nonzero for malformed or incomplete JSON, an unknown
+action, a failed build, test or package, zero selected tests, or a skip outside
+`skips/linux-on.txt` or `skips/linux-off.txt`. The allowlists identify tests by
+both package and full test name, including subtests. They permit the separate
+two-host cases, plus the interleaving-on case in sysctl-off runs. Architecture
+jobs select their own committed files from the same directory. An allowlisted
+case may pass when its prerequisite is available; the list only permits skips.
 
-Finally the script prints `EXIT=<status>`, the exit status `go test`
-itself returned, and exits with that same status. A skip is not a pass:
-every entry in `SKIP list:` needs its reason to be either a deliberate,
-documented limitation or a bug to fix, and `EXIT`, `BUILD FAILURES` and
-`PANIC lines` all being absent is what "the suite is actually green" means
-here — `SUMMARY: PASS=... FAIL=0` alone is not sufficient proof of that.
+`-require 'package TestName'` requires an exact passing test, for CI steps
+that select a named test. `-min-tests N` raises the minimum number of selected
+test runs (including subtests); it must be positive. The wire harness requires
+both its parent and at least one child to run. The summarizer itself is tested
+with `go test ./testdata/docker`, since `./...` omits `testdata`.
 
-The raw JSON stream is kept at `/tmp/out.json` and the reconstructed
-human-readable log at `/tmp/out.log` inside the container, for anything
-this summary doesn't already answer.
+Finally the script prints `EXIT=<status>`. It checks every pipeline stage,
+including `go test`, the summarizer and both evidence writers; success requires
+`EXIT=0`. `SUMMARY: PASS=... FAIL=0` alone does not establish success. The raw
+JSON stream, reconstructed log and producer stderr are retained as `out.json`,
+`out.log` and `stderr.log` in the printed evidence directory.
+
+The suite executes the checked-out code as root in a privileged container.
+Run it only for code you trust; container isolation does not remove that trust
+requirement.

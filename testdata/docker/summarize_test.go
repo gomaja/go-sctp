@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,14 +53,19 @@ func TestSummarizer(t *testing.T) {
 		fail               bool
 	}{
 		{name: "pass", input: good, want: "SUMMARY: PASS=1 FAIL=0 SKIP=0"},
+		{name: "minimum exact", input: good, args: []string{"-min-tests", "1"}, want: "PASS=1"},
+		{name: "minimum above", input: good, args: []string{"-min-tests", "2"}, want: "selected 1 tests", fail: true},
+		{name: "minimum zero", input: good, args: []string{"-min-tests", "0"}, want: "positive", fail: true},
+		{name: "minimum negative", input: good, args: []string{"-min-tests", "-1"}, want: "positive", fail: true},
+		{name: "minimum below", input: stream(start, run, pass, run, pass, end), args: []string{"-min-tests", "1"}, want: "PASS=2"},
 		{name: "empty", want: "no tests", fail: true},
 		{name: "zero selected", input: stream(start, end), want: "no tests", fail: true},
 		{name: "malformed", input: good + "garbage\n", want: "invalid JSON", fail: true},
 		{name: "truncated JSON", input: good + "{", want: "invalid JSON", fail: true},
 		{name: "unknown action", input: good + stream(event{Action: "mystery", Package: pkg}), want: "unknown action", fail: true},
 		{name: "empty object", input: good + "{}\n", want: "unknown action", fail: true},
-		{name: "missing package", input: stream(event{Action: "start"}) + good, want: "package", fail: true},
-		{name: "test failure", input: stream(start, run, event{Action: "fail", Package: pkg, Test: "TestOne"}, event{Action: "fail", Package: pkg}), want: "FAIL=1", fail: true},
+		{name: "missing package", input: stream(event{Action: "start"}) + good, want: "event missing package", fail: true},
+		{name: "test failure", input: stream(start, run, event{Action: "fail", Package: pkg, Test: "TestOne"}, event{Action: "fail", Package: pkg}), want: "test failed:", fail: true},
 		{name: "package failure", input: stream(start, run, pass, event{Action: "fail", Package: pkg}), want: "package failed", fail: true},
 		{name: "build failure", input: stream(event{Action: "build-fail", ImportPath: pkg}), want: "build failed", fail: true},
 		{name: "unfinished test", input: stream(start, run, end), want: "unfinished test", fail: true},
@@ -108,5 +114,24 @@ func TestSummarizer(t *testing.T) {
 				t.Fatalf("missing %q in:\n%s", tt.want, out)
 			}
 		})
+	}
+}
+
+type failedReader struct{}
+
+func (failedReader) Read([]byte) (int, error) { return 0, errors.New("broken reader") }
+
+type failedWriter struct{}
+
+func (failedWriter) Write([]byte) (int, error) { return 0, errors.New("broken writer") }
+func TestSummarizerIOFailure(t *testing.T) {
+	var out strings.Builder
+	if code := run(nil, failedReader{}, &out, &out); code == 0 || !strings.Contains(out.String(), "broken reader") {
+		t.Fatalf("reader failure lost: exit=%d output=%s", code, &out)
+	}
+	input := stream(event{Action: "start", Package: "p"}, event{Action: "run", Package: "p", Test: "TestX"}, event{Action: "pass", Package: "p", Test: "TestX"}, event{Action: "pass", Package: "p"})
+	out.Reset()
+	if code := run(nil, strings.NewReader(input), failedWriter{}, &out); code == 0 || !strings.Contains(out.String(), "broken writer") {
+		t.Fatalf("writer failure lost: exit=%d output=%s", code, &out)
 	}
 }

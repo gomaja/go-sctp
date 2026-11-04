@@ -87,7 +87,10 @@ jobs:
         # populated instead of reusing it. PATH is passed explicitly
         # because sudo resets it by default and go must still resolve
         # on it.
-        run: sudo -E env "PATH=$PATH" go test ./... -count=1 -timeout 900s
+        shell: bash
+        run: |
+          sudo -E env "PATH=$PATH" go test ./... -count=1 -timeout 900s -json |
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/linux-${{ matrix.sysctl }}.txt
 
   test-linux-arm64:
     name: test-linux / arm64
@@ -108,7 +111,10 @@ jobs:
       - name: Build the tests
         run: go test -run '^$' -count=1 ./...
       - name: go test
-        run: sudo -E env "PATH=$PATH" go test ./... -count=1 -timeout 900s
+        shell: bash
+        run: |
+          sudo -E env "PATH=$PATH" go test ./... -count=1 -timeout 900s -json |
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/arm64-on.txt
 
   test-linux-race:
     name: test-linux race, sysctl ${{ matrix.sysctl }}
@@ -137,7 +143,10 @@ jobs:
         run: go test -race -run '^$' -count=1 ./...
       - name: go test -race
         # Root, for the same reason as test-linux's go test step.
-        run: sudo -E env "PATH=$PATH" go test ./... -race -count=1 -timeout 900s
+        shell: bash
+        run: |
+          sudo -E env "PATH=$PATH" go test ./... -race -count=1 -timeout 900s -json |
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/linux-${{ matrix.sysctl }}.txt
 
   test-linux-checkptr:
     name: test-linux checkptr
@@ -166,9 +175,11 @@ jobs:
         # the same reason as test-linux's go test step; the build first,
         # as the normal user, keeps the build cache actions/setup-go set
         # up owned by it.
+        shell: bash
         run: |
           go test -gcflags=all=-d=checkptr -run '^$' -count=1 ./...
-          sudo -E env "PATH=$PATH" go test ./... -gcflags=all=-d=checkptr -count=1 -timeout 900s
+          sudo -E env "PATH=$PATH" go test ./... -gcflags=all=-d=checkptr -count=1 -timeout 900s -json |
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/checkptr-on.txt
 
   vet:
     name: vet
@@ -212,6 +223,12 @@ jobs:
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
+          args: --max-same-issues=0 --max-issues-per-linter=0 ./... ./testdata/...
+      - name: Check harness Go code
+        run: '"$(go env GOPATH)/bin/staticcheck" ./testdata/...'
+      - name: Test the JSON summarizer
+        run: go test ./testdata/docker -count=1
+
 
   portability:
     name: portability / ${{ matrix.kind }}
@@ -223,7 +240,9 @@ jobs:
         include:
           - kind: cross-compile
             os: ubuntu-latest
-            command: go test -run '^TestCrossCompileSmoke$' . -count=1 -timeout 900s
+            command: >-
+              go test -run '^TestCrossCompileSmoke$' . -count=1 -timeout 900s -json |
+              go run testdata/docker/summarize.go -require 'github.com/gomaja/go-sctp TestCrossCompileSmoke'
           - kind: unsupported-macos
             os: macos-latest
             command: go test ./... -short -count=1
@@ -239,6 +258,7 @@ jobs:
           go-version: stable
           cache: true
       - name: go test
+        shell: bash
         run: ${{ matrix.command }}
 
   arch-32bit:
@@ -271,16 +291,24 @@ jobs:
         # PATH for its own cross-compiles, and plain sudo would reset
         # PATH to one without it, skipping that test silently rather
         # than running it.
-        run: sudo -E env "PATH=$PATH" ./sctp-386.test -test.count=1 -test.timeout=900s
+        shell: bash
+        run: |
+          sudo -E env "PATH=$PATH" go tool test2json -p github.com/gomaja/go-sctp \
+            ./sctp-386.test -test.v=test2json -test.count=1 -test.timeout=900s |
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/386-on.txt
       - name: Exercise stack relocation across socketcall
+        shell: bash
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=386 go test -c \
             -gcflags=all=-d=maymorestack=runtime.mayMoreStackMove \
             -o sctp-386-stackmove.test .
-          ./sctp-386-stackmove.test \
-            -test.run '^TestRaw(Recvmsg|Sockopt)StackStorage$' \
+          go tool test2json -p github.com/gomaja/go-sctp ./sctp-386-stackmove.test \
+            -test.v=test2json -test.run '^TestRaw(Recvmsg|Sockopt)StackStorage$' \
             -test.count=10 \
-            -test.timeout=120s
+            -test.timeout=120s |
+            go run testdata/docker/summarize.go \
+              -require 'github.com/gomaja/go-sctp TestRawRecvmsgStackStorage' \
+              -require 'github.com/gomaja/go-sctp TestRawSockoptStackStorage'
 
   big-endian:
     name: portability / big-endian (s390x, qemu)
@@ -320,6 +348,7 @@ jobs:
         # targets, so running it a second time under emulation would
         # spend qemu's extra time for no additional coverage the
         # ubuntu-latest cross-compile job does not already give.
+        shell: bash
         run: |
           portable=()
           for f in *_test.go; do
@@ -331,7 +360,9 @@ jobs:
           names="$(grep -h -E '^func (Test|Fuzz)[A-Za-z0-9_]*\(' -- "${portable[@]}" |
             sed -E 's/^func ([A-Za-z0-9_]+).*/\1/' | sort -u | paste -sd '|' -)"
           echo "running: ^($names)\$"
-          ./sctp-s390x.test -test.run "^($names)\$" -test.v -test.count=1 -test.timeout=900s
+          go tool test2json -p github.com/gomaja/go-sctp ./sctp-s390x.test \
+            -test.run "^($names)\$" -test.v=test2json -test.count=1 -test.timeout=900s |
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/s390x-portable.txt
 
   big-endian-kernel:
     name: portability / kernel s390x (qemu-system)
