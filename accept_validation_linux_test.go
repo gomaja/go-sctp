@@ -53,6 +53,13 @@ func TestAcceptRetriesAbortedAssociation(t *testing.T) {
 	t.Cleanup(func() {
 		_ = l.Close()
 		<-done
+		select {
+		case r := <-accepted:
+			if r.conn != nil {
+				_ = r.conn.(*Conn).Abort()
+			}
+		default:
+		}
 	})
 	// EAGAIN must precede the real association: inventing it after the
 	// readiness edge has already arrived could consume that one wake.

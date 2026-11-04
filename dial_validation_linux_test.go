@@ -116,6 +116,9 @@ func TestFailedSetupErrorFailsClosed(t *testing.T) {
 }
 
 func TestFailedSetupErrorPreservesTimeout(t *testing.T) {
+	if !silentPeerAvailable(t) {
+		t.Skipf("no silent peer: %s", silentPeerWhy)
+	}
 	s := newAwaitSocket(t)
 	cfg := &Config{InitMsg: InitMsg{MaxAttempts: 1, MaxInitTimeout: 100 * time.Millisecond}, RTOInfo: &RTOInfo{Initial: 100 * time.Millisecond, Min: 100 * time.Millisecond, Max: 100 * time.Millisecond}}
 	p, err := cfg.prepare(styleDial)
