@@ -35,6 +35,8 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
+	"math"
 	"net"
 	"os"
 	"strings"
@@ -94,7 +96,6 @@ type sendState struct {
 	name [sizeSockaddrIn6]byte // the destination for SendOptions.Path (Linux layout, sockaddr.go)
 	msg  syscall.Msghdr        // points at iov, and at cbuf and name when a send uses them
 	iov  syscall.Iovec         // points at b
-	b    []byte                // the payload, set only while mu is held
 	// flags, wait, n and err carry one send into attempt and its result
 	// back out.
 	flags int
@@ -272,7 +273,7 @@ func (c *Conn) sendMsg(ctx context.Context, b []byte, opts *SendOptions) (int, e
 	}
 	n, err := c.send.send(ctx, &c.sock, b, opts, name[:namelen], 0)
 	if err != nil {
-		return 0, c.writeError(err)
+		return n, c.writeError(err)
 	}
 	return n, nil
 }
@@ -297,12 +298,10 @@ func (c *Conn) writeError(err error) error {
 // name, returning the encoded length (0 without Path). Every refusal
 // matches syscall.EINVAL.
 func (c *Conn) checkSend(b []byte, opts *SendOptions, name *[sizeSockaddrIn6]byte) (int, error) {
-	if len(b) == 0 {
-		// RFC 9260 §6.2: an endpoint should not send a DATA chunk with no
-		// user data, and Linux refuses the message with the same errno
-		// (net/sctp/socket.c: sctp_sendmsg_parse).
-		return 0, invalidArg("SendMsg needs a message of at least one byte")
+	if err := checkSendSize(len(b)); err != nil {
+		return 0, err
 	}
+
 	if err := validateSendOptions(opts); err != nil {
 		return 0, err
 	}
@@ -327,6 +326,21 @@ func (c *Conn) checkSend(b []byte, opts *SendOptions, name *[sizeSockaddrIn6]byt
 		return 0, nil
 	}
 	return n, nil
+}
+
+// checkSendSize checks a message length without accessing its bytes.
+var maxSendSize = math.MaxInt32 &^ (os.Getpagesize() - 1)
+
+func checkSendSize(n int) error {
+	if n <= 0 {
+		return invalidArg("a send needs a message of at least one byte")
+	}
+	// Linux sendmsg truncates the iovec to MAX_RW_COUNT. Refuse it here:
+	// retrying the tail would create a second SCTP message (RFC 6458 §3.1.4).
+	if n > maxSendSize {
+		return syscall.EMSGSIZE
+	}
+	return nil
 }
 
 // send is one send under the send lock: it points msg at b, the control
@@ -356,7 +370,6 @@ func (s *sendState) send(ctx context.Context, sock *socket, b []byte, opts *Send
 		s.deadlineMu.Unlock()
 		s.ctx = ctx
 	}
-	s.b = b
 	s.iov.Base = &b[0]
 	s.iov.SetLen(len(b))
 	if n := s.encode(opts, assoc); n > 0 {
@@ -408,7 +421,7 @@ func (s *sendState) send(ctx context.Context, sock *socket, b []byte, opts *Send
 	}
 	n, serr := s.n, s.err
 	s.ctx, s.stop = nil, nil
-	s.b, s.iov.Base = nil, nil
+	s.iov.Base = nil
 	s.n, s.err = 0, nil
 	s.mu.Unlock()
 
@@ -417,6 +430,9 @@ func (s *sendState) send(ctx context.Context, sock *socket, b []byte, opts *Send
 	}
 	if err != nil {
 		return 0, err
+	}
+	if n != len(b) {
+		return n, io.ErrShortWrite
 	}
 	return n, nil
 }

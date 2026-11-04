@@ -1784,13 +1784,13 @@ func TestSendMsgRetainsNothing(t *testing.T) {
 	if _, err := client.SendMsg([]byte("kept?"), SendOptions{Info: &SndInfo{Stream: 1}}); err != nil {
 		t.Fatalf("SendMsg: %v", err)
 	}
-	if client.send.b != nil || client.send.iov.Base != nil {
-		t.Errorf("after SendMsg the send storage still refers to the payload: b %p, iov.Base %p", client.send.b, client.send.iov.Base)
+	if client.send.iov.Base != nil {
+		t.Errorf("after SendMsg the send storage still refers to the payload: iov.Base %p", client.send.iov.Base)
 	}
 	if _, err := client.SendMsg(nil, SendOptions{}); err == nil {
 		t.Fatal("an empty SendMsg succeeded")
 	}
-	if client.send.b != nil || client.send.iov.Base != nil {
+	if client.send.iov.Base != nil {
 		t.Error("after a refused SendMsg the send storage refers to a payload")
 	}
 }
@@ -2309,5 +2309,101 @@ func TestSendShortCount(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestSendSizeLimit(t *testing.T) {
+	limit := int(0x7fffffff) &^ (os.Getpagesize() - 1)
+	for _, n := range []int{-1, 0, 1, limit - 1, limit, limit + 1, int(0x7fffffff)} {
+		err := checkSendSize(n)
+		switch {
+		case n <= 0:
+			if !errors.Is(err, syscall.EINVAL) {
+				t.Errorf("size %d = %v, want EINVAL", n, err)
+			}
+		case n > limit:
+			if !errors.Is(err, syscall.EMSGSIZE) {
+				t.Errorf("size %d = %v, want EMSGSIZE", n, err)
+			}
+		default:
+			if err != nil {
+				t.Errorf("size %d = %v, want nil", n, err)
+			}
+		}
+	}
+}
+
+// fullShutdownSender leaves the peer's window closed and the local send
+// buffer full, so no later DATA can release a send's poller wait.
+func fullShutdownSender(t *testing.T) *Conn {
+	t.Helper()
+	c, peer := connPair(t, nil, &Config{ReadBuffer: new(closingReadBuffer)})
+	fillContextBuffer(t, contextSender{send: c.SendMsgContext}, peer, func() uint64 {
+		st, err := c.Stats()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.SACKsIn
+	}, 0x72600001)
+	return c
+}
+
+func TestSendFullBufferAfterShutdownNoWait(t *testing.T) {
+	c := fullShutdownSender(t)
+	if err := c.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	n, err := c.SendMsg([]byte("refused"), SendOptions{NoWait: true})
+	if n != 0 {
+		t.Fatalf("send queued %d bytes", n)
+	}
+	wantWriteError(t, err, syscall.ESHUTDOWN)
+}
+
+func TestSendParkedLocalShutdown(t *testing.T) {
+	for _, closing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("close%v", closing), func(t *testing.T) {
+			c := fullShutdownSender(t)
+			blocked := make(chan struct{}, 1)
+			hookSendmsg(t, func(fd int, msg *syscall.Msghdr, flags int) (int, error) {
+				n, err := rawSendmsg(fd, msg, flags)
+				if err == syscall.EAGAIN {
+					select {
+					case blocked <- struct{}{}:
+					default:
+					}
+				}
+				return n, err
+			})
+			if err := c.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { _, err := c.Write([]byte("parked")); done <- err }()
+			<-blocked
+			// Give the non-blocking callback time to enter the poller. The
+			// assertion below bounds the wake independently of SCTP timers.
+			time.Sleep(20 * time.Millisecond)
+			closed := make(chan error, 1)
+			if closing {
+				go func() { closed <- c.CloseWithTimeout(time.Second) }()
+			} else if err := c.Shutdown(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				wantWriteError(t, err, syscall.ESHUTDOWN)
+			case <-time.After(200 * time.Millisecond):
+				_ = c.Abort()
+				<-done
+				t.Error("parked writer was not woken within 200 ms")
+			}
+			if closing {
+				_ = c.Abort()
+				if err := <-closed; err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
 	}
 }

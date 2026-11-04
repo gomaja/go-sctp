@@ -670,7 +670,7 @@ func (e *Endpoint) sendMsg(ctx context.Context, id AssocID, b []byte, opts *Send
 	}
 	n, err := e.send.send(ctx, &e.sock, b, opts, nil, id)
 	if err != nil {
-		return 0, e.ioError("write", err)
+		return n, e.ioError("write", err)
 	}
 	return n, nil
 }
@@ -681,9 +681,8 @@ func checkEndpointSend(id AssocID, b []byte, opts *SendOptions) error {
 	if err := assocIDArg("SendMsg", id); err != nil {
 		return err
 	}
-	if len(b) == 0 {
-		// RFC 9260 §6.2; net/sctp/socket.c: sctp_sendmsg_parse.
-		return invalidArg("SendMsg needs a message of at least one byte")
+	if err := checkSendSize(len(b)); err != nil {
+		return err
 	}
 	if err := validateSendOptions(opts); err != nil {
 		return err
