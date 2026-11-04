@@ -977,3 +977,19 @@ func TestZoneCacheNumericInterfaceName(t *testing.T) {
 		t.Fatalf("table read %d times, want 1", f.calls)
 	}
 }
+
+func TestZoneCacheRefreshTimeIsCompletion(t *testing.T) {
+	f := &fakeZoneTable{ifs: []net.Interface{{Index: 7, Name: "zoneA"}}}
+	z := f.cache()
+	read := z.interfaces
+	z.interfaces = func() ([]net.Interface, error) {
+		f.clock = f.clock.Add(zoneCacheTTL / 2)
+		return read()
+	}
+	if _, ok := z.index("zoneA"); !ok {
+		t.Fatal("name not found")
+	}
+	if !z.fetched.Equal(f.clock) {
+		t.Fatalf("fetch time = %v, want completion %v", z.fetched, f.clock)
+	}
+}

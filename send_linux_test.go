@@ -2381,9 +2381,7 @@ func TestSendParkedLocalShutdown(t *testing.T) {
 			done := make(chan error, 1)
 			go func() { _, err := c.Write([]byte("parked")); done <- err }()
 			<-blocked
-			// Give the non-blocking callback time to enter the poller. The
-			// assertion below bounds the wake independently of SCTP timers.
-			time.Sleep(20 * time.Millisecond)
+			awaitSendParked(t, c)
 			closed := make(chan error, 1)
 			if closing {
 				go func() { closed <- c.CloseWithTimeout(time.Second) }()
@@ -2405,5 +2403,154 @@ func TestSendParkedLocalShutdown(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func awaitSendParked(t *testing.T, c *Conn) {
+	t.Helper()
+	until := time.Now().Add(time.Second)
+	for {
+		c.send.deadlineMu.Lock()
+		parked := c.send.parked
+		c.send.deadlineMu.Unlock()
+		if parked {
+			return
+		}
+		if time.Now().After(until) {
+			t.Fatal("send did not reach its buffer wait")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestSendShutdownDeadlineRestoration(t *testing.T) {
+	for _, latest := range []string{"unset", "future", "past"} {
+		t.Run(latest, func(t *testing.T) {
+			c := fullShutdownSender(t)
+			if err := c.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			returned, resume := make(chan struct{}), make(chan struct{})
+			testHookSendWriteReturn = func() { close(returned); <-resume }
+			t.Cleanup(func() { testHookSendWriteReturn = nil })
+			done := make(chan error, 1)
+			go func() { _, err := c.Write([]byte("parked")); done <- err }()
+			awaitSendParked(t, c)
+			if err := c.Shutdown(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-returned:
+			case <-time.After(time.Second):
+				_ = c.Abort()
+				t.Fatal("shutdown did not wake send")
+			}
+			var deadline time.Time
+			if latest == "future" {
+				deadline = time.Now().Add(100 * time.Millisecond)
+			}
+			if latest == "past" {
+				deadline = time.Now().Add(-time.Second)
+			}
+			if err := c.SetDeadline(deadline); err != nil {
+				t.Fatal(err)
+			}
+			// SetDeadline must keep the private wake active until restore.
+			if err := c.sock.raw.Write(func(uintptr) bool { return true }); !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Errorf("during wake = %v, want deadline exceeded", err)
+			}
+			close(resume)
+			wantWriteError(t, <-done, syscall.ESHUTDOWN)
+			testHookSendWriteReturn = nil
+			c.send.deadlineMu.Lock()
+			if c.send.parked || c.send.shutdownWake || c.send.interrupted || !c.send.callerDeadline.Equal(deadline) {
+				t.Error("send left wake state or lost caller deadline")
+			}
+			c.send.deadlineMu.Unlock()
+			// Observe the actual poller deadline, not just the cached value.
+			if latest == "unset" {
+				if err := c.sock.raw.Write(func(uintptr) bool { return true }); err != nil {
+					t.Fatalf("cleared deadline = %v", err)
+				}
+			} else {
+				start := time.Now()
+				err := c.sock.raw.Write(func(uintptr) bool { return false })
+				if !errors.Is(err, os.ErrDeadlineExceeded) {
+					t.Fatalf("restored deadline = %v", err)
+				}
+				if latest == "future" && time.Since(start) < 50*time.Millisecond {
+					t.Fatal("wake deadline remained in the past")
+				}
+			}
+		})
+	}
+}
+
+func TestSendShutdownContextPrecedence(t *testing.T) {
+	for _, first := range []string{"shutdown", "context", "caller"} {
+		t.Run(first, func(t *testing.T) {
+			c := fullShutdownSender(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			returned, resume := make(chan struct{}), make(chan struct{})
+			testHookSendWriteReturn = func() { close(returned); <-resume }
+			t.Cleanup(func() { testHookSendWriteReturn = nil })
+			done := make(chan error, 1)
+			go func() { _, err := c.SendMsgContext(ctx, []byte("parked"), SendOptions{}); done <- err }()
+			awaitSendParked(t, c)
+			cause := error(syscall.ESHUTDOWN)
+			switch first {
+			case "shutdown":
+				if err := c.Shutdown(); err != nil {
+					t.Fatal(err)
+				}
+			case "context":
+				cancel()
+				cause = context.Canceled
+			case "caller":
+				if err := c.SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				cause = os.ErrDeadlineExceeded
+			}
+			select {
+			case <-returned:
+			case <-time.After(time.Second):
+				_ = c.Abort()
+				t.Fatal("send never returned from poller")
+			}
+			if err := c.Shutdown(); err != nil {
+				t.Fatal(err)
+			}
+			cancel()
+			close(resume)
+			wantWriteError(t, <-done, cause)
+			testHookSendWriteReturn = nil
+		})
+	}
+}
+
+func TestShutdownWithoutParkedSendPreservesDeadline(t *testing.T) {
+	c, _ := connPair(t, nil, nil)
+	if err := c.SetWriteDeadline(time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.sock.raw.Write(func(uintptr) bool { return true }); err != nil {
+		t.Fatalf("shutdown changed deadline without a parked send: %v", err)
+	}
+	if err := c.SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.sock.raw.Write(func(uintptr) bool { return true }); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("later deadline failed: %v", err)
+	}
+	if err := c.SetWriteDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.sock.raw.Write(func(uintptr) bool { return true }); err != nil {
+		t.Fatalf("later deadline clear failed: %v", err)
 	}
 }

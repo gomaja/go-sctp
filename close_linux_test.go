@@ -1358,3 +1358,11 @@ func TestSyscallConnConcurrent(t *testing.T) {
 	close(stop)
 	<-drained
 }
+
+func TestZeroConnCloseNetwork(t *testing.T) {
+	var c Conn
+	var op *net.OpError
+	if err := c.Close(); !errors.As(err, &op) || op.Net != "sctp" {
+		t.Fatalf("zero Conn Close = %#v, want sctp network", err)
+	}
+}

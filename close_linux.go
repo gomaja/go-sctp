@@ -45,13 +45,14 @@ import (
 type sockCloseOps struct {
 	sock *socket
 	kind connKind
+	send *sendState // wakes a Conn writer after the association moves to shutdown
 	term *termState // the connection's association-error latch; nil for a socket that has none
 	closeClock
 }
 
 // newCloseOps returns the steps that close c's descriptor.
 func (c *Conn) newCloseOps() *sockCloseOps {
-	return &sockCloseOps{sock: &c.sock, kind: c.kind, term: &c.term}
+	return &sockCloseOps{sock: &c.sock, kind: c.kind, term: &c.term, send: &c.send}
 }
 
 // assocGone asks SCTP_STATUS (RFC 6458 §8.2.1) whether the association
@@ -87,11 +88,20 @@ func (o *sockCloseOps) assocGone() (bool, error) {
 // SCTP_EOF: sctp_sendmsg_check_sflags issues the SHUTDOWN primitive and
 // returns before sctp_sendmsg_to_asoc, the only path that waits for buffer
 // space, so the send never waits.
-func (o *sockCloseOps) startShutdown() error {
+func (o *sockCloseOps) startShutdown() (err error) {
+	if o.send != nil {
+		defer func() {
+			// A failed primitive need not have moved the association.
+			// The send latch handles association failures separately.
+			if err == nil {
+				o.send.wakeShutdown()
+			}
+		}()
+	}
 	if o.kind == kindPeeled {
 		return o.sock.control(o.sendEOF)
 	}
-	err := o.sock.control(func(fd int) error { return syscall.Shutdown(fd, syscall.SHUT_WR) })
+	err = o.sock.control(func(fd int) error { return syscall.Shutdown(fd, syscall.SHUT_WR) })
 	if err != nil && !errors.Is(err, net.ErrClosed) {
 		return os.NewSyscallError("shutdown", err)
 	}
@@ -219,7 +229,7 @@ func (c *Conn) closeError(err error) error {
 	if err == nil {
 		return nil
 	}
-	return opError("close", c.sock.network, c.LocalAddr(), c.RemoteAddr(), err)
+	return opError("close", c.network(), c.LocalAddr(), c.RemoteAddr(), err)
 }
 
 // Close shuts the association down gracefully (RFC 9260 §9.2) and releases

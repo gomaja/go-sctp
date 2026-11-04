@@ -256,10 +256,10 @@ func (z *zoneCache) index(name string) (int, bool) {
 	now := z.now()
 	z.mu.RLock()
 	idx, ok := z.byName[name]
-	zFetchedZero := z.fetched.IsZero()
-	fresh := !zFetchedZero && now.Sub(z.fetched) < zoneCacheTTL
+	fetched := !z.fetched.IsZero()
+	fresh := fetched && now.Sub(z.fetched) < zoneCacheTTL
 	z.mu.RUnlock()
-	if fresh && ok || !zFetchedZero && isDecimal(name) {
+	if fresh && ok || fetched && isDecimal(name) {
 		return idx, ok
 	}
 	return z.refresh(now, name)
@@ -282,7 +282,7 @@ func (z *zoneCache) refresh(now time.Time, name string) (int, bool) {
 			byName[ifi.Name] = ifi.Index
 		}
 		z.byName = byName
-		z.fetched = now
+		z.fetched = z.now()
 	}
 	idx, ok := z.byName[name]
 	return idx, ok

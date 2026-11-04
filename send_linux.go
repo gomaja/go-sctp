@@ -123,6 +123,9 @@ type sendState struct {
 	callerDeadline time.Time
 	callerCrossed  bool // a caller write deadline passed during this send
 	callerFirst    bool // a caller deadline crossed before interrupt, under deadlineMu
+	parked         bool // a Conn send can be waiting in raw.Write, under deadlineMu
+	shutdownWake   bool // local shutdown owns the past write deadline
+	slow           bool // set only by the send owner on EAGAIN; gates its cleanup
 	interrupted    bool
 	writeDeadline  func(time.Time) error // os.File.SetWriteDeadline, bound once
 	interruptFn    func()                // interrupt, bound once
@@ -400,25 +403,31 @@ func (s *sendState) send(ctx context.Context, sock *socket, b []byte, opts *Send
 	if hook := testHookSendWriteReturn; hook != nil {
 		hook()
 	}
-	if s.stop != nil {
-		if !s.stop() {
+	if s.slow || s.stop != nil {
+		if s.stop != nil && !s.stop() {
 			<-s.interruptDone
 		}
 		s.deadlineMu.Lock()
-		if s.interrupted {
+		if s.interrupted || s.shutdownWake {
 			// internal/poll/fd_unix.go: FD.RawWrite checks prepareWrite
 			// before the first attempt and never calls it again after a
 			// failed waitWrite. A deadline error therefore queued nothing.
 			// callerFirst includes passed deadlines replaced before
 			// interrupt ran, even if raw.Write had already returned.
 			if errors.Is(err, os.ErrDeadlineExceeded) && !s.callerFirst {
-				err = ctx.Err()
+				if s.shutdownWake {
+					err = syscall.ESHUTDOWN
+				} else {
+					err = ctx.Err()
+				}
 			}
 			_ = s.writeDeadline(s.callerDeadline)
-			s.interrupted = false
+			s.interrupted, s.shutdownWake = false, false
 		}
+		s.parked = false
 		s.deadlineMu.Unlock()
 	}
+	s.slow = false
 	n, serr := s.n, s.err
 	s.ctx, s.stop = nil, nil
 	s.iov.Base = nil
@@ -479,7 +488,34 @@ func (s *sendState) attempt(fd uintptr) bool {
 		switch {
 		case err == syscall.EINTR:
 			continue
-		case err == syscall.EAGAIN && s.wait:
+		case err == syscall.EAGAIN:
+			if s.term != nil {
+				if s.wait {
+					s.deadlineMu.Lock()
+					if !s.slow {
+						if s.ctx == nil {
+							s.callerCrossed = false
+						}
+						s.slow = true
+					}
+					// Mark before querying: startShutdown moves the association
+					// before it looks for a parked writer (RFC 9260 §9.2).
+					s.parked = true
+					ended := assocShuttingDown(int(fd))
+					s.deadlineMu.Unlock()
+					if ended {
+						s.n, s.err = 0, syscall.ESHUTDOWN
+						return true
+					}
+				} else if assocShuttingDown(int(fd)) {
+					s.n, s.err = 0, syscall.ESHUTDOWN
+					return true
+				}
+			}
+			if !s.wait {
+				s.n, s.err = n, err
+				return true
+			}
 			if s.stop == nil && s.ctx != nil && s.ctx.Done() != nil {
 				s.stop = context.AfterFunc(s.ctx, s.interruptFn)
 			}
@@ -501,14 +537,29 @@ func (s *sendState) interrupt() {
 	// rule applies at replacement in setDeadline. context/context.go:
 	// AfterFunc runs interrupt shortly after ctx is done, so a caller
 	// deadline crossed in that gap counts as first.
-	s.callerFirst = s.callerCrossed || (!s.callerDeadline.IsZero() && !s.callerDeadline.After(time.Now()))
-	s.interrupted = true
-	_ = s.writeDeadline(aLongTimeAgo)
+	if !s.shutdownWake {
+		s.callerFirst = s.callerCrossed || (!s.callerDeadline.IsZero() && !s.callerDeadline.After(time.Now()))
+		s.interrupted = true
+		_ = s.writeDeadline(aLongTimeAgo)
+	}
 	s.deadlineMu.Unlock()
 	if hook := testHookSendInterrupt; hook != nil {
 		hook()
 	}
 	s.interruptDone <- struct{}{}
+}
+
+// wakeShutdown runs after the SHUTDOWN primitive moved the association. Linux
+// does not make a shutdown socket writable, so a parked send needs a deadline
+// wake. Keep it in force until raw.Write returns, as interrupt does.
+func (s *sendState) wakeShutdown() {
+	s.deadlineMu.Lock()
+	defer s.deadlineMu.Unlock()
+	if s.parked && !s.interrupted && !s.shutdownWake {
+		s.callerFirst = s.callerCrossed || (!s.callerDeadline.IsZero() && !s.callerDeadline.After(time.Now()))
+		s.shutdownWake = true
+		_ = s.writeDeadline(aLongTimeAgo)
+	}
 }
 
 // setDeadline tracks the caller's write value while an interrupt owns the
@@ -526,7 +577,7 @@ func (s *sendState) setDeadline(file *os.File, t time.Time, mode byte) error {
 		s.callerCrossed = true
 	}
 	s.callerDeadline = t
-	if s.interrupted {
+	if s.interrupted || s.shutdownWake {
 		if mode == 'b' {
 			return file.SetReadDeadline(t)
 		}
@@ -582,6 +633,20 @@ func (s *sendState) sendmsg(fd int) (int, error) {
 		return hook(fd, &s.msg, s.flags)
 	}
 	return rawSendmsg(fd, &s.msg, s.flags)
+}
+
+// assocShuttingDown reads association state without consuming an error or
+// allocating (SCTP_STATUS, RFC 6458 §8.2.1 and Verified Errata 6115).
+// Linux checks non-blocking send-buffer exhaustion before association state;
+// EAGAIN alone therefore cannot distinguish shutdown from buffer pressure.
+func assocShuttingDown(fd int) bool {
+	var b [sizeStatus]byte
+	l := uint32(len(b))
+	if err := rawGetsockopt(fd, ipprotoSCTP, optStatus, unsafe.Pointer(&b[0]), &l); err != nil {
+		return false
+	}
+	state := AssocState(int32(binary.NativeEndian.Uint32(b[statusStateOff:])))
+	return state >= StateShutdownPending
 }
 
 // assocEnded reports whether the socket's association is gone: SCTP_STATUS
