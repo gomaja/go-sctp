@@ -739,6 +739,7 @@ var wireCases = []twoHostCase{
 	{name: "ppid-byte-order", port: 41018, server: ppidServer, client: ppidClient},
 	{name: "close-after-burst", port: 41019, server: burstServer, client: burstClient},
 	{name: "simultaneous-close", port: 41020, server: simultaneousCloseServer, client: simultaneousCloseClient},
+	{name: "partial-delivery-boundary", port: 41030, server: partialDeliveryServer, client: partialDeliveryClient},
 	{name: "pr-rtx-limit", port: 41021, server: prRtxServer, client: prRtxClient},
 	{name: "graceful-close", port: 41022, server: gracefulServer, client: gracefulClient},
 	{name: "graceful-peeled-close", port: 41023, server: gracefulServer, client: gracefulPeeledClient},
@@ -1274,7 +1275,7 @@ func interleavingServer(s *hostStep) {
 	} else {
 		s.fact("dropped", n)
 	}
-	got, err := readMessagesToEOF(c)
+	got, err := readInterleavedToEOF(c)
 	s.recordEnd(got, err)
 	if len(got) != 2 {
 		s.t.Fatalf("received %d messages, want two", len(got))

@@ -224,8 +224,8 @@ type Config struct {
 	// subscribed in the kernel on every socket, to detect association ends
 	// and abandoned partial messages. On a Conn those records are consumed by
 	// the package and never delivered unless their type is listed here or
-	// subscribed later. An Endpoint always delivers them, since its callers
-	// route by association id.
+	// subscribed later. An Endpoint always delivers EventAssocChange, since
+	// its callers route by association id.
 	Notifications []EventType
 }
 

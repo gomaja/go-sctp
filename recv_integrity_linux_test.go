@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // RFC 6458 §6.1.7 places the abort record between the abandoned DATA
@@ -308,6 +309,13 @@ func TestReadMsgLocalAbortCause(t *testing.T) {
 					n, err := rawRecvmsg(fd, msg, flags)
 					if err == syscall.EAGAIN {
 						once.Do(func() { close(parked) })
+						// Keep the descriptor referenced until SHUT_RD wakes
+						// this callback. Otherwise file.Close can win the poller
+						// race and hide an incorrectly joined kernel EOF.
+						for err == syscall.EAGAIN {
+							time.Sleep(time.Millisecond)
+							n, err = rawRecvmsg(fd, msg, flags)
+						}
 					}
 					return n, err
 				})
@@ -348,5 +356,115 @@ func TestReadMsgLocalAbortCause(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestReceiveInternalSubscriptions(t *testing.T) {
+	client, server := connPair(t, nil, nil)
+	for _, c := range []*Conn{client, server} {
+		if !subscribedInKernel(t, mustSyscallConn(t, c), EventPartialDelivery) {
+			t.Fatal("partial delivery is not subscribed at construction")
+		}
+		if on, err := c.Subscribed(EventPartialDelivery); on || err != nil {
+			t.Fatalf("logical subscription=%t %v", on, err)
+		}
+	}
+	set, err := kernelSubscriptions(&client.sock)
+	if err != nil || set.has(EventPartialDelivery) || set.has(EventAssocChange) {
+		t.Fatalf("adopted logical subscriptions=%#x %v", set, err)
+	}
+	// An inherited connected descriptor may have disabled its internal copy.
+	rawFd(t, mustSyscallConn(t, client), func(fd int) {
+		if err := setEvent(fd, EventPartialDelivery, false); err != nil {
+			t.Fatal(err)
+		}
+	})
+	adopted, err := FileConn(connFile(t, client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adopted.Abort() })
+	if !subscribedInKernel(t, mustSyscallConn(t, adopted), EventPartialDelivery) {
+		t.Fatal("adoption did not restore partial delivery")
+	}
+	if on, err := adopted.Subscribed(EventPartialDelivery); on || err != nil {
+		t.Fatalf("adopted logical subscription=%t %v", on, err)
+	}
+	e := openEndpoint(t, nil, "sctp4", loopback4(0))
+	if !subscribedInKernel(t, mustEndpointRawConn(t, e), EventPartialDelivery) {
+		t.Fatal("endpoint lacks internal partial-delivery subscription")
+	}
+}
+
+func TestReadPartialDeliveryClearsState(t *testing.T) {
+	for _, raw := range []bool{false, true} {
+		t.Run(fmt.Sprint(raw), func(t *testing.T) {
+			c := scriptConn(t, nil)
+			pd := notif(EventPartialDelivery, sizePDAPIEvent)
+			script := &recvScript{steps: []recvStep{{data: []byte("prefix")}, {data: pd, flags: msgNotification | msgEOR}, {data: pd, flags: msgNotification | msgEOR}, {data: []byte("next"), flags: msgEOR}}}
+			hookRecvmsg(t, script.recvmsg)
+			buf := make([]byte, 64)
+			read := func() (int, error) {
+				if raw {
+					n, _, e := c.RecvMsg(buf)
+					return n, e
+				}
+				return c.Read(buf)
+			}
+			n, err := read()
+			if string(buf[:n]) != "prefix" || err != nil {
+				t.Fatalf("prefix=%q %v", buf[:n], err)
+			}
+			n, err = read()
+			wantReadError(t, err, ErrMessageInterrupted)
+			if n != 0 {
+				t.Fatalf("interruption returned %d bytes", n)
+			}
+			n, err = read()
+			if string(buf[:n]) != "next" || err != nil {
+				t.Fatalf("following=%q %v", buf[:n], err)
+			}
+		})
+	}
+}
+
+func TestReceivePeeledSubscriptionRestored(t *testing.T) {
+	e := listenEndpoint(t, nil, "sctp4", loopback4(0))
+	peer, err := Dial(testContext(t, 10*time.Second), "sctp4", nil, endpointAddr(t, e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = peer.Abort() })
+	id := onlyAssoc(t, e)
+	rawFd(t, mustEndpointRawConn(t, e), func(fd int) {
+		var b [sizeEvent]byte
+		binary.NativeEndian.PutUint32(b[eventAssocIDOff:], uint32(id))
+		binary.NativeEndian.PutUint16(b[eventTypeFieldOff:], uint16(EventPartialDelivery))
+		if err := rawSetsockopt(fd, ipprotoSCTP, optEvent, unsafe.Pointer(&b[0]), uintptr(len(b))); err != nil {
+			t.Fatal(err)
+		}
+	})
+	peeled, err := e.PeelOff(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = peeled.Abort() })
+	if !subscribedInKernel(t, mustSyscallConn(t, peeled), EventPartialDelivery) {
+		t.Fatal("peel did not restore internal partial-delivery subscription")
+	}
+}
+
+func TestReadMsgControlTruncatedAfterMax(t *testing.T) {
+	c := scriptConn(t, nil)
+	script := &recvScript{steps: []recvStep{{data: []byte("prefix")}, {data: []byte("tail"), flags: msgCtrunc | msgEOR}, {data: []byte("next"), flags: msgEOR}}}
+	hookRecvmsg(t, script.recvmsg)
+	b, _, err := c.ReadMsg(6)
+	wantReadError(t, err, ErrControlTruncated)
+	if string(b) != "prefix" || !errors.Is(err, ErrMessageTooLong) {
+		t.Fatalf("data=%q err=%v", b, err)
+	}
+	b, _, err = c.ReadMsg(64)
+	if string(b) != "next" || err != nil {
+		t.Fatalf("following=%q %v", b, err)
 	}
 }

@@ -238,7 +238,12 @@ func (c *Conn) Read(b []byte) (int, error) {
 	for {
 		n, _, note, err := c.recvNext(b, false)
 		if note != nil {
-			err = errors.Join(err, c.handler(note))
+			handlerErr := c.handler(note)
+			if err == nil {
+				err = handlerErr
+			} else if handlerErr != nil {
+				err = errors.Join(err, handlerErr)
+			}
 			if err != nil {
 				return 0, c.readError(err)
 			}
