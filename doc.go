@@ -81,8 +81,9 @@
 // payload protocol identifier (PPID) and TSN among them. A message longer
 // than the buffer arrives over several reads. [Conn.ReadMsg] reassembles
 // one whole message, up to a size limit, and [Conn.Read] returns message
-// bytes without framing, as a net.Conn does. A read of data makes no
-// allocation. ReadMsg refuses negotiated I-DATA with ErrUnsupported:
+// bytes without framing, as a net.Conn does. A read of data into a reused
+// heap buffer makes no allocation; a fresh local array escapes and costs one.
+// ReadMsg refuses negotiated I-DATA with ErrUnsupported:
 // use RecvMsg, demultiplex by stream (and association id on an Endpoint),
 // and accumulate until EOR, keeping the first piece's PPID. Callers doing
 // their own reassembly must subscribe to EventPartialDelivery so an
@@ -122,17 +123,21 @@
 // A send waits for send-buffer space in the runtime poller, until the write
 // deadline passes or the socket is closed; [Conn.SendMsgContext] and
 // [Endpoint.SendMsgContext] let a context end the lock and buffer waits too.
-// A successful send queues the whole message, a failed one none of it
-// (RFC 6458 §3.1.4; Linux does not implement explicit EOR).
-// With NoWait a send makes one attempt instead. More tells the
-// kernel that more messages follow at once, so that it may bundle them
-// (MSG_MORE). Successful uncontended sends with no Path zone or a numeric
-// zone make no allocation. Waiting can allocate the send lock's lazy queue
-// or pooled waiters on first use, higher peak contention or pool refill,
-// and SendMsgContext's cancellation state while waiting. A zone given by
+// A successful send queues the whole message, a failed one none of it except
+// an unexpected short count reported with io.ErrShortWrite; its tail is never
+// retried (RFC 6458 §3.1.4; Linux does not implement explicit EOR). With
+// NoWait a send makes one attempt instead. More tells the kernel that more
+// messages follow, so that it may bundle them (MSG_MORE). The per-association
+// hold has no time limit. A failed send does not release it; only a later
+// successful send without More or a shutdown does. Successful uncontended
+// sends using a reused heap buffer with no Path zone or a numeric zone make
+// no allocation. A fresh local array escapes through the iovec and costs one
+// allocation. Waiting can allocate the send lock's lazy queue or pooled
+// waiters on first use, higher peak contention or pool refill, and
+// SendMsgContext's cancellation state while waiting. A zone given by
 // interface name allocates only when the package reads the host's interface
-// table again (at most once a minute, or for a name it has not seen).
-// SendMsg keeps nothing of its arguments.
+// table again (at most once a minute, or for a name it has not seen). SendMsg
+// keeps nothing of its arguments.
 //
 // # Concurrency
 //
@@ -174,7 +179,8 @@
 //     never seen by the package.
 //   - An argument the package refuses, a Config field, a SendOptions field
 //     or a method argument, matches syscall.EINVAL, and the message names
-//     it. Nothing reaches the kernel then.
+//     it. Nothing reaches the kernel then. A message exceeding Linux's
+//     MAX_RW_COUNT instead matches syscall.EMSGSIZE.
 //   - A passed I/O deadline set with SetDeadline, SetReadDeadline or
 //     SetWriteDeadline matches os.ErrDeadlineExceeded, and a closed socket
 //     net.ErrClosed.
@@ -203,9 +209,13 @@
 //
 // After a graceful end, started by either side, reads return the messages
 // still queued and then io.EOF, on every kind of Conn. A record consumed
-// through SyscallConn is never seen by the package. Sends fail with an
-// error matching syscall.ESHUTDOWN while the shutdown is in progress, and
-// with syscall.EPIPE once the association is gone.
+// through SyscallConn is never seen by the package. New Conn sends fail
+// with syscall.ESHUTDOWN during shutdown, and syscall.EPIPE once it is gone.
+// Local Shutdown wakes a Conn send parked for buffer space. A peer's
+// SHUTDOWN does not wake that wait on Linux; the send returns when SACKs
+// free space, the association ends, or a deadline, context interruption or
+// local close releases it. Endpoint sends have no association-state query
+// or shutdown wake; their readiness belongs to the whole socket.
 //
 // After an association fails, reads first return what the peer sent before
 // the failure, and then every read and every send returns the error Linux
@@ -228,6 +238,10 @@
 // [Conn.Close] shuts the association down gracefully, waits for the
 // SHUTDOWN handshake for up to [Config.CloseTimeout], 3 s by default, and
 // aborts the association if the peer has not completed it by then.
+// Conn.Close and Endpoint.Close are graceful even with unread data, which
+// is silently discarded unless concurrent readers consume it before release.
+// The peer sees a clean end if shutdown completes in time, or an ABORT
+// when the grace period expires. Use Abort to signal loss immediately.
 // [Conn.Abort] sends an ABORT at once, and makes a Close that is still
 // waiting send it too.
 //

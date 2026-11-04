@@ -144,11 +144,12 @@ func (s *recvState) bind(term *termState, subs *atomic.Uint32) {
 // every socket, fills Rcv. When b is shorter than the message, the rest is
 // returned by the next reads, and EOR is false until the last. With
 // ReceiveNxtInfo on, Nxt describes the next queued item, if there is
-// one (RFC 6458 §5.3.6). A read of data makes no allocation. An empty b
-// returns 0 at once, and consumes nothing. Concurrent readers can receive
-// different pieces of one message. With I-DATA, pieces of different streams
-// may interleave: demultiplex by Rcv.Stream and accumulate each stream until
-// EOR. Only the first piece carries its PPID; see RcvInfo. A caller
+// one (RFC 6458 §5.3.6). A read of data into a reused heap buffer makes
+// no allocation; a fresh local array escapes and costs one allocation.
+// An empty b returns 0 at once, and consumes nothing. Concurrent readers can
+// receive different pieces of one message. With I-DATA, pieces of different
+// streams may interleave: demultiplex by Rcv.Stream and accumulate each stream
+// until EOR. Only the first piece carries its PPID; see RcvInfo. A caller
 // reassembling I-DATA by stream must subscribe to EventPartialDelivery:
 // PartialDelivery.Stream and SeqNum identify the cut delivery (see
 // PartialDelivery for Linux's MID reporting). No ErrMessageInterrupted is
@@ -223,12 +224,13 @@ func (c *Conn) RecvMsg(b []byte) (int, MsgInfo, error) {
 	}
 }
 
-// Read reads message bytes into b, as RecvMsg does without the metadata:
-// it never returns a notification's bytes, handing each notification the
-// caller receives to the NotificationHandler, when there is one, and
-// skipping it otherwise. A message longer than b is returned over several
-// reads, with nothing to mark where it ends; use RecvMsg or ReadMsg when
-// the message boundary matters. A read of data makes no allocation. Errors
+// Read reads message bytes into b, as RecvMsg does without the metadata: it
+// never returns a notification's bytes, handing each notification the caller
+// receives to the NotificationHandler, when there is one, and skipping it
+// otherwise. A message longer than b is returned over several reads, with
+// nothing to mark where it ends; use RecvMsg or ReadMsg when the message
+// boundary matters. A read of data into a reused heap buffer makes no
+// allocation; a fresh local array escapes and costs one allocation. Errors
 // are as for RecvMsg, except that Read ignores MSG_CTRUNC, since it returns
 // no ancillary data. After an abandoned partial message under classic
 // DATA, Read returns zero bytes with ErrMessageInterrupted once, even when

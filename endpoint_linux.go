@@ -611,14 +611,15 @@ func (e *Endpoint) bindx(opt int, name string, ips []netip.Addr) error {
 // syscall.EPIPE (net/sctp/socket.c: sctp_sendmsg).
 //
 // Unless opts.NoWait is set, SendMsg waits for send-buffer space in the
-// runtime poller, until the write deadline passes or the endpoint is
-// closed; the buffer is the endpoint's, so another association's progress
-// can release the wait (RFC 6458 §3.2). With NoWait, a send that finds no
-// space fails at once with an error matching syscall.EAGAIN, and nothing
-// of the message is queued. An uncontended successful SendMsg makes no
-// allocation. On contention, the shared send lock lazily creates its queue
-// and uses pooled waiters; first use, higher peak contention or a pool refill
-// can allocate. SendMsg keeps nothing of b or opts after it returns.
+// runtime poller, until the write deadline passes or the endpoint is closed;
+// the buffer is the endpoint's, so another association's progress can release
+// the wait (RFC 6458 §3.2). With NoWait, a send that finds no space fails at
+// once with an error matching syscall.EAGAIN, and nothing of the message is
+// queued. An uncontended successful SendMsg makes no allocation with a reused
+// heap buffer; a fresh local array escapes and costs one allocation. On
+// contention, the shared send lock lazily creates its queue and uses pooled
+// waiters; first use, higher peak contention or a pool refill can allocate.
+// SendMsg keeps nothing of b or opts after it returns.
 //
 // Every send carries SCTP_SNDINFO, since that is where the association id
 // travels (RFC 6458 §5.3.4). A nil opts.Info or opts.PR means the
@@ -634,7 +635,10 @@ func (e *Endpoint) bindx(opt int, name string, ips []netip.Addr) error {
 // way, because the kernel would look the association up by the address
 // instead of by id, and flags SendFlags does not name, SCTP_EOF and
 // SCTP_ABORT among them, are refused too: CloseAssoc and AbortAssoc do
-// what those flags do. Every error is a *net.OpError with Op "write".
+// what those flags do. Messages exceeding Linux's MAX_RW_COUNT are refused
+// with syscall.EMSGSIZE. An unexpected short send returns its count with
+// io.ErrShortWrite without retrying the tail as another message.
+// Every error is a *net.OpError with Op "write".
 //
 // [Endpoint.SendMsgContext] is SendMsg with a context, which can end its
 // wait for the send lock and for buffer space.
@@ -642,24 +646,24 @@ func (e *Endpoint) SendMsg(id AssocID, b []byte, opts SendOptions) (int, error) 
 	return e.sendMsg(noContext, id, b, &opts)
 }
 
-// SendMsgContext is SendMsg with a context that can end its wait for the
-// send lock and, unless opts.NoWait is set, for endpoint-wide buffer
-// space; the write deadline and Close also end the buffer wait. A nil ctx is
-// refused with an error matching syscall.EINVAL. A ctx done on entry
-// means nothing is validated or sent; ctx is checked again after taking
-// the lock. Success is (len(b), nil), and any error means nothing of the
+// SendMsgContext is SendMsg with a context that can end its wait for the send
+// lock and, unless opts.NoWait is set, for endpoint-wide buffer space; the
+// write deadline and Close also end the buffer wait. A nil ctx is refused
+// with an error matching syscall.EINVAL. A ctx done on entry means nothing is
+// validated or sent; ctx is checked again after taking the lock. Success is
+// (len(b), nil). Except for io.ErrShortWrite, an error means nothing of the
 // message was queued: RFC 6458 §3.1.4 makes sendmsg atomic unless explicit
 // EOR is enabled, and Linux has no explicit EOR (see SndInfo). No attempt
 // outlives the call, and known kernel acceptance wins over cancellation.
-// Cancellation preserves the caller's latest write deadline, including
-// one set during the call, and never touches the read deadline. Errors
-// are *net.OpError with Op "write"; a context interruption matches
-// ctx.Err(), context.Canceled or context.DeadlineExceeded, and never
-// os.ErrDeadlineExceeded. A wait the write deadline ended matches the
-// latter and not a context error, even if ctx is done by the time the call
-// returns; when both end the wait, the error names the one that came first.
-// The context's interrupt can run shortly after ctx is done; a write
-// deadline crossed in that gap comes first.
+// Cancellation preserves the caller's latest write deadline, including one
+// set during the call, and never touches the read deadline. Errors are
+// *net.OpError with Op "write"; a context interruption matches ctx.Err(),
+// context.Canceled or context.DeadlineExceeded, and never
+// os.ErrDeadlineExceeded. A wait the write deadline ended matches the latter
+// and not a context error, even if ctx is done by the time the call returns;
+// when both end the wait, the error names the one that came first. The
+// context's interrupt can run shortly after ctx is done; a write deadline
+// crossed in that gap comes first.
 //
 // SendMsgContext allocates nothing SendMsg would not, except that waiting
 // for buffer space with a context that can be done registers a
@@ -687,20 +691,20 @@ func (e *Endpoint) sendMsg(ctx context.Context, id AssocID, b []byte, opts *Send
 	}
 	n, err := e.send.send(ctx, &e.sock, b, opts, nil, id)
 	if err != nil {
-		return 0, e.ioError("write", err)
+		return n, e.ioError("write", err)
 	}
 	return n, nil
 }
 
 // checkEndpointSend validates an Endpoint send without any lock or system
-// call. Every refusal matches syscall.EINVAL.
+// call. Every refusal matches syscall.EINVAL, except an oversized message
+// (syscall.EMSGSIZE).
 func checkEndpointSend(id AssocID, b []byte, opts *SendOptions) error {
 	if err := assocIDArg("SendMsg", id); err != nil {
 		return err
 	}
-	if len(b) == 0 {
-		// RFC 9260 §6.2; net/sctp/socket.c: sctp_sendmsg_parse.
-		return invalidArg("SendMsg needs a message of at least one byte")
+	if err := checkSendSize(len(b)); err != nil {
+		return err
 	}
 	if err := validateSendOptions(opts); err != nil {
 		return err
@@ -1201,11 +1205,12 @@ func (e *Endpoint) closeError(err error) error {
 // of time is an outcome, not an error. Associations that appear while it
 // waits are shut down too, and associations already peeled off are not
 // affected. An Abort from another goroutine during the wait sends the
-// ABORTs at once and makes Close return nil. Whatever arrives during the
-// wait and is not consumed by concurrent readers is discarded with the
-// descriptor. A second Close, or any close after Abort, returns an error
-// matching net.ErrClosed. Errors are
-// *net.OpError with Op "close".
+// ABORTs at once and makes Close return nil. Close remains graceful with
+// unread data: anything concurrent readers have not consumed is silently
+// discarded at release. Peers see a clean end if shutdown completes in
+// time, or an ABORT when the grace period expires. Use Abort to signal
+// loss immediately. A second Close, or any close after Abort, returns an
+// error matching net.ErrClosed. Errors are *net.OpError with Op "close".
 func (e *Endpoint) Close() error {
 	if e == nil {
 		return opError("close", "sctp", nil, nil, net.ErrClosed)
