@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
@@ -268,7 +267,7 @@ func TestReadMsgLocalAbortCause(t *testing.T) {
 				continue
 			}
 			t.Run(fmt.Sprintf("grace=%t/cut-record=%t", closing, cutRecord), func(t *testing.T) {
-				client, server := connPair(t, nil, nil)
+				client, server := connPair(t, nil, &Config{ReadBuffer: new(closingReadBuffer)})
 				if _, err := server.Write([]byte("prime")); err != nil {
 					t.Fatal(err)
 				}
@@ -276,15 +275,16 @@ func TestReadMsgLocalAbortCause(t *testing.T) {
 					t.Fatalf("prime=%q %v", b, err)
 				}
 				if closing {
-					args := []string{"INPUT", "-p", "sctp", "--sport", fmt.Sprint(client.LocalAddr().(*Addr).Port), "-m", "sctp", "--chunk-types", "any", "SHUTDOWN", "-j", "DROP"}
-					if out, err := exec.Command("iptables", append([]string{"-I"}, args...)...).CombinedOutput(); err != nil {
-						t.Fatalf("drop: %v %s", err, out)
-					}
-					t.Cleanup(func() {
-						if out, err := exec.Command("iptables", append([]string{"-D"}, args...)...).CombinedOutput(); err != nil {
-							t.Errorf("restore: %v %s", err, out)
+					// Keep DATA outstanding behind the peer's closed window,
+					// so shutdown stays pending until the grace expires
+					// (RFC 9260 §9.2; awaitClosedWindow).
+					fillContextBuffer(t, contextSender{send: client.SendMsgContext}, server, func() uint64 {
+						stats, err := client.Stats()
+						if err != nil {
+							t.Fatal(err)
 						}
-					})
+						return stats.SACKsIn
+					}, 0x29290003)
 				}
 				steps := []recvStep{{data: []byte("prefix")}}
 				if cutRecord {
