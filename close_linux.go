@@ -180,14 +180,17 @@ func rawSendEnd(fd int, flag uint16, assoc AssocID, cause []byte) error {
 // shutdown(2) with SHUT_RD comes between the two, carried over from v1's
 // prepareSctpAbort: it sets RCV_SHUTDOWN and wakes anything waiting on the
 // socket without starting a SHUTDOWN (sctp_shutdown acts only on
-// SEND_SHUTDOWN), so that a callback blocked inside recvmsg(2) returns and
+// SEND_SHUTDOWN), except on a listening one-to-many socket, where
+// sctp_shutdown does nothing. On other sockets a callback blocked inside
+// recvmsg(2) returns and
 // drops its reference to the file. A blocked callback holds that reference,
 // the descriptor's final close(2), the one that sends the ABORT, waits for
 // the last reference (internal/poll: FD.Close), and a descriptor put back
 // in blocking mode through SyscallConn would otherwise keep Close waiting
-// for data that may never come. Its error is ignored: a socket with no
-// association answers ENOTCONN (net/ipv4/af_inet.c: inet_shutdown), which
-// is no reason to skip the release.
+// for data that may never come. A deliberately blocking recvmsg on a
+// listening Endpoint can still hold the final close until it returns. The
+// shutdown error is ignored: in TCP_CLOSE, a socket with no association
+// answers ENOTCONN (inet_shutdown), which is no reason to skip release.
 //
 // The release happens whatever the SO_LINGER step reported. Its error is
 // returned, joined with the release's, since without it the close starts a

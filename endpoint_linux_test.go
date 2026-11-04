@@ -228,7 +228,7 @@ func peeledPair(t testing.TB, cfg *Config) (peeled, peer *Conn) {
 		t.Fatalf("Dial: %v", err)
 	}
 	t.Cleanup(func() { _ = peer.Abort() })
-	peeled, err = e.PeelOff(onlyAssoc(t, e))
+	peeled, err = e.PeelOff(awaitCommUp(t, e).AssocID)
 	if err != nil {
 		t.Fatalf("PeelOff: %v", err)
 	}
@@ -2285,7 +2285,7 @@ func mappedConn(t *testing.T, side string, cfg *Config) (c, peer *Conn) {
 		if peer, err = Dial(ctx, "sctp4", nil, loopback4(endpointAddr(t, e).Port)); err != nil {
 			t.Fatalf("Dial sctp4: %v", err)
 		}
-		if c, err = e.PeelOff(onlyAssoc(t, e)); err != nil {
+		if c, err = e.PeelOff(awaitCommUp(t, e).AssocID); err != nil {
 			t.Fatalf("PeelOff: %v", err)
 		}
 	default:
@@ -2721,7 +2721,7 @@ func TestPeeledConnRestoresAssocChange(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	t.Cleanup(func() { _ = peer.Abort() })
-	id := onlyAssoc(t, e)
+	id := awaitCommUp(t, e).AssocID
 	rawFd(t, mustEndpointRawConn(t, e), func(fd int) {
 		var b [sizeEvent]byte
 		binary.NativeEndian.PutUint32(b[eventAssocIDOff:], uint32(id))
@@ -2911,7 +2911,7 @@ func TestPeeledCloseEOFSendsWithoutBufferSpace(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	t.Cleanup(func() { _ = peer.Abort() })
-	peeled, err := e.PeelOff(onlyAssoc(t, e))
+	peeled, err := e.PeelOff(awaitCommUp(t, e).AssocID)
 	if err != nil {
 		t.Fatalf("PeelOff: %v", err)
 	}
@@ -3020,7 +3020,7 @@ func TestPeelOffRacesWithEndpointClose(t *testing.T) {
 				t.Fatalf("Dial: %v", err)
 			}
 			defer func() { _ = peer.Abort() }()
-			id := onlyAssoc(t, e)
+			id := awaitCommUp(t, e).AssocID
 			var wg sync.WaitGroup
 			peeled := make(chan *Conn, 4)
 			wg.Go(func() {
@@ -3978,6 +3978,22 @@ func TestEndpointSetupCancellationNotifications(t *testing.T) {
 			setEndpointReadDeadline(t, e, 20*time.Millisecond)
 			if _, _, err := e.RecvMsg(make([]byte, 256)); !errors.Is(err, os.ErrDeadlineExceeded) {
 				t.Fatalf("unexpected record after cancellation: %v", err)
+			}
+		})
+	}
+}
+
+func TestPeelOffState(t *testing.T) {
+	for _, state := range []AssocState{-1, StateEmpty, StateClosed, StateCookieWait, StateCookieEchoed, StateEstablished, StateShutdownPending, StateShutdownSent, StateShutdownReceived, StateShutdownAckSent, StateShutdownAckSent + 1} {
+		t.Run(state.String(), func(t *testing.T) {
+			err := checkPeelOffState(state)
+			pending := state == StateCookieWait || state == StateCookieEchoed
+			if pending {
+				if !errors.Is(err, syscall.EINPROGRESS) {
+					t.Fatalf("%v: %v, want EINPROGRESS", state, err)
+				}
+			} else if err != nil {
+				t.Fatalf("%v refused: %v", state, err)
 			}
 		})
 	}

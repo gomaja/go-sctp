@@ -509,7 +509,9 @@ func (s *recvState) dropRecord() error {
 // does. AssocCommUp and AssocRestart change nothing: a restart keeps the
 // association and its id (sctp_sf_do_dupcook_a), though it flushes any
 // partial reassembly, and AssocCantStart ends only a setup that never made
-// a Conn. On an Endpoint, which has no latch, it only ends the record.
+// a Conn: Dial waits for establishment, and Endpoint.PeelOff refuses
+// COOKIE-WAIT and COOKIE-ECHOED. On an Endpoint, which has no latch, it
+// only ends the record.
 func (s *recvState) endRecordLocked() {
 	s.noting = false
 	if s.term == nil || !s.typed || s.typ != EventAssocChange {

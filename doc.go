@@ -24,7 +24,9 @@
 // [ListenEndpoint] and [OpenEndpoint] return an [*Endpoint], whose methods
 // take the association they act on as an [AssocID]. Associations start with
 // [Endpoint.Connect] or at a peer's request, and the Endpoint reports each
-// one's start and end with an [AssocChange] notification.
+// one's setup outcome and established end with an [AssocChange]
+// notification. [Endpoint.CloseAssoc] during setup cancels quietly,
+// without a notification; the caller removes its routing entry itself.
 // [Endpoint.PeelOff] moves one association onto a *Conn of its own (RFC
 // 6458 §9.2). Linux moves the association before it allocates the new
 // descriptor, and loses the association when no descriptor can be
