@@ -38,7 +38,9 @@ import (
 // newConn builds a Conn around s, a connected socket this package owns,
 // with the handler, grace period and subscriptions of p. It takes s over
 // on every path: when it fails, it releases s with an abortive close,
-// since the association may be live.
+// since the association may be live, except for an adopted socket. Its
+// caller still owns the socket through another descriptor, so only the
+// duplicate is closed, without changing SO_LINGER or shutting down reads.
 //
 // The association id is read once, here, from SCTP_STATUS (RFC 6458
 // §8.2.1) and fixed for the life of the Conn. On an accepted socket whose
@@ -57,7 +59,11 @@ func newConn(s socket, kind connKind, p *prepared) (*Conn, error) {
 	c := &Conn{sock: s, kind: kind, handler: p.handler, closeWait: p.closeTimeout}
 	c.life.init()
 	if err := c.init(p); err != nil {
-		_ = c.newCloseOps().abortive()
+		if kind == kindAdopted {
+			_ = s.file.Close()
+		} else {
+			_ = c.newCloseOps().abortive()
+		}
 		return nil, err
 	}
 	return c, nil
@@ -349,6 +355,9 @@ func bindxAddrs(family int, name string, ips []netip.Addr) ([]byte, error) {
 	if len(ips) == 0 {
 		return nil, invalidArg("%s needs at least one address", name)
 	}
+	if err := validateLocalIPs(family, ips); err != nil {
+		return nil, err
+	}
 	buf, err := encodeAddrs(family, ips, 0)
 	if err != nil {
 		return nil, err
@@ -504,17 +513,19 @@ func FileConn(f *os.File) (*Conn, error) {
 // Before adopting it, FileConn checks the descriptor: SO_PROTOCOL must be
 // IPPROTO_SCTP, SO_TYPE must be SOCK_STREAM (one-to-one; a one-to-many
 // socket or one peeled off it is SOCK_SEQPACKET), and SCTP_STATUS must find
-// an established association. Anything else is refused with an error
-// matching syscall.EINVAL, and a descriptor that is not a socket at all
-// fails with the kernel's syscall.ENOTSOCK. Every error is a *net.OpError
-// with Op "file", as net.FileConn's are.
+// an established or shutting-down association. Anything else is refused
+// with an error matching syscall.EINVAL, and a descriptor that is not a
+// socket at all fails with the kernel's syscall.ENOTSOCK. Every error is a
+// *net.OpError with Op "file", as net.FileConn's are.
 //
 // The socket is already set up, so only the package-side fields of the
 // Config apply: NotificationHandler and CloseTimeout. A Config that sets any
 // other field is refused with an error matching syscall.EINVAL. The package
 // does enable SCTP_RECVRCVINFO and its own SCTP_ASSOC_CHANGE subscription,
 // which its reads depend on, and takes the other notification types the
-// descriptor already subscribes to as the caller's.
+// descriptor already subscribes to as the caller's. Settings applied by
+// applyConfig affect the shared socket and cannot be rolled back if adoption
+// fails; the duplicate is closed without shutting down the caller's socket.
 func (c *Config) FileConn(f *os.File) (*Conn, error) {
 	conn, err := c.fileConn(f)
 	if err != nil {
