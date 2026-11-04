@@ -8,10 +8,13 @@ package sctp
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -470,4 +473,137 @@ func TestNewConnOwnedFailureAbortsSocket(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAcceptSkipsPeerFromPortZero runs the handshake from source port 0,
+// which RFC 9260 §3.1 forbids and Linux does not refuse. accept(2) then fails
+// with ECONNABORTED, because it cannot report that peer's address (net/socket.c:
+// do_accept; net/ipv4/af_inet.c: inet_getname), and Accept must go on to the
+// next association rather than report a failure a loop would stop on.
+func TestAcceptSkipsPeerFromPortZero(t *testing.T) {
+	raw, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, ipprotoSCTP)
+	if errors.Is(err, syscall.EPERM) {
+		t.Skip("a raw socket needs CAP_NET_RAW")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Close(raw) })
+	source := &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 2}}
+	if err := syscall.Bind(raw, source); err != nil {
+		t.Fatal(err)
+	}
+	wait := syscall.NsecToTimeval(int64(3 * time.Second))
+	if err := syscall.SetsockoptTimeval(raw, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &wait); err != nil {
+		t.Fatal(err)
+	}
+
+	l := mustListen(t, nil, "sctp4", loopback4(0))
+	port := l.Addr().(*Addr).Port
+	dest := &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}
+
+	const initTag, initialTSN = 0x5A5A0001, 1
+	init := binary.BigEndian.AppendUint32([]byte{1, 0, 0, 20}, initTag)
+	init = binary.BigEndian.AppendUint32(init, 1<<20) // a_rwnd
+	init = append(init, 0, 10, 0, 10)                 // streams, out and in
+	init = binary.BigEndian.AppendUint32(init, initialTSN)
+	if err := syscall.Sendto(raw, sctpPacketFromPortZero(port, 0, init), 0, dest); err != nil {
+		t.Fatal(err)
+	}
+	peerTag, cookie := awaitInitAck(t, raw, port, initTag)
+
+	echo := binary.BigEndian.AppendUint16([]byte{10, 0}, uint16(4+len(cookie)))
+	echo = append(echo, cookie...)
+	echo = append(echo, make([]byte, -len(echo)&3)...)
+	if err := syscall.Sendto(raw, sctpPacketFromPortZero(port, peerTag, echo), 0, dest); err != nil {
+		t.Fatal(err)
+	}
+	// Whatever accept(2) did with it, end the association now rather than
+	// leave it retransmitting a SHUTDOWN to a peer that will never answer.
+	t.Cleanup(func() {
+		_ = syscall.Sendto(raw, sctpPacketFromPortZero(port, peerTag, []byte{6, 0, 0, 4}), 0, dest)
+	})
+	awaitChunk(t, raw, port, initTag, 11) // COOKIE ACK: the association is queued for Accept
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client, err := Dial(ctx, "sctp4", nil, l.Addr().(*Addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Abort() }()
+
+	if err := l.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	c, err := l.AcceptSCTP()
+	if err != nil {
+		t.Fatalf("Accept with a port-0 association queued first: %v", err)
+	}
+	defer func() { _ = c.Abort() }()
+	if got, want := c.RemoteAddr().(*Addr).Port, client.LocalAddr().(*Addr).Port; got != want {
+		t.Fatalf("Accept returned peer port %d, want the next association's %d", got, want)
+	}
+}
+
+// sctpPacketFromPortZero is an SCTP packet with source port 0 and a correct
+// CRC32c (RFC 9260 §6.8, stored least significant byte first as Appendix A says).
+func sctpPacketFromPortZero(dport uint16, vtag uint32, chunks []byte) []byte {
+	b := binary.BigEndian.AppendUint16([]byte{0, 0}, dport)
+	b = binary.BigEndian.AppendUint32(b, vtag)
+	b = append(b, 0, 0, 0, 0)
+	b = append(b, chunks...)
+	binary.LittleEndian.PutUint32(b[8:], crc32.Checksum(b, crc32.MakeTable(crc32.Castagnoli)))
+	return b
+}
+
+// awaitChunk reads the raw socket until a packet of this exchange arrives
+// whose first chunk has the given type, and returns that chunk. A raw SCTP
+// socket sees all of the host's SCTP traffic, so anything else is skipped.
+func awaitChunk(t *testing.T, raw int, port uint16, tag uint32, chunkType byte) []byte {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	buf := make([]byte, 1<<16)
+	for time.Now().Before(deadline) {
+		n, _, err := syscall.Recvfrom(raw, buf, 0)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("waiting for chunk type %d: %v", chunkType, err)
+		}
+		if n < 20 {
+			continue
+		}
+		pkt := buf[int(buf[0]&0x0f)*4 : n] // past the IP header
+		if len(pkt) < 16 || binary.BigEndian.Uint16(pkt) != port || binary.BigEndian.Uint16(pkt[2:]) != 0 ||
+			binary.BigEndian.Uint32(pkt[4:]) != tag || pkt[12] != chunkType {
+			continue
+		}
+		return slices.Clone(pkt[12:])
+	}
+	t.Fatalf("no chunk type %d within the wait", chunkType)
+	return nil
+}
+
+// awaitInitAck returns the initiate tag and state cookie of the INIT ACK.
+func awaitInitAck(t *testing.T, raw int, port uint16, tag uint32) (uint32, []byte) {
+	t.Helper()
+	chunk := awaitChunk(t, raw, port, tag, 2)
+	if len(chunk) < 20 {
+		t.Fatalf("INIT ACK of %d bytes", len(chunk))
+	}
+	end := min(int(binary.BigEndian.Uint16(chunk[2:])), len(chunk))
+	for off := 20; off+4 <= end; {
+		kind, length := binary.BigEndian.Uint16(chunk[off:]), int(binary.BigEndian.Uint16(chunk[off+2:]))
+		if length < 4 || off+length > end {
+			break
+		}
+		if kind == 7 { // State Cookie, RFC 9260 §3.3.3
+			return binary.BigEndian.Uint32(chunk[4:]), slices.Clone(chunk[off+4 : off+length])
+		}
+		off += (length + 3) &^ 3
+	}
+	t.Fatal("INIT ACK carries no state cookie")
+	return 0, nil
 }

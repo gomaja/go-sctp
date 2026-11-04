@@ -163,8 +163,8 @@ var storageLayoutCache atomic.Uint32
 
 // storageLayout returns the shape the running kernel gives the option
 // structs that embed a sockaddr_storage (sockaddrStorageLayout, options.go),
-// for both getting and setting Conn options. A
-// 64-bit build runs only on a 64-bit kernel, which uses the build's own
+// for both getting and setting Conn options. A 64-bit build runs only on a
+// 64-bit kernel, which uses the build's own
 // layout, and so asks nothing: wordSize is a constant, and the rest of the
 // function is compiled away. A 32-bit build asks once per process, on s,
 // with probeKernelWordSize.

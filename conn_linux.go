@@ -491,9 +491,9 @@ func FileConn(f *os.File) (*Conn, error) {
 // IPPROTO_SCTP, SO_TYPE must be SOCK_STREAM (one-to-one; a one-to-many
 // socket or one peeled off it is SOCK_SEQPACKET), and SCTP_STATUS must find
 // an established or shutting-down association. Anything else is refused
-// with an error matching syscall.EINVAL, and a descriptor that is not a socket at all
-// fails with the kernel's syscall.ENOTSOCK. Every error is a *net.OpError
-// with Op "file", as net.FileConn's are.
+// with an error matching syscall.EINVAL, and a descriptor that is not a
+// socket at all fails with the kernel's syscall.ENOTSOCK. Every error is a
+// *net.OpError with Op "file", as net.FileConn's are.
 //
 // The socket is already set up, so only the package-side fields of the
 // Config apply: NotificationHandler and CloseTimeout. A Config that sets any
