@@ -96,8 +96,8 @@ SCTP-related congestion-control draft is recorded below after the
 2026-09-27 refresh.
 The [IANA SCTP Parameters registry](https://www.iana.org/assignments/sctp-parameters/sctp-parameters.xml)
 was read the same day. The DTLS chunk draft and the registry entries that
-cite it are recorded below after a 2026-10-15 refresh, which followed the
-draft's revision -05. RFC 6458 was checked again on 2026-10-16, for its
+cite it are recorded below after a 2026-11-04 refresh, which followed the
+draft's revision -06. RFC 6458 was checked again on 2026-10-16, for its
 notification header (below).
 
 ## Conformance boundary
