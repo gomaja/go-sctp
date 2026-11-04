@@ -144,7 +144,7 @@ func (s supervisor) run() (result error) {
 		cleanupCancel()
 		cancel()
 		if running {
-			<-done
+			<-done //nolint:errcheck // Cleanup only reaps the process after choosing the run result.
 			running = false
 		}
 	}
@@ -321,7 +321,7 @@ func (s supervisor) execute(deadline time.Time, input string, args ...string) ([
 		return output.Bytes(), err
 	case sig := <-s.signals:
 		cancel()
-		<-done
+		<-done //nolint:errcheck // Reap after cancellation; the interruption is returned below.
 		return output.Bytes(), fmt.Errorf("interrupted by signal %s", sig)
 	}
 }

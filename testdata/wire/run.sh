@@ -58,6 +58,10 @@ esac
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GO_IMAGE="${WIRE_GO_IMAGE:-golang:1.26.10-bookworm}"
 RUN_ID="${HARNESS_RUN_ID:-sctpwire-$$-$RANDOM}"
+LABEL="${HARNESS_LABEL:-$RUN_ID}"
+BUILDER="$RUN_ID-build"
+CHOWNER="$RUN_ID-chown"
+CACHE="$RUN_ID-modcache"
 IMAGE="go-sctp-wire:$RUN_ID"
 NET_A="$RUN_ID-a"
 NET_B="$RUN_ID-b"
@@ -88,12 +92,13 @@ cleanup() {
 		docker exec "$CLIENT" sh -c 'kill -INT "$(cat /tmp/dumpcap.pid)"' >/dev/null 2>&1
 		wait "$CAPTURE_PID" >/dev/null 2>&1
 	fi
-	docker rm -f "$SERVER" "$CLIENT" >/dev/null 2>&1
+	docker rm -f "$SERVER" "$CLIENT" "$BUILDER" >/dev/null 2>&1
 	docker network rm "$NET_A" "$NET_B" >/dev/null 2>&1
+ docker volume rm "$CACHE" >/dev/null 2>&1
 	if [ "$IMAGE_BUILT" -eq 1 ]; then
 		# On a native Linux host the files the containers wrote belong to
 		# root; hand the artifact directory back to the caller.
-		docker run --rm --label "harness=$RUN_ID" -v "$OUT:/out" "$IMAGE" chown -R "$(id -u):$(id -g)" /out >/dev/null 2>&1
+		docker run --rm --name "$CHOWNER" --label "harness=$LABEL" -v "$OUT:/out" "$IMAGE" chown -R "$(id -u):$(id -g)" /out >/dev/null 2>&1
 		docker image rm "$IMAGE" >/dev/null 2>&1
 	fi
 }
@@ -113,7 +118,7 @@ echo "wire artifacts: $OUT"
 # capture, iptables for the INPUT drops, iproute2 and ethtool for the
 # interfaces. The tag is removed on exit; the build cache keeps the next
 # build fast.
-docker build -q --label "harness=$RUN_ID" -t "$IMAGE" --build-arg GO_IMAGE="$GO_IMAGE" - >/dev/null <<'EOF' || die "could not build the harness image from $GO_IMAGE"
+docker build -q --label "harness=$LABEL" -t "$IMAGE" --build-arg GO_IMAGE="$GO_IMAGE" - >/dev/null <<'EOF' || die "could not build the harness image from $GO_IMAGE"
 ARG GO_IMAGE
 FROM ${GO_IMAGE}
 RUN if command -v tshark && command -v dumpcap && command -v iptables && command -v ip && command -v ethtool; then exit 0; fi; apt-get update -qq \
@@ -127,7 +132,8 @@ IMAGE_BUILT=1
 # mounted read-only into both containers. The analyzer lives under
 # testdata/, which "go vet ./..." skips, so it is vetted and tested here.
 echo "building the test binary and the analyzer..."
-docker run --rm --label "harness=$RUN_ID" -e GOFLAGS=-buildvcs=false -v "$ROOT:/src:ro" -v "$BUILD:/build" -w /src "$IMAGE" sh -c '
+docker volume create --label "harness=$LABEL" "$CACHE" >/dev/null
+docker run --rm --name "$BUILDER" --label "harness=$LABEL" -e GOFLAGS=-buildvcs=false -e GOTOOLCHAIN=local -v "$CACHE:/go/pkg/mod" -v "$ROOT:/src:ro" -v "$BUILD:/build" -w /src "$IMAGE" sh -c '
 	set -e
 	go vet ./testdata/wire/analyze
 	if ! go test -count=1 ./testdata/wire/analyze >/tmp/analyze-test.log 2>&1; then
@@ -137,12 +143,13 @@ docker run --rm --label "harness=$RUN_ID" -e GOFLAGS=-buildvcs=false -v "$ROOT:/
 	go build -o /build/wireanalyze ./testdata/wire/analyze
 	go build -o /build/summarize ./testdata/docker/summarize.go
 	go test -c $1 -o /build/sctp.test .
-' _ "$RACE" || die "build failed"
+' _ "$RACE" &
+wait "$!" || die "build failed"
 
-docker network create --label "harness=$RUN_ID" "$NET_A" >/dev/null
-docker network create --label "harness=$RUN_ID" "$NET_B" >/dev/null
+docker network create --label "harness=$LABEL" "$NET_A" >/dev/null
+docker network create --label "harness=$LABEL" "$NET_B" >/dev/null
 for c in "$SERVER" "$CLIENT"; do
-	docker run -d --label "harness=$RUN_ID" --name "$c" --privileged --network "$NET_A" \
+	docker run -d --label "harness=$LABEL" --name "$c" --privileged --network "$NET_A" \
 		-v "$BUILD:/wire:ro" -v "$OUT:/out" "$IMAGE" sleep infinity >/dev/null
 	docker network connect "$NET_B" "$c"
 done

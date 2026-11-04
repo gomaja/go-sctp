@@ -179,12 +179,13 @@ export GOFLAGS=-buildvcs=false GOTOOLCHAIN=local
 # "panic:" line, all derived from the structured events rather than from
 # text pattern matching.
 set +e
-go test ./... -count=1 -timeout 1200s -v $RACE -run "$RUN" -json 2> >(tee /out/stderr.log >&2) |
+go test ./... -count=1 -timeout 1200s -v $RACE -run "$RUN" -json 2>/out/stderr.log |
 	tee /out/out.json |
 	go run testdata/docker/summarize.go -allow-skips "testdata/docker/skips/linux-$SYSCTL.txt" |
 	tee /out/out.log
 statuses=("${PIPESTATUS[@]}")
 set -e
+cat /out/stderr.log >&2
 status=0
 for code in "${statuses[@]}"; do
 	if [ "$code" -ne 0 ]; then status="$code"; break; fi

@@ -56,20 +56,20 @@ func run(args []string, input io.Reader, output, stderr io.Writer) int {
 		return 1
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "summarize: unexpected arguments")
+		_, _ = fmt.Fprintln(stderr, "summarize: unexpected arguments")
 		return 1
 	}
 	if *minTests <= 0 {
-		fmt.Fprintln(stderr, "summarize: min-tests must be positive")
+		_, _ = fmt.Fprintln(stderr, "summarize: min-tests must be positive")
 		return 1
 	}
 	allowed, err := readAllowlist(*allowPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "summarize: allowlist: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "summarize: allowlist: %v\n", err)
 		return 1
 	}
 	if err := summarize(input, output, allowed, required, *minTests); err != nil {
-		fmt.Fprintf(stderr, "summarize: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "summarize: %v\n", err)
 		return 1
 	}
 	return 0
@@ -84,7 +84,7 @@ func readAllowlist(path string) (map[key]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	for n := 1; sc.Scan(); n++ {
 		s := strings.TrimSpace(sc.Text())
@@ -107,9 +107,12 @@ func readAllowlist(path string) (map[key]bool, error) {
 func summarize(input io.Reader, output io.Writer, allowed map[key]bool, required []string, minTests int) error {
 	sc := bufio.NewScanner(input)
 	sc.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	// bufio.Writer retains write errors; Flush below checks every buffered
+	// diagnostic as well as the final summary.
 	out := bufio.NewWriter(output)
 	buffered := map[key][]string{}
 	active := map[key]bool{}
+	paused := map[key]bool{}
 	packages := map[string]bool{}
 	passed := map[key]int{}
 	var passN, failN, skipN, runN int
@@ -140,7 +143,7 @@ func summarize(input io.Reader, output io.Writer, allowed map[key]bool, required
 		}
 		k := key{e.Package, e.Test}
 		if e.Output != "" {
-			fmt.Fprint(out, e.Output)
+			_, _ = fmt.Fprint(out, e.Output)
 			if e.Test != "" {
 				buffered[k] = append(buffered[k], e.Output)
 			}
@@ -158,8 +161,19 @@ func summarize(input io.Reader, output io.Writer, allowed map[key]bool, required
 			active[k] = true
 			runN++
 			delete(buffered, k)
+		case "pause", "cont":
+			if e.Test == "" || !packages[e.Package] || !active[k] || (e.Action == "pause" && paused[k]) || (e.Action == "cont" && !paused[k]) {
+				problems = append(problems, "invalid test "+e.Action+": "+e.Package+" "+e.Test)
+			}
+			paused[k] = e.Action == "pause"
 		case "pass", "fail", "skip":
 			if e.Test == "" {
+				for test := range active {
+					if test.pkg == e.Package {
+						problems = append(problems, "package ended with active tests: "+e.Package)
+						break
+					}
+				}
 				if !packages[e.Package] {
 					problems = append(problems, "package result without start: "+e.Package)
 				}
@@ -169,10 +183,14 @@ func summarize(input io.Reader, output io.Writer, allowed map[key]bool, required
 				}
 				continue
 			}
+			if !packages[e.Package] {
+				problems = append(problems, "test result outside active package: "+e.Package+" "+e.Test)
+			}
 			if !active[k] {
 				problems = append(problems, "test result without run: "+e.Package+" "+e.Test)
 			}
 			delete(active, k)
+			delete(paused, k)
 			switch e.Action {
 			case "pass":
 				passN++
@@ -211,15 +229,15 @@ func summarize(input io.Reader, output io.Writer, allowed map[key]bool, required
 			problems = append(problems, "required test did not pass: "+s)
 		}
 	}
-	fmt.Fprintf(out, "\nSUMMARY: PASS=%d FAIL=%d SKIP=%d\n", passN, failN, skipN)
+	_, _ = fmt.Fprintf(out, "\nSUMMARY: PASS=%d FAIL=%d SKIP=%d\n", passN, failN, skipN)
 	if len(skips) > 0 {
-		fmt.Fprintln(out, "SKIP list:")
+		_, _ = fmt.Fprintln(out, "SKIP list:")
 		for _, s := range skips {
-			fmt.Fprintln(out, "  "+s)
+			_, _ = fmt.Fprintln(out, "  "+s)
 		}
 	}
 	for _, p := range problems {
-		fmt.Fprintln(out, "ERROR: "+p)
+		_, _ = fmt.Fprintln(out, "ERROR: "+p)
 	}
 	if err := out.Flush(); err != nil {
 		return fmt.Errorf("writing summary: %w", err)
