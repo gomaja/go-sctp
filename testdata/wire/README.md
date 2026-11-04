@@ -22,7 +22,7 @@ testdata/wire/run.sh [-race] [-run REGEX] [-only wire|twohost]
   matches no case in the requested phase is an error.
 - `WIRE_OUT` names the artifact directory (default: a new temporary one);
   `WIRE_GO_IMAGE` the Go image the harness image is built from (default
-  `golang:1.26.5-bookworm`).
+  `golang:1.26.10-bookworm`).
 
 `HARNESS_RUN_ID` supplies the resource names and their `harness` labels.
 A prepared `WIRE_GO_IMAGE` containing every capture tool avoids package

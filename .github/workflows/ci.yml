@@ -146,7 +146,7 @@ jobs:
         shell: bash
         run: |
           sudo -E env "PATH=$PATH" go test ./... -race -count=1 -timeout 900s -json |
-            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/linux-${{ matrix.sysctl }}.txt
+            go run testdata/docker/summarize.go -allow-skips testdata/docker/skips/linux-race-${{ matrix.sysctl }}.txt
 
   test-linux-checkptr:
     name: test-linux checkptr

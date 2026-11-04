@@ -147,7 +147,9 @@ The summarizer exits nonzero for malformed or incomplete JSON, an unknown
 action, a failed build, test or package, zero selected tests, or a skip outside
 `skips/linux-on.txt` or `skips/linux-off.txt`. The allowlists identify tests by
 both package and full test name, including subtests. They permit the separate
-two-host cases, plus the interleaving-on case in sysctl-off runs. Architecture
+two-host cases, plus the interleaving-on case in sysctl-off runs. Race runs
+use `linux-race-on.txt` or `linux-race-off.txt`, which additionally permit the
+allocation-measurement skips required by race instrumentation. Architecture
 jobs select their own committed files from the same directory. An allowlisted
 case may pass when its prerequisite is available; the list only permits skips.
 

@@ -150,7 +150,7 @@ AUTH_ENABLE="$1"
 INTL_ENABLE="$2"
 RACE="$3"
 RUN="$4"
-SYSCTL="$5"
+ALLOWLIST="$5"
 
 # The network and sysctl setup this suite and the CI workflow both need,
 # built by the one script both call, so the two environments cannot drift
@@ -181,7 +181,7 @@ export GOFLAGS=-buildvcs=false GOTOOLCHAIN=local
 set +e
 go test ./... -count=1 -timeout 1200s -v $RACE -run "$RUN" -json 2>/out/stderr.log |
 	tee /out/out.json |
-	go run testdata/docker/summarize.go -allow-skips "testdata/docker/skips/linux-$SYSCTL.txt" |
+	go run testdata/docker/summarize.go -allow-skips "testdata/docker/skips/$ALLOWLIST.txt" |
 	tee /out/out.log
 statuses=("${PIPESTATUS[@]}")
 set -e
@@ -194,6 +194,8 @@ echo "EXIT=$status"
 exit "$status"
 EOF
 
+ALLOWLIST="linux-$SYSCTL"
+if [ -n "$RACE" ]; then ALLOWLIST="linux-race-$SYSCTL"; fi
 docker volume create --label "harness=$LABEL" "$CACHE" >/dev/null
 echo "suite artifacts: $OUT"
 docker run --rm --name "$CONTAINER" --privileged \
@@ -203,5 +205,5 @@ docker run --rm --name "$CONTAINER" --privileged \
 	-v "$CACHE":/go/pkg/mod \
 	-w /src \
 	"$IMAGE" \
-	bash -c "$INNER_SCRIPT" bash "$AUTH_ENABLE" "$INTL_ENABLE" "$RACE" "$RUN" "$SYSCTL" &
+	bash -c "$INNER_SCRIPT" bash "$AUTH_ENABLE" "$INTL_ENABLE" "$RACE" "$RUN" "$ALLOWLIST" &
 wait "$!"
