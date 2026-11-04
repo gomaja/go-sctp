@@ -85,21 +85,27 @@ func (c *Conn) init(p *prepared) error {
 	c.subs.Store(uint32(subs))
 
 	if c.kind == kindAccepted || c.kind == kindAdopted || c.kind == kindPeeled {
-		// The package keeps SCTP_ASSOC_CHANGE subscribed on every socket
-		// it uses (Config.Notifications). An association takes its own
-		// copy of the endpoint's subscriptions when it is created
-		// (net/sctp/associola.c: sctp_association_init), so one queued on
-		// a listener before the package owned it, set up on a descriptor
+		// The package keeps SCTP_ASSOC_CHANGE and SCTP_PARTIAL_DELIVERY_EVENT
+		// subscribed on every socket it uses (Config.Notifications). An
+		// association takes its own copy of the endpoint's subscriptions when
+		// it is created (net/sctp/associola.c: sctp_association_init), so one
+		// queued on a listener before the package owned it, set up on a descriptor
 		// elsewhere, or switched off for one association of an Endpoint
 		// through its SyscallConn, may lack it; on an established
 		// one-to-one or peeled socket SCTP_EVENT reaches that copy
 		// (net/sctp/socket.c: sctp_setsockopt_event, sctp_id2assoc).
-		if err := c.sock.control(func(fd int) error { return setEvent(fd, EventAssocChange, true) }); err != nil {
+		if err := c.sock.control(func(fd int) error {
+			if err := setEvent(fd, EventAssocChange, true); err != nil {
+				return err
+			}
+			return setEvent(fd, EventPartialDelivery, true)
+		}); err != nil {
 			return os.NewSyscallError("setsockopt", err)
 		}
 	}
 
 	assoc, state, err := c.sock.status()
+	ended := false
 	switch {
 	case err == nil && state != StateClosed:
 		c.assoc = assoc
@@ -107,15 +113,28 @@ func (c *Conn) init(p *prepared) error {
 		// The association has already ended; see newConn.
 		c.laddr.Store(&Addr{})
 		c.raddr.Store(&Addr{})
-		c.send.init(c)
-		return nil
+		ended = true
 	default:
 		return os.NewSyscallError("getsockopt", err)
 	}
 
-	c.refreshSnapshots()
-	if ra := c.raddr.Load(); ra != nil {
-		c.peerPort = ra.Port
+	// Linux fixes the negotiated capability when the association is created,
+	// and a restart keeps it (net/sctp/associola.c: sctp_assoc_update does not
+	// copy intl_capable); RFC 8260 §4.3.1 defines the query. After the
+	// association ends, the getter reports the socket's intl_enable instead
+	// (sctp_getsockopt_interleaving_supported). Keep that conservative guard:
+	// queued I-DATA pieces may still interleave. A failed query must not
+	// discard the data of an association that has already ended.
+	interleaved, err := c.InterleavingSupported()
+	if err != nil && !ended {
+		return err
+	}
+	c.recv.interleaved = interleaved
+	if !ended {
+		c.refreshSnapshots()
+		if ra := c.raddr.Load(); ra != nil {
+			c.peerPort = ra.Port
+		}
 	}
 	c.send.init(c)
 	return nil
@@ -377,12 +396,16 @@ func removesEveryAddress(bound, remove []netip.Addr) bool {
 
 // SetDeadline sets the read and write deadlines, as net.Conn documents: a
 // call waiting when the deadline passes returns an error wrapping
-// os.ErrDeadlineExceeded, and a zero t means no deadline.
+// os.ErrDeadlineExceeded, and a zero t means no deadline. A deadline that
+// expires while ReadMsg waits for the rest of a message aborts the
+// association; use Read or RecvMsg for deadline-driven partial reads.
 func (c *Conn) SetDeadline(t time.Time) error {
 	return c.setDeadline(t, 'b')
 }
 
 // SetReadDeadline sets the deadline for reads, as net.Conn documents.
+// If it passes while ReadMsg waits for the rest of a message, ReadMsg
+// aborts the association. Use Read or RecvMsg for deadline-driven reading.
 func (c *Conn) SetReadDeadline(t time.Time) error {
 	return c.setDeadline(t, 'r')
 }

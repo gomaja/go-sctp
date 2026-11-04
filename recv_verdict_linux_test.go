@@ -188,6 +188,36 @@ func TestReadMsgQueueFullNotificationVerdict(t *testing.T) {
 	}
 }
 
+// TestReadMsgQueuedHandlerErrors preserves notifications already consumed
+// between pieces, even when an earlier handler invocation failed.
+func TestReadMsgQueuedHandlerErrors(t *testing.T) {
+	firstError, secondError := errors.New("first handler"), errors.New("second handler")
+	calls := 0
+	c := scriptConn(t, func(Notification) error {
+		calls++
+		if calls == 1 {
+			return firstError
+		}
+		return secondError
+	}, EventAssocChange)
+	script := &recvScript{steps: []recvStep{
+		{data: []byte("before/")},
+		{data: assocChangeRecord(AssocCommUp, 7, nil), flags: msgNotification | msgEOR},
+		{data: assocChangeRecord(AssocCommUp, 7, nil), flags: msgNotification | msgEOR},
+		{data: []byte("after"), flags: msgEOR},
+		{data: []byte("next"), flags: msgEOR},
+	}}
+	hookRecvmsg(t, script.recvmsg)
+	b, _, err := c.ReadMsg(64)
+	if string(b) != "before/after" || calls != 2 || !errors.Is(err, firstError) || !errors.Is(err, secondError) || script.step != 4 {
+		t.Fatalf("data=%q calls=%d err=%v step=%d", b, calls, err, script.step)
+	}
+	b, _, err = c.ReadMsg(64)
+	if string(b) != "next" || err != nil {
+		t.Fatalf("next=%q %v", b, err)
+	}
+}
+
 // FuzzReceiveNotificationVerdict compares three receive policies with a
 // framing oracle independent of notificationAccumulator (RFC 6458 §6.1).
 // Association state is held at CommUp so the corpus varies framing without
@@ -207,6 +237,18 @@ func FuzzReceiveNotificationVerdict(f *testing.F) {
 	}
 	for _, declared := range []int{4, 100} {
 		f.Add(notifSized(EventPeerAddrChange, declared, 16, 0), uint16(0), uint16(3), uint16(8))
+	}
+	for _, n := range []int{0, 1, 7, 8, sizePDAPIEvent - 1, sizePDAPIEvent, sizePDAPIEvent + 1} {
+		for _, declared := range []uint32{0, 7, 8, sizePDAPIEvent - 1, sizePDAPIEvent, sizePDAPIEvent + 1, NotificationReassemblyLimit + 1} {
+			rec := make([]byte, n)
+			if n >= 2 {
+				binary.NativeEndian.PutUint16(rec, uint16(EventPartialDelivery))
+			}
+			if n >= 8 {
+				binary.NativeEndian.PutUint32(rec[4:], declared)
+			}
+			f.Add(rec, uint16(1), uint16(4), uint16(9))
+		}
 	}
 	f.Fuzz(func(t *testing.T, record []byte, x, y, z uint16) {
 		record = append([]byte(nil), record[:min(len(record), 4096)]...)
@@ -251,10 +293,11 @@ func FuzzReceiveNotificationVerdict(f *testing.F) {
 				c := scriptConn(t, nil)
 				read = func() (int, MsgInfo, error) { n, err := c.Read(buf); return n, MsgInfo{}, err }
 			case "RecvMsg":
-				c := scriptConn(t, nil, EventAssocChange)
+				c := scriptConn(t, nil, EventAssocChange, EventPartialDelivery)
 				read = func() (int, MsgInfo, error) { return c.RecvMsg(buf) }
 			case "Endpoint":
 				e := scriptEndpoint(t, nil)
+				e.subs.Or(uint32(eventBit(EventPartialDelivery)))
 				read = func() (int, MsgInfo, error) { return e.RecvMsg(buf) }
 			}
 			n, info, err := read()

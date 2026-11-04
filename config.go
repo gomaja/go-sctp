@@ -208,19 +208,24 @@ type Config struct {
 	ReusePort          *bool               // RFC 6458 §8.1.27; one-to-one sockets only
 	FragmentsDisabled  *bool               // RFC 6458 §8.1.11
 	FragmentInterleave *FragmentInterleave // RFC 6458 §8.1.20; nil on an Endpoint means InterleaveAssocs
-	ReceiveNxtInfo     *bool               // RFC 6458 §8.1.30
-	StreamResetMask    *StreamResetMask    // RFC 6525 §6.3; non-zero requires StreamReconfiguration
-	RTOInfo            *RTOInfo            // RFC 6458 §8.1.1
-	DelayedSACK        *DelayedSACK        // RFC 6458 §8.1.19; Delay at most 500 ms (RFC 9260 §6.2)
+	// ReceiveNxtInfo enables SCTP_NXTINFO (RFC 6458 §8.1.30). When Linux
+	// peeks an empty queue for it, it clears the pending socket error:
+	// reads after the last record may report ENOTCONN instead of the
+	// failure's errno. AssocCommLost and its cause still arrive.
+	// https://github.com/sctp/lksctp-tools/issues/75
+	ReceiveNxtInfo  *bool
+	StreamResetMask *StreamResetMask // RFC 6525 §6.3; non-zero requires StreamReconfiguration
+	RTOInfo         *RTOInfo         // RFC 6458 §8.1.1
+	DelayedSACK     *DelayedSACK     // RFC 6458 §8.1.19; Delay at most 500 ms (RFC 9260 §6.2)
 
 	// Notifications the caller receives, subscribed at creation, before bind,
 	// connect or listen (RFC 6458 §6.2.2). Linux starts every socket with
-	// none. The package also keeps EventAssocChange subscribed in the kernel
-	// on every socket, because it is how the package learns that an
-	// association has ended. On a Conn those records are consumed by
-	// the package and never delivered unless EventAssocChange is listed here
-	// or subscribed later. An Endpoint always delivers them, since its callers
-	// route by association id.
+	// none. The package also keeps EventAssocChange and EventPartialDelivery
+	// subscribed in the kernel on every socket, to detect association ends
+	// and abandoned partial messages. On a Conn those records are consumed by
+	// the package and never delivered unless their type is listed here or
+	// subscribed later. An Endpoint always delivers EventAssocChange, since
+	// its callers route by association id.
 	Notifications []EventType
 }
 
@@ -229,7 +234,8 @@ type Config struct {
 // part of that order: they are the two operations prepare always emits
 // first, on every style including styleFile, because the package's receive
 // path depends on both regardless of what Config asked for — RCVINFO to
-// read the association metadata every message carries, and ASSOC_CHANGE to
+// read the association metadata every message carries, PARTIAL_DELIVERY to
+// detect an abandoned partial message (RFC 6458 §6.1.7), and ASSOC_CHANGE to
 // notice an association ending at all. On a one-to-one or peeled socket,
 // Linux sets the socket error once when an association fails
 // (net/sctp/sm_sideeffect.c: sctp_cmd_set_sk_err — it does nothing at all
@@ -799,7 +805,7 @@ func resolveFragmentInterleave(c *Config, style socketStyle) (FragmentInterleave
 	case InterleaveNone, InterleaveAssocs:
 		return level, nil
 	case InterleaveStreams:
-		return 0, unsupportedField("Config.FragmentInterleave", "Linux stores SCTP_FRAGMENT_INTERLEAVE as a boolean and collapses any nonzero value to InterleaveAssocs (net/sctp/socket.c: sctp_setsockopt_fragment_interleave), so it cannot deliver cross-stream interleaving")
+		return 0, unsupportedField("Config.FragmentInterleave", "Linux stores SCTP_FRAGMENT_INTERLEAVE as a boolean and collapses any nonzero value to InterleaveAssocs (net/sctp/socket.c: sctp_setsockopt_fragment_interleave), so level 2 cannot be selected; negotiated I-DATA can still interleave streams (RFC 8260)")
 	default:
 		return 0, invalidArg("Config.FragmentInterleave is %v, not InterleaveNone, InterleaveAssocs or InterleaveStreams", level)
 	}
