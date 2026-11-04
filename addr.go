@@ -198,8 +198,8 @@ func ResolveAddrContext(ctx context.Context, network, address string) (*Addr, er
 		}
 		// Refuse this element before looking up a later host, so a DNS
 		// error cannot hide an earlier address-family error.
-		if _, err := canonicalNetwork(network, []netip.Addr{ip}); err != nil {
-			return nil, err
+		if network == "sctp4" && !ip.Unmap().Is4() {
+			return nil, invalidArg("sctp4 address %d (%s) is not IPv4", i, ip)
 		}
 		ips = append(ips, ip)
 	}
@@ -290,10 +290,9 @@ func resolveHost(ctx context.Context, network, host string) (netip.Addr, error) 
 	}
 }
 
-// normalizeResolvedAddr unmaps ip if it is IPv4-mapped, refusing a zone on
-// it first: a zone is never meaningful on an IPv4 address (encodeAddr
-// enforces the same rule at the kernel boundary), and Unmap would otherwise
-// silently discard that zone rather than reject it.
+// normalizeResolvedAddr keeps zones only on link-local IPv6 addresses, as
+// encodeAddr does at the kernel boundary. It then unmaps IPv4-mapped
+// addresses, after refusing any zone Unmap would otherwise discard.
 func normalizeResolvedAddr(ip netip.Addr) (netip.Addr, error) {
 	if ip.Zone() != "" && !ip.IsLinkLocalUnicast() {
 		return netip.Addr{}, invalidArg("address %s has a zone but is not link-local", ip)

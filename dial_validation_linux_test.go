@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestSetupFailedNotification(t *testing.T) {
@@ -107,6 +108,58 @@ func TestFailedSetupErrorFailsClosed(t *testing.T) {
 		err := failedSetupError(fd)
 		if !errors.Is(err, syscall.ECONNREFUSED) || !errors.As(err, &se) || se.Syscall != "sctp_connectx" {
 			t.Errorf("cleared SO_ERROR = %v, want sctp_connectx ECONNREFUSED", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFailedSetupErrorPreservesTimeout(t *testing.T) {
+	s := newAwaitSocket(t)
+	cfg := &Config{InitMsg: InitMsg{MaxAttempts: 1, MaxInitTimeout: 100 * time.Millisecond}, RTOInfo: &RTOInfo{Initial: 100 * time.Millisecond, Min: 100 * time.Millisecond, Max: 100 * time.Millisecond}}
+	p, err := cfg.prepare(styleDial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := setupSocket(&s, "", nil, p.ops); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := encodeAddrs(afInet, unreachableAddr().IPs, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.connectx(peer); err != nil && err != syscall.EINPROGRESS {
+		t.Fatal(err)
+	}
+	until := time.Now().Add(5 * time.Second)
+	for {
+		var b [12]byte
+		n, flags := 0, 0
+		err := s.control(func(fd int) error {
+			var e error
+			n, _, flags, _, e = syscall.Recvmsg(fd, b[:], nil, syscall.MSG_PEEK|syscall.MSG_DONTWAIT)
+			return e
+		})
+		if err == nil && n > 0 {
+			if !setupFailedNotification(b[:n], flags) {
+				t.Fatalf("head = %x, flags %#x, want CANT_STR_ASSOC", b[:n], flags)
+			}
+			break
+		}
+		if err != nil && !errors.Is(err, syscall.EAGAIN) {
+			t.Fatal(err)
+		}
+		if time.Now().After(until) {
+			t.Fatal("setup did not time out")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := s.control(func(fd int) error {
+		err := failedSetupError(fd)
+		var se *os.SyscallError
+		if !errors.Is(err, syscall.ETIMEDOUT) || !errors.As(err, &se) || se.Syscall != "sctp_connectx" {
+			t.Errorf("pending timeout = %v, want sctp_connectx ETIMEDOUT", err)
 		}
 		return nil
 	}); err != nil {

@@ -511,7 +511,9 @@ func awaitEstablished(ctx context.Context, s *socket) error {
 	return s.file.SetReadDeadline(time.Time{})
 }
 
-// setupFailedNotification classifies the head record inspected during setup.
+// setupFailedNotification recognizes SCTP_CANT_STR_ASSOC (RFC 6458
+// §6.1.1) in the head record. Twelve bytes cover the header, state and
+// error; a shorter peek cannot classify the record as a failed setup.
 func setupFailedNotification(b []byte, flags int) bool {
 	return len(b) >= 12 && flags&msgNotification != 0 &&
 		EventType(binary.NativeEndian.Uint16(b[assocChangeTypeOff:])) == EventAssocChange &&

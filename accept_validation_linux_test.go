@@ -24,6 +24,7 @@ import (
 func TestAcceptRetriesAbortedAssociation(t *testing.T) {
 	l := mustListen(t, nil, "sctp4", loopback4(0))
 	var calls atomic.Int32
+	wouldBlock := make(chan struct{})
 	testHookAccept4 = func(fd, flags int) (int, syscall.Sockaddr, error) {
 		switch calls.Add(1) {
 		case 1:
@@ -31,13 +32,56 @@ func TestAcceptRetriesAbortedAssociation(t *testing.T) {
 		case 2:
 			return -1, nil, syscall.EINTR
 		case 3:
+			close(wouldBlock)
 			return -1, nil, syscall.EAGAIN
 		default:
 			return syscall.Accept4(fd, flags)
 		}
 	}
 	t.Cleanup(func() { testHookAccept4 = nil })
-	client, server := dialAccept(t, nil, l)
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	accepted := make(chan result, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c, err := l.Accept()
+		accepted <- result{c, err}
+	}()
+	t.Cleanup(func() {
+		_ = l.Close()
+		<-done
+	})
+	// EAGAIN must precede the real association: inventing it after the
+	// readiness edge has already arrived could consume that one wake.
+	select {
+	case r := <-accepted:
+		if r.conn != nil {
+			_ = r.conn.Close()
+		}
+		t.Fatalf("Accept returned before the real association: %v", r.err)
+	case <-wouldBlock:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Accept did not retry the transient errors")
+	}
+	client, err := Dial(testContext(t, 3*time.Second), "sctp4", nil, listenerAddr(t, l))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Abort() })
+	var server net.Conn
+	select {
+	case r := <-accepted:
+		if r.err != nil {
+			t.Fatalf("Accept: %v", r.err)
+		}
+		server = r.conn
+	case <-time.After(3 * time.Second):
+		t.Fatal("Accept did not return the real association")
+	}
+	t.Cleanup(func() { _ = server.(*Conn).Abort() })
 	if calls.Load() < 4 {
 		t.Fatalf("accept4 calls = %d, want retries followed by a real accept", calls.Load())
 	}
@@ -56,7 +100,6 @@ func TestAcceptRetriesAbortedAssociation(t *testing.T) {
 // A refused setup leaves its notification queued even after another
 // observer has consumed SO_ERROR. No scheduling race is needed here.
 func TestAwaitEstablishedConsumedRefusal(t *testing.T) {
-	dead := deadPort(t)
 	s, err := newSocket(afInet, "sctp4")
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +112,14 @@ func TestAwaitEstablishedConsumedRefusal(t *testing.T) {
 	if err := setupSocket(&s, "", nil, p.ops); err != nil {
 		t.Fatal(err)
 	}
+	// Bind before choosing the closed port so autobind cannot connect the
+	// socket to itself (as refusedAwaitSocket does).
+	if err := s.control(func(fd int) error {
+		return syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dead := deadPort(t)
 	peer, err := encodeAddrs(afInet, dead.IPs, dead.Port)
 	if err != nil {
 		t.Fatal(err)
@@ -294,12 +345,17 @@ func TestRemotePortZeroRefusedBeforeSetup(t *testing.T) {
 	}
 	e := openEndpoint(t, nil, "sctp4", nil)
 	before := endpointAddrPort(e)
+	injected := &failConnControl{RawConn: e.sock.raw, at: 1}
+	e.sock.raw = injected
 	id, err := e.Connect(loopback4(0))
 	if id != 0 || !errors.Is(err, syscall.EINVAL) {
 		t.Errorf("Connect port 0 = %d, %v, want 0, EINVAL", id, err)
 	}
 	if after := endpointAddrPort(e); after != before {
 		t.Errorf("invalid Connect autobound port %d -> %d", before, after)
+	}
+	if injected.calls != 0 {
+		t.Errorf("Connect port 0 made %d socket calls", injected.calls)
 	}
 }
 func endpointAddrPort(e *Endpoint) uint16 { return e.Addr().(*Addr).Port }

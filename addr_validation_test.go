@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -59,6 +60,7 @@ func TestResolveAddrValidatesEachAddressBeforeNextLookup(t *testing.T) {
 }
 
 func TestResolveAddrContextRejectsNil(t *testing.T) {
+	var nilCtx context.Context
 	for _, address := range []string{":80", "127.0.0.1:80", "unused.invalid:80"} {
 		t.Run(address, func(t *testing.T) {
 			defer func() {
@@ -66,10 +68,17 @@ func TestResolveAddrContextRejectsNil(t *testing.T) {
 					t.Errorf("nil context panicked: %v", p)
 				}
 			}()
-			a, err := ResolveAddrContext(nil, "sctp", address)
+			a, err := ResolveAddrContext(nilCtx, "sctp", address)
 			if a != nil || !errors.Is(err, syscall.EINVAL) {
 				t.Errorf("ResolveAddrContext(nil) = %v, %v, want EINVAL", a, err)
 			}
 		})
+	}
+}
+
+func TestResolveAddrReportsOriginalAddressIndex(t *testing.T) {
+	_, err := ResolveAddr("sctp4", "127.0.0.1/[::1]:80")
+	if !errors.Is(err, syscall.EINVAL) || !strings.Contains(err.Error(), "address 1") {
+		t.Fatalf("ResolveAddr = %v, want the IPv6 address's index 1", err)
 	}
 }
