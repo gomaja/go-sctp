@@ -524,23 +524,7 @@ func TestLocalAddressValidationSocketFamily(t *testing.T) {
 // do_accept; net/ipv4/af_inet.c: inet_getname), and Accept must go on to the
 // next association rather than report a failure a loop would stop on.
 func TestAcceptSkipsPeerFromPortZero(t *testing.T) {
-	raw, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, ipprotoSCTP)
-	if errors.Is(err, syscall.EPERM) {
-		t.Skip("a raw socket needs CAP_NET_RAW")
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = syscall.Close(raw) })
-	source := &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 2}}
-	if err := syscall.Bind(raw, source); err != nil {
-		t.Fatal(err)
-	}
-	wait := syscall.NsecToTimeval(int64(3 * time.Second))
-	if err := syscall.SetsockoptTimeval(raw, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &wait); err != nil {
-		t.Fatal(err)
-	}
-
+	raw := openRawSCTP(t, [4]byte{127, 0, 0, 2})
 	l := mustListen(t, nil, "sctp4", loopback4(0))
 	port := l.Addr().(*Addr).Port
 	dest := &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}
@@ -589,10 +573,39 @@ func TestAcceptSkipsPeerFromPortZero(t *testing.T) {
 	}
 }
 
-// sctpPacketFromPortZero is an SCTP packet with source port 0 and a correct
-// CRC32c (RFC 9260 §6.8, stored least significant byte first as Appendix A says).
+// openRawSCTP opens a raw SCTP socket bound to addr, which receives a copy of
+// every SCTP packet delivered to addr and sends from it, with reads bounded
+// to 3 seconds. It skips the test without CAP_NET_RAW.
+func openRawSCTP(t *testing.T, addr [4]byte) int {
+	t.Helper()
+	raw, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, ipprotoSCTP)
+	if errors.Is(err, syscall.EPERM) {
+		t.Skip("a raw socket needs CAP_NET_RAW")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Close(raw) })
+	if err := syscall.Bind(raw, &syscall.SockaddrInet4{Addr: addr}); err != nil {
+		t.Fatal(err)
+	}
+	wait := syscall.NsecToTimeval(int64(3 * time.Second))
+	if err := syscall.SetsockoptTimeval(raw, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &wait); err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// sctpPacketFromPortZero is an SCTP packet with source port 0.
 func sctpPacketFromPortZero(dport uint16, vtag uint32, chunks []byte) []byte {
-	b := binary.BigEndian.AppendUint16([]byte{0, 0}, dport)
+	return sctpPacket(0, dport, vtag, chunks)
+}
+
+// sctpPacket is an SCTP packet with a correct CRC32c (RFC 9260 §6.8, stored
+// least significant byte first as Appendix A says).
+func sctpPacket(sport, dport uint16, vtag uint32, chunks []byte) []byte {
+	b := binary.BigEndian.AppendUint16(nil, sport)
+	b = binary.BigEndian.AppendUint16(b, dport)
 	b = binary.BigEndian.AppendUint32(b, vtag)
 	b = append(b, 0, 0, 0, 0)
 	b = append(b, chunks...)
@@ -600,10 +613,18 @@ func sctpPacketFromPortZero(dport uint16, vtag uint32, chunks []byte) []byte {
 	return b
 }
 
-// awaitChunk reads the raw socket until a packet of this exchange arrives
-// whose first chunk has the given type, and returns that chunk. A raw SCTP
-// socket sees all of the host's SCTP traffic, so anything else is skipped.
+// awaitChunk reads the raw socket until a packet from port to port 0 with
+// verification tag tag arrives whose first chunk has the given type.
 func awaitChunk(t *testing.T, raw int, port uint16, tag uint32, chunkType byte) []byte {
+	t.Helper()
+	return awaitChunkBetween(t, raw, port, 0, &tag, chunkType)
+}
+
+// awaitChunkBetween reads the raw socket until a packet from sport to dport
+// arrives whose first chunk has the given type, with verification tag *tag
+// unless tag is nil, and returns that chunk. A raw SCTP socket sees all of
+// the host's SCTP traffic, so anything else is skipped.
+func awaitChunkBetween(t *testing.T, raw int, sport, dport uint16, tag *uint32, chunkType byte) []byte {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	buf := make([]byte, 1<<16)
@@ -619,8 +640,8 @@ func awaitChunk(t *testing.T, raw int, port uint16, tag uint32, chunkType byte) 
 			continue
 		}
 		pkt := buf[int(buf[0]&0x0f)*4 : n] // past the IP header
-		if len(pkt) < 16 || binary.BigEndian.Uint16(pkt) != port || binary.BigEndian.Uint16(pkt[2:]) != 0 ||
-			binary.BigEndian.Uint32(pkt[4:]) != tag || pkt[12] != chunkType {
+		if len(pkt) < 16 || binary.BigEndian.Uint16(pkt) != sport || binary.BigEndian.Uint16(pkt[2:]) != dport ||
+			(tag != nil && binary.BigEndian.Uint32(pkt[4:]) != *tag) || pkt[12] != chunkType {
 			continue
 		}
 		return slices.Clone(pkt[12:])

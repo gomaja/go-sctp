@@ -911,21 +911,23 @@ func (e *Endpoint) abortInterruptedNotification(cause error) error {
 //
 // The Conn is a third kind of socket: Linux clones it from the endpoint's,
 // in a style of its own (SCTP_SOCKET_UDP_HIGH_BANDWIDTH, sctp_do_peeloff),
-// not a one-to-one socket. It keeps every kernel setting the endpoint had,
-// its subscriptions included (sctp_sock_migrate), and its association
-// keeps the send defaults it was created with, which the Conn reads from
-// it. It takes the NotificationHandler and CloseTimeout of the endpoint's
-// Config, and the Config's own Notifications as its subscriptions: an
-// EventAssocChange record reaches it only when those list
-// EventAssocChange, as on any Conn, the Endpoint's own delivery of every
-// such record staying with the Endpoint. A peer's SHUTDOWN never marks
-// the socket shut for reading (net/sctp/sm_sideeffect.c:
-// sctp_cmd_new_state), so the package ends its reads with io.EOF on the
-// AssocShutdownComplete record, and a failed association's error is
-// sticky, as on any Conn. Close, CloseWithTimeout and Shutdown start the
-// graceful shutdown with an empty SCTP_EOF send, since Linux ignores
-// shutdown(2) on this socket kind (sctp_shutdown), and SendOptions.Path is
-// refused, since Linux ignores the destination there
+// not a one-to-one socket. It keeps the endpoint's socket options, its
+// subscriptions included, but not the extensions the endpoint negotiates in
+// the INIT: as on an accepted connection, a restart of the association is
+// answered with the network namespace's settings and the kernel's default
+// AUTH lists (see Listener). Its association keeps the send defaults it was
+// created with, which the Conn reads from it. It takes the
+// NotificationHandler and CloseTimeout of the endpoint's Config, and the
+// Config's own Notifications as its subscriptions: an EventAssocChange
+// record reaches it only when those list EventAssocChange, as on any Conn,
+// the Endpoint's own delivery of every such record staying with the
+// Endpoint. A peer's SHUTDOWN never marks the socket shut for reading
+// (net/sctp/sm_sideeffect.c: sctp_cmd_new_state), so the package ends its
+// reads with io.EOF on the AssocShutdownComplete record, and a failed
+// association's error is sticky, as on any Conn. Close, CloseWithTimeout
+// and Shutdown start the graceful shutdown with an empty SCTP_EOF send,
+// since Linux ignores shutdown(2) on this socket kind (sctp_shutdown), and
+// SendOptions.Path is refused, since Linux ignores the destination there
 // (sctp_sendmsg_get_daddr).
 //
 // The descriptor is created close-on-exec and non-blocking

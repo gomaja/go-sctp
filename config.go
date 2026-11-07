@@ -174,7 +174,11 @@ type Config struct {
 	HMACIdentifiers []HMACID // RFC 4895 §§3.3, 6.1; must include HMACSHA1; requires Authentication
 	AuthChunks      []uint8  // RFC 4895 §§3.2, 6.1; chunk types to require AUTH on; requires Authentication
 
-	// Extensions negotiated in the INIT.
+	// Extensions negotiated in the INIT. On a Listener and an Endpoint they,
+	// and the two AUTH lists above, govern the associations the socket sets
+	// up. A connection accepted or peeled off answers a restart of its
+	// association with the network namespace's settings and the kernel's
+	// default AUTH lists instead (see Listener).
 	PartialReliability            *bool // PR-SCTP (RFC 3758), with the policies of RFC 7496 §4.5
 	StreamReconfiguration         *bool // RFC 6525 (Linux's negotiation switch)
 	DynamicAddressReconfiguration *bool // ASCONF, RFC 5061; requires Authentication (RFC 5061 §§4.1.1-4.1.2)
@@ -187,7 +191,9 @@ type Config struct {
 	// on (sctp_setsockopt_interleaving_supported). true requires a
 	// FragmentInterleave of at least InterleaveAssocs, which is already the
 	// default on an Endpoint, and the sysctl; without the sysctl the
-	// constructor fails with an error matching syscall.EPERM.
+	// constructor fails with an error matching syscall.EPERM. An I-DATA
+	// association on a connection accepted or peeled off does not survive a
+	// restart by its peer (see Listener).
 	MessageInterleaving bool
 
 	// Socket buffers (SO_RCVBUF, SO_SNDBUF). They are pre-association settings:
