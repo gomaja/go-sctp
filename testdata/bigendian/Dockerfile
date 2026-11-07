@@ -3,8 +3,8 @@
 
 # COPY from the foreign image only: no s390x program runs under qemu-user
 # while building the guest. The emulator itself runs natively on the host.
-FROM --platform=linux/s390x debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS guest
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+FROM --platform=linux/s390x debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS guest
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 
 # Snapshot freezes every package version. APT checks the archive signature
 # and each package's SHA256; only the snapshot's expiry check is disabled.
