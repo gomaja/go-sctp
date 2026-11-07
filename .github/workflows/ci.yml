@@ -226,6 +226,14 @@ jobs:
           args: --max-same-issues=0 --max-issues-per-linter=0 ./... ./testdata/docker ./testdata/wire/... ./testdata/bigendian/...
       - name: Check harness Go code
         run: '"$(go env GOPATH)/bin/staticcheck" ./testdata/docker ./testdata/wire/... ./testdata/bigendian/...'
+      # go vet does not report unused code, so code that only Linux files
+      # call is caught here, on the builds where it is dead.
+      - name: Check the non-Linux builds
+        run: |
+          for goos in darwin windows freebsd; do
+            echo "== $goos =="
+            GOOS="$goos" "$(go env GOPATH)/bin/staticcheck" ./...
+          done
       - name: Test the JSON summarizer
         run: go test ./testdata/docker -count=1
 
