@@ -369,6 +369,25 @@ func localBindAddrs(family int, laddr *Addr) ([]byte, error) {
 	return encodeAddrs(family, []netip.Addr{wild}, laddr.Port)
 }
 
+// validateLocalIPs refuses repeated local addresses before sctp_bindx sees
+// them, comparing the addresses encodeAddr binds for family. Mapped IPv4
+// addresses compare in plain form; on AF_INET6 the IPv4 wildcard is also
+// encoded as ::. Zones on IPv6 addresses still distinguish interfaces.
+func validateLocalIPs(family int, ips []netip.Addr) error {
+	seen := make(map[netip.Addr]int, len(ips))
+	for i, ip := range ips {
+		key := ip.Unmap()
+		if family == afInet6 && key.Is4() && key.IsUnspecified() {
+			key = netip.IPv6Unspecified()
+		}
+		if j, ok := seen[key]; ok {
+			return invalidArg("local address %d (%s) duplicates address %d", i, ip, j)
+		}
+		seen[key] = i
+	}
+	return nil
+}
+
 // adoptFile duplicates the descriptor f holds, close-on-exec, checks that
 // it is a one-to-one SCTP socket that is listening (listening true) or
 // holds an established association (listening false), puts the
