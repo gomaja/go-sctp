@@ -529,6 +529,22 @@ func TestOptionStructLayouts(t *testing.T) {
 		{"statusFragmentationPointOff", statusFragmentationPointOff, 20},
 		{"statusPrimaryOff", statusPrimaryOff, 24},
 
+		// Socket diagnostics UAPI: linux/sock_diag.h, linux/inet_diag.h,
+		// linux/netlink.h and linux/sctp.h (v5.14 through v6.18).
+		{"optMeminfo", optMeminfo, 55},
+		{"optCookie", optCookie, 57},
+		{"optBindToIfindex", optBindToIfindex, 62},
+		{"meminfoSndbuf", meminfoSndbuf, 3},
+		{"meminfoWmemQueued", meminfoWmemQueued, 5},
+		{"sizeMeminfo", sizeMeminfo, 36},
+		{"sizeNLMsgHeader", sizeNLMsgHeader, 16},
+		{"sizeDiagRequest", sizeDiagRequest, 72},
+		{"sizeInetDiagMsg", sizeInetDiagMsg, 72},
+		{"sizeNLAttr", sizeNLAttr, 4},
+		{"sizeSCTPInfo", sizeSCTPInfo, 368},
+		{"sctpInfoOutqueueOff", sctpInfoOutqueueOff, 28},
+		{"sctpInfoPrimaryFlightOff", sctpInfoPrimaryFlightOff, 336},
+
 		// struct sctp_prstatus, lines 1105-1111.
 		{"sizePRStatus", sizePRStatus, 24},
 		{"prStatusAssocIDOff", prStatusAssocIDOff, 0},

@@ -26,6 +26,8 @@ var (
 	// level Linux cannot keep. ReadMsg also reports it when I-DATA was
 	// negotiated, or when the association has ended and the socket's default
 	// enables I-DATA; use RecvMsg to reassemble each stream separately.
+	// Conn.AssocQueues and Endpoint.AssocQueues also report it, naming
+	// sctp_diag, when that diagnostic module is absent or not loadable.
 	ErrUnsupported = fmt.Errorf("sctp: socket operation unsupported: %w", errors.ErrUnsupported)
 
 	// ErrMessageTooLong is ReadMsg's report that a message exceeded the

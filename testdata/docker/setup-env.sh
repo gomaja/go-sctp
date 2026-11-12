@@ -34,6 +34,9 @@ fi
 # built-in SCTP) leaves behind, since every test below needs a working
 # SCTP stack to mean anything.
 $SUDO modprobe sctp 2>/dev/null || true
+# Association queue queries use the SCTP socket diagnostic handler. It
+# can also be built in; tests report a missing handler as a failure.
+$SUDO modprobe sctp_diag 2>/dev/null || true
 if [ ! -e /proc/net/sctp/snmp ]; then
 	echo "setup-env.sh: /proc/net/sctp/snmp is missing; this kernel has no SCTP support (modprobe sctp did not help)" >&2
 	exit 1

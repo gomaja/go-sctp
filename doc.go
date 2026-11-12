@@ -207,7 +207,9 @@
 //     message larger than the send buffer syscall.EMSGSIZE.
 //   - [ErrUnsupported] usually reports a platform without SCTP: any GOOS
 //     but Linux, and Linux whose SCTP module is absent, where it also
-//     matches the kernel's errno. See its documentation for exceptions on
+//     matches the kernel's errno. Conn.AssocQueues and Endpoint.AssocQueues
+//     also report it, naming sctp_diag, when that diagnostic module is
+//     absent or not loadable. See its documentation for other exceptions on
 //     a working stack. Test it specifically: errors.ErrUnsupported also
 //     matches ENOSYS, ENOTSUP and EOPNOTSUPP returned by a working stack.
 //

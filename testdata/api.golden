@@ -28,6 +28,7 @@ AssocCommLost
 AssocCommUp
 AssocID
 AssocInfo
+AssocQueues
 AssocReset
 AssocReset.Type
 AssocRestart
@@ -78,6 +79,7 @@ Conn.AdaptationLayer
 Conn.AddStreams
 Conn.AssocID
 Conn.AssocInfo
+Conn.AssocQueues
 Conn.AuthSupported
 Conn.AutoASCONF
 Conn.BindAdd
@@ -127,6 +129,7 @@ Conn.RequestHeartbeat
 Conn.RequestPeerPrimary
 Conn.ResetAssoc
 Conn.ResetStreams
+Conn.SendBacklog
 Conn.SendMsg
 Conn.SendMsgContext
 Conn.SetActiveAuthKey
@@ -181,6 +184,7 @@ Endpoint.AbortAssoc
 Endpoint.Addr
 Endpoint.AssocCount
 Endpoint.AssocIDs
+Endpoint.AssocQueues
 Endpoint.AutoClose
 Endpoint.BindAdd
 Endpoint.BindRemove
@@ -192,6 +196,7 @@ Endpoint.Network
 Endpoint.PeelOff
 Endpoint.PeerAddrs
 Endpoint.RecvMsg
+Endpoint.SendBacklog
 Endpoint.SendMsg
 Endpoint.SendMsgContext
 Endpoint.SetAutoClose
@@ -310,6 +315,7 @@ SchedRR
 SchedWFQ
 Scheduler
 Scheduler.String
+SendBacklog
 SendFailed
 SendFailed.Type
 SendFlags

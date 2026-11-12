@@ -88,6 +88,7 @@ accepted.
 | `ErrUnsupported` for Linux without SCTP too | JDK-8267938 | `inet_create` returns `EPROTONOSUPPORT` once loading the module fails |
 | A typed `AddrChangeReason` | Review of the UAPI | `enum sctp_sn_error`; Linux also sends 0 for "no reason" (`sm_sideeffect.c`) |
 | Kernel requirements stated per facility, and the RHEL 8 claim corrected | The UAPI headers of every release from 2.6.31 to 6.12 | CentOS Stream 8 lacks `SCTP_SS_FC` and `SCTP_SS_WFQ` |
+| `SendBacklog` reports the socket's send-buffer charge; `AssocQueues` reports an association's charges, never-transmitted chunks and primary-path bytes in flight | [go-m3ua #210](https://github.com/gomaja/go-m3ua/issues/210), [go-sctp #60](https://github.com/gomaja/go-sctp/issues/60) | `net/sctp/socket.c: sctp_set_owner_w` and `sctp_wfree` account for DATA until freed, including overhead; `net/core/sock.c: sk_get_meminfo` exports the socket charge and limit; `net/sctp/diag.c: sctp_diag_get_info` exports association charges. These are not exact payload bytes queued to send |
 | Documented: association-id reuse, the ABORT cause needing a subscription, `EINPROGRESS` during stream reconfiguration, a multi-address `Listener.Addr`, and what Linux does not provide | Java's `Association` documentation; pion #486/#487, #508/#509, #59/#316/#369/#490; golang/go #9334 | `idr_alloc_cyclic`; `strreset_outstanding` in `net/sctp/stream.c`; `sctp_ioctl` has no `SIOCOUTQ` |
 
 ### Adopted as tests
@@ -122,7 +123,6 @@ The wire claims are checked from packet captures between two hosts by
 | A logging hook (pion #31) | The package holds almost no protocol state to log; the kernel does. One unmerged 2019 pull request was the only demand |
 | A handler result that makes a read return at once (Java's `HandlerResult.RETURN`) | A handler that returns an error already ends the read, and `errors.Is` identifies it; a second mechanism would do the same |
 | Delivering `EventAssocChange` records to callers who did not subscribe | Simple callers would get records they never asked for. The package keeps the subscription in the kernel for its own use, and delivers the records only on request |
-| The number of bytes still queued to send | Linux does not report it (no `SIOCOUTQ` for SCTP), and counting it in Go would bring back the queue-bookkeeping defects pion documents |
 | Congestion-control selection, RFC 9653 zero checksum, out-of-band association tokens | Linux has no interface for them |
 | `SendOptions.Path` on an `Endpoint` | The kernel would find the association by the address, not by the given id, which can send a message on the wrong association. It could be added later, with that check, without breaking anything |
 | Tests of kernel protocol behaviour (pion #106, #445, #493, #495, and INIT, SACK and FORWARD-TSN edge cases) | The kernel owns that behaviour; they belong in a kernel qualification, not in the package's suite |

@@ -148,16 +148,47 @@ type PathInfo struct {
 	MTU uint32
 }
 
-// Status is struct sctp_status (RFC 6458 §8.2.1).
+// Status is struct sctp_status (RFC 6458 §8.2.1). Linux fills it in
+// net/sctp/socket.c: sctp_getsockopt_sctp_status. For send-buffer memory
+// and unsent chunks, use Conn.SendBacklog and Conn.AssocQueues.
 type Status struct {
-	State              AssocState
-	PeerRwnd           uint32
-	Unacked            uint16
-	Pending            uint16
-	InStreams          uint16
-	OutStreams         uint16
+	// State is sstat_state, the association's current AssocState.
+	// Verified Erratum 6115 removes SCTP_BOUND from the RFC's list.
+	State AssocState
+
+	// PeerRwnd is sstat_rwnd, the association peer's current receiver
+	// window size, in bytes. Linux reports asoc->peer.rwnd: the peer's
+	// window as this end tracks it (RFC 9260 §6.2.1), set from a_rwnd at
+	// setup and at each SACK to a_rwnd less bytes still outstanding
+	// (net/sctp/outqueue.c: sctp_outq_sack). Sending DATA reduces it;
+	// marking DATA for retransmission restores that DATA's bytes.
+	PeerRwnd uint32
+
+	// Unacked is sstat_unackdata, the number of unacknowledged DATA
+	// chunks. Linux increments it for each TSN assigned
+	// (net/sctp/associola.c: sctp_association_get_next_tsn), then at each
+	// SACK counts TSNs above the Cumulative TSN Ack not covered by a Gap
+	// Ack Block (net/sctp/outqueue.c: sctp_sack_update_unack_data).
+	// Behind a closed peer window it can be the one probe, however large
+	// the unsent backlog. It does not count that backlog.
+	Unacked uint16
+
+	// Pending is sstat_penddata, the number of DATA chunks pending
+	// receipt. Linux counts the TSNs below the highest one received from
+	// the peer that have not arrived (net/sctp/tsnmap.c:
+	// sctp_tsnmap_pending). It counts nothing on the send side.
+	Pending uint16
+
+	// InStreams is sstat_instrms, the number of inbound streams.
+	InStreams uint16
+	// OutStreams is sstat_outstrms, the number of outbound streams.
+	OutStreams uint16
+	// FragmentationPoint is sstat_fragmentation_point, the size in bytes
+	// at which SCTP fragments user messages.
 	FragmentationPoint uint32
-	Primary            PathInfo
+	// Primary is sstat_primary, the primary peer address and its path
+	// information, as PathInfo describes it.
+	Primary PathInfo
 }
 
 // AssocStats is Linux's struct sctp_assoc_stats, not part of RFC 6458.

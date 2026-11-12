@@ -445,6 +445,7 @@ jobs:
         # in practice.
         run: |
           sudo modprobe sctp
+          sudo modprobe sctp_diag 2>/dev/null || true
           sudo modprobe xt_sctp
           test -e /proc/net/sctp/snmp
       - name: Run the wire harness

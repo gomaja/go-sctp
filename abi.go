@@ -63,6 +63,32 @@ const (
 
 const ipprotoSCTP = 132 // IPPROTO_SCTP
 
+// SOL_SOCKET options absent from syscall, and socket diagnostics UAPI
+// (include/uapi/asm-generic/socket.h, linux/sock_diag.h, linux/netlink.h,
+// linux/inet_diag.h and linux/sctp.h). These layouts are identical from
+// Linux v5.14 through v6.18 and on 32-bit and 64-bit architectures.
+const (
+	optMeminfo               = 55      // SO_MEMINFO
+	optCookie                = 57      // SO_COOKIE
+	optBindToIfindex         = 62      // SO_BINDTOIFINDEX
+	meminfoSndbuf            = 3       // SK_MEMINFO_SNDBUF
+	meminfoWmemQueued        = 5       // SK_MEMINFO_WMEM_QUEUED
+	sizeMeminfo              = 9 * 4   // Room for SK_MEMINFO_VARS, including newer fields.
+	sockDiagByFamily         = 20      // SOCK_DIAG_BY_FAMILY
+	nlmRequest               = 1       // NLM_F_REQUEST
+	nlmDump                  = 0x300   // NLM_F_ROOT | NLM_F_MATCH
+	nlmsgError               = 2       // NLMSG_ERROR
+	nlmsgDone                = 3       // NLMSG_DONE
+	inetDiagInfo             = 2       // INET_DIAG_INFO
+	sizeNLMsgHeader          = 16      // struct nlmsghdr
+	sizeDiagRequest          = 16 + 56 // nlmsghdr + inet_diag_req_v2
+	sizeInetDiagMsg          = 72      // struct inet_diag_msg
+	sizeNLAttr               = 4       // struct nlattr
+	sizeSCTPInfo             = 368     // struct sctp_info
+	sctpInfoOutqueueOff      = 28      // sctpi_outqueue
+	sctpInfoPrimaryFlightOff = 336     // sctpi_p_flight_size
+)
+
 // ---------------------------------------------------------------------
 // Reserved association-scope selectors, RFC 6458 §7.2
 // (include/uapi/linux/sctp.h, v6.12, lines 62-64). They are values an

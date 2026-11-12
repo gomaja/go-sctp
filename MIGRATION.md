@@ -279,7 +279,7 @@ them:
 
 | Capability | Why not |
 |---|---|
-| Bytes still queued to send | Linux SCTP implements `SIOCINQ` but not `SIOCOUTQ` (`sctp_ioctl`, `net/sctp/socket.c`), and neither `SCTP_STATUS` nor `SCTP_GET_ASSOC_STATS` counts bytes. `Status().Pending` and `Unacked` count chunks, and `EventSenderDry` reports an empty queue |
+| Exact payload bytes still queued to send | `net/sctp/socket.c: sctp_ioctl` handles `SIOCINQ` only (no `SIOCOUTQ`), and no interface exports `asoc->outqueue.out_qlen`. `Conn.SendBacklog` and `Endpoint.SendBacklog` report the send-buffer memory charge, including overhead; `Conn.AssocQueues` and `Endpoint.AssocQueues(id)` report an association's charge and never-transmitted chunk count. `Status().Unacked` counts DATA chunks sent and not yet acknowledged, which behind a closed peer window can be the one probe despite a large unsent backlog. `EventSenderDry` reports an empty queue |
 | Congestion-control selection | No SCTP socket option selects an algorithm |
 | RFC 9653 zero checksum | Linux defines no `SCTP_ACCEPT_ZERO_CHECKSUM` |
 | Explicit end of record (`SCTP_EOR`, RFC 6458 Verified Erratum 6111) | Not defined by Linux; every send is one whole message |

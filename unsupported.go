@@ -551,3 +551,15 @@ func (e *Endpoint) Abort() error { return ErrUnsupported }
 
 // SyscallConn reports ErrUnsupported: SCTP sockets exist only on Linux.
 func (e *Endpoint) SyscallConn() (syscall.RawConn, error) { return nil, ErrUnsupported }
+
+// SendBacklog reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) SendBacklog() (*SendBacklog, error) { return nil, ErrUnsupported }
+
+// AssocQueues reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (c *Conn) AssocQueues() (*AssocQueues, error) { return nil, ErrUnsupported }
+
+// SendBacklog reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (e *Endpoint) SendBacklog() (*SendBacklog, error) { return nil, ErrUnsupported }
+
+// AssocQueues reports ErrUnsupported: SCTP sockets exist only on Linux.
+func (e *Endpoint) AssocQueues(AssocID) (*AssocQueues, error) { return nil, ErrUnsupported }
