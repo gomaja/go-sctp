@@ -705,7 +705,7 @@ func (c *Conn) SetPLPMTUDProbeInterval(path netip.Addr, d time.Duration) error {
 // --- the association ---------------------------------------------------------------
 
 // Status reports the association's state, the peer's receive window, the
-// DATA chunks unacknowledged and pending, the negotiated stream counts, the
+// unacknowledged DATA chunks and receive gaps, the negotiated stream counts, the
 // fragmentation point and the primary path (SCTP_STATUS, RFC 6458 §8.2.1).
 // Once the association has ended Linux refuses the query with EINVAL
 // (net/sctp/socket.c: sctp_getsockopt_sctp_status).

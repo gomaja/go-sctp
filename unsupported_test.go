@@ -63,6 +63,10 @@ func unsupportedStubCases() []unsupportedStubCase {
 	raddr := &Addr{IPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}, Port: 9}
 	ip := netip.MustParseAddr("127.0.0.1")
 	return []unsupportedStubCase{
+		{name: "Conn.SendBacklog", call: func() error { _, err := c.SendBacklog(); return err }},
+		{name: "Conn.AssocQueues", call: func() error { _, err := c.AssocQueues(); return err }},
+		{name: "Endpoint.SendBacklog", call: func() error { _, err := e.SendBacklog(); return err }},
+		{name: "Endpoint.AssocQueues", call: func() error { _, err := e.AssocQueues(3); return err }},
 		{name: "Dial", call: func() error { _, err := Dial(ctx, "sctp", nil, raddr); return err }},
 		{name: "Config.Dial", call: func() error { _, err := cfg.Dial(ctx, "sctp", nil, raddr); return err }},
 		{name: "Listen", call: func() error { _, err := Listen("sctp", nil); return err }},

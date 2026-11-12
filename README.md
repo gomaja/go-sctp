@@ -185,6 +185,17 @@ already-resolved addresses and never resolve hostnames themselves.
   `SyscallConn` is never seen by the package. After a failure every read
   and send returns the same error (`ECONNRESET`, `ETIMEDOUT` or
   `ECONNABORTED`) instead of hanging.
+- **Queue reporting.** `Conn.SendBacklog` and `Endpoint.SendBacklog`
+  report the socket's send-buffer memory charge and limit. The charge
+  includes chunk overhead and DATA retained until freed, including unsent,
+  in-flight, retransmitted, gap-acknowledged and abandoned chunks; it can
+  exceed the limit. An endpoint's charge covers every association together.
+  `Conn.AssocQueues` and `Endpoint.AssocQueues(id)` report one association's
+  send and receive charges, never-transmitted chunk count and payload bytes
+  in flight on its primary path. Use these for monitoring; `SendBacklog`
+  is the cheaper query. `Status.Pending` counts missing receive-side DATA
+  chunks, and `Status.Unacked` can be just one window probe despite a large
+  unsent backlog. Linux exposes no exact queued-payload byte count.
 - **Errors.** The errors of socket calls are `*net.OpError` values that
   name the call; test them with `errors.Is`. A refused argument normally
   matches `syscall.EINVAL` and names the field. `InterleaveStreams` matches
@@ -233,6 +244,7 @@ disappears in a later release):
 | Upstream Linux | Facility | API that needs it |
 |---|---|---|
 | **5.0** | `SCTP_EVENT`, and everything earlier releases define: `SCTP_SOCKOPT_CONNECTX3`, the RFC 6458 options, the `SNDINFO`/`RCVINFO`/`NXTINFO` messages, PR-SCTP, stream reconfiguration, `SCTP_SOCKOPT_PEELOFF_FLAGS`, the FCFS, priority and round-robin schedulers, message interleaving, `SCTP_REUSE_PORT` and `MSG_MORE` | **every socket**, and every API not listed below |
+| 5.1 | `SO_BINDTOIFINDEX` | `Conn.AssocQueues`, `Endpoint.AssocQueues` |
 | 5.4 | `SCTP_ASCONF_SUPPORTED`, `SCTP_AUTH_SUPPORTED`, `SCTP_ECN_SUPPORTED` | `Config.DynamicAddressReconfiguration`, `Config.Authentication`, `Config.ExperimentalECN`, their getters, and `InstallAuthKey`/`ActivateAuthKey` |
 | 5.5 | `SCTP_PEER_ADDR_THLDS_V2`, `SCTP_EXPOSE_POTENTIALLY_FAILED_STATE`, `SCTP_SEND_FAILED_EVENT` | `PathThresholds`, `PFExposure`, `AddrPotentiallyFailed`, `EventSendFailed` |
 | 5.11 | `SCTP_REMOTE_UDP_ENCAPS_PORT` | `RemoteUDPEncapsPort` |
@@ -251,6 +263,21 @@ blacklisted by default (`/etc/modprobe.d/sctp-blacklist.conf`): install
 the package, remove or override the blacklist entry, and load the module
 (`modprobe sctp`) before opening a socket. Until then every constructor
 fails with an error matching `ErrUnsupported`.
+
+`AssocQueues` also needs the `sctp_diag` module
+(`CONFIG_INET_SCTP_DIAG`). It loads on demand without special privileges
+when available; an unavailable module gives an error matching
+`ErrUnsupported` that names `sctp_diag`. Rocky Linux 9 and 10 ship it in
+`kernel-modules-extra`, blacklisted in
+`/etc/modprobe.d/sctp_diag-blacklist.conf`: load it with
+`modprobe sctp_diag` or remove the blacklist entry to allow on-demand
+loading. `SendBacklog` uses `SO_MEMINFO` and needs no diagnostics module.
+On Linux 6.18 (and back to 5.14, and on current mainline), `AssocQueues` can
+intermittently return `ENOENT` for a live IPv6 link-local association:
+`net/sctp/diag.c: sctp_diag_dump_one` leaves the lookup addresses' scope ids
+uninitialized ([sctp/lksctp-tools#82](https://github.com/sctp/lksctp-tools/issues/82)).
+`SendBacklog`, and `AssocQueues` on global and loopback associations, are
+unaffected.
 
 ## Platforms
 

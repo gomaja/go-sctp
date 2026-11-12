@@ -52,6 +52,12 @@ run, not only the next time someone remembers to update both.
   built-in SCTP) leaves behind is required, since every test below needs
   a working SCTP stack to mean anything.
 
+- **`modprobe sctp_diag`, best effort.** `AssocQueues` needs the SCTP
+  socket diagnostic handler, which can be a module or built in. A failed
+  load is left for the queue tests to report as an error; those tests
+  never skip a missing handler. The big-endian guest uses this same setup
+  and includes the full kernel module package and its dependencies.
+
 - **`apt-get install iproute2`, only if `ip` is missing.** The base
   `golang:*-bookworm` image has `sysctl` (from `procps`) but not `ip`; the
   interface and route setup below needs it. A GitHub-hosted runner already

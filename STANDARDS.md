@@ -12,6 +12,32 @@ code is written. The procedure at the end says how, and when.
 
 ## Verification record
 
+Rechecked **2026-11-12** for association status and send-backlog reporting:
+the RFC Editor `rfcNNNN.json` records, Datatracker document records and
+human pages, and incoming relationships filtered server-side with
+`relationship__slug__in=obs,updates` were fetched for RFC 9260, 6458 and
+4666. Both authorities agree: none is obsoleted or updated; RFC 9260 and
+4666 remain Proposed Standard, and RFC 6458 remains Informational. The
+full errata records at the endpoints below were also fetched:
+
+- RFC 9260: Verified 7147, 7148, 7387, 7852 and 8402; Held for Document
+  Update 8772; Rejected 7988, 8387 and 8774.
+- RFC 6458: Verified 6111, 6112, 6115, 6980, 7547 and 7548; Held for
+  Document Update 4921, 6113, 6114 and 6116; Rejected 6081, 6131, 6132 and
+  6133. Only [Verified Erratum 6115](https://errata.rfc-editor.org/eid6115/)
+  amends §8.2.1, removing `SCTP_BOUND` from `sstat_state`; it changes no
+  counter. Held and Rejected errata retain their recorded treatment.
+- RFC 4666: Held for Document Update 2065 and 4475; Rejected 2518. None
+  is applied here: M3UA is caller context, outside the package's SCTP API.
+
+The [TSVWG documents](https://datatracker.ietf.org/wg/tsvwg/documents/),
+[Datatracker draft record](https://datatracker.ietf.org/api/v1/doc/document/draft-dreibholz-tsvwg-sctpsocket-sqinfo/?format=json)
+and [send-queue information draft -33](https://datatracker.ietf.org/doc/draft-dreibholz-tsvwg-sctpsocket-sqinfo/33/)
+were checked. The draft remains an individual proposal, dated 2026-09-16
+and expiring 2027-03-20. Its §3 proposes `SCTP_SQINFO`; it is not normative
+and Linux does not implement it. `SendBacklog` and `AssocQueues` expose
+Linux's existing memory accounting and socket diagnostics instead.
+
 Rechecked **2026-11-04** for the PR-SCTP, reset and option documentation:
 the RFC Editor `rfcNNNN.json` records and the Datatracker incoming
 relationships, filtered server-side with `relationship__slug__in=obs,updates`,
